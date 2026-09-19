@@ -23,7 +23,9 @@ from gradysim.protocol.plugin.battery_power import BatteryPowerPlugin, BatteryPo
 
 class DroneStatus(enum.Enum):
     MAPPING = 0
+    GOING_TO_BASE = 1
     DEAD = 2
+    CHARGING = 3
 
 class MessageType(enum.Enum):
     HEARTBEAT_MESSAGE = 0
@@ -34,18 +36,21 @@ class HeartBeatMessage(TypedDict):
     message_type: int
     status: int
     sender: int
+    current_battery_status: float
 
 class ShareMapMessage(TypedDict):
     message_type: int 
     map: list
     sender: int
     drone_position: list
+    drone_status: int
+    sender_battery_status: float
 
 class SendGoToMessage(TypedDict):
     message_type: int 
     goto: list
     sender: int
-    priority_value: float
+    command_str: str
 
 def GotoCoordsMobilityCommand(current_position: np.ndarray,
                               destination: np.ndarray,
@@ -91,9 +96,19 @@ class Drone(IProtocol):
         "number_of_drones": 3,
         "map_width": 10,
         "map_height": 10,
-        "distance_norm": 100.0,
-        "distance_between_drone_norm": 50.0,
-        "fuzzy_tables": list[RegularGridInterpolator],
+        ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this #####
+        ##### is in cells^2: 1.0 == one cell spacing, not one metre.               #####
+        'base_variance': 1.0,
+        'alpha_variance_modifier': 1.0,
+        'energy_gamma': 1.0,
+        'charging_base_multiplier': 1.0,
+        ##### Normaliser of the encounter coupling term, in metres. Smaller means #####
+        ##### the two drones are pushed apart harder when they meet. Above ~500   #####
+        ##### the term is swamped by the reward spread and does nothing.          #####
+        'distance_between_drone_norm': 50.0,
+        'kernel_n_sigma': 3,
+        'discharge_rate': 0.001,
+        'charging_base_position': (0.0, 0.0),
         ##### "train" runs silent and fast, "test" logs every routine #####
         "mode": "train",
         "enable_map_plot": False,
@@ -114,14 +129,21 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
+        self.TIME_TO_RECHARGE = 100
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
         self.NUMBER_OF_DRONES = self._config["number_of_drones"]
         self.MAP_WIDTH = self._config["map_width"]
         self.MAP_HEIGHT = self._config["map_height"]
-        self.DISTANCE_NORM = self._config["distance_norm"]
+        self.BASE_VARIANCE = self._config["base_variance"]
+        self.ALPHA_VARIANCE_MODIFIER = self._config["alpha_variance_modifier"]
+        self.ENERGY_GAMMA = self._config["energy_gamma"]
+        self.CHARGING_BASE_MULTIPLIER = self._config["charging_base_multiplier"]
         self.DISTANCE_BETWEEN_DRONE_NORM = self._config["distance_between_drone_norm"]
+        self.KERNEL_N_SIGMA = self._config["kernel_n_sigma"]
+        self.DISCHARGE_RATE = self._config["discharge_rate"]
+        self.CHARGING_BASE_POSITION = self._config["charging_base_position"]
         self.results_aggregator = self._config.get("results_aggregator", {})
         
         self.DRONE_ALTITUDE = 50.0
@@ -148,21 +170,28 @@ class Drone(IProtocol):
         configuration = CameraConfiguration(100, 30, 180, 0)
         self.camera = CameraHardware(self, configuration)
 
+        ##### Drone speed #####
+        self.speed_command = 10.0
+
         ### It's considered that the at any high the camera reach will be enough #####
         ##### Cluster plugins initialization #####
         self.fitness = FitnessEvaluator(map_width=self.MAP_WIDTH,
                                         map_height=self.MAP_HEIGHT,
                                         distance_between_cells = self.DISTANCE_BETWEEN_CELLS,
-                                        distance_norm=self.DISTANCE_NORM,
-                                        distance_between_drone_norm=self.DISTANCE_BETWEEN_DRONE_NORM,
                                         camera_angle=self.CAMERA_ANGLE,
-                                        number_of_cells_x_y = self.CELLS_EVALUETED_FOR_PRIORITY)
+                                        base_variance=self.BASE_VARIANCE,
+                                        energy_gamma=self.ENERGY_GAMMA,
+                                        alpha_variance_modifier=self.ALPHA_VARIANCE_MODIFIER,
+                                        charging_base_multiplier=self.CHARGING_BASE_MULTIPLIER,
+                                        distance_between_drone_norm=self.DISTANCE_BETWEEN_DRONE_NORM,
+                                        kernel_n_sigma=self.KERNEL_N_SIGMA,
+                                        discharge_rate=self.DISCHARGE_RATE,
+                                        number_of_cells_x_y =self.CELLS_EVALUETED_FOR_PRIORITY)
         
         ##### Communication tracking. Avoiding communications loops #####
         self.last_drone_interaction_time = np.zeros(self.NUMBER_OF_DRONES)  
 
         ##### Initial random position #####
-        self.speed_command = 10.0
         self.goto_command = np.array([random.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2), random.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2), self.DRONE_ALTITUDE])
         command = GotoCoordsMobilityCommand(current_position=self.drone_position,
                                             destination=self.goto_command,
@@ -172,7 +201,10 @@ class Drone(IProtocol):
         #### Energy Parameters #####
         self.battery = BatteryPowerPlugin(self, SHARED_BATTERY_CONFIG)
         self.BATTERY_CHECK_INTERVAL = 5.0
+        ##### Charge fraction below which the drone is considered lost #####
+        self.DEAD_BATTERY_THRESHOLD = 0.10
         self.battery_status = self.battery.battery_status
+        self.swarm_battery_status = np.zeros(self.NUMBER_OF_DRONES)
 
 
         ##### Starting the callbacks #####
@@ -257,17 +289,24 @@ class Drone(IProtocol):
     def internal_mobility_command(self):
         map_center_offset = (self.MAP_WIDTH * self.DISTANCE_BETWEEN_CELLS) / 2
 
-        cells_fitness_scores = self.fitness.cells_priority(
+        target_coords, value, command = self.fitness.choose_one_cell(
             self.map[:, :, 0],
             self.drone_position, 
+            self.CHARGING_BASE_POSITION,
+            self.battery.battery_status,
+            self.speed_command,
             map_center_offset=map_center_offset,
         )
+        if command == "going_to_base":
+            self.status = DroneStatus.GOING_TO_BASE
+        else:
+            self.status = DroneStatus.MAPPING
 
-        target_coords, value = self.fitness.choose_one_cell(cells_fitness_scores)
+        
         target_row, target_col = target_coords
 
         if self.VERBOSE:
-            self._log.info(f"Drone {self.provider.get_id()} going to cell ({target_row}, {target_col}). Fitness value: {value}")
+            self._log.info(f"Drone {self.provider.get_id()} going to cell ({target_row}, {target_col})")
 
         #### Setting the position to go to
         x_goto = target_row * self.DISTANCE_BETWEEN_CELLS - map_center_offset
@@ -280,26 +319,34 @@ class Drone(IProtocol):
 
     
     ##### External mobility command. When receiving encountering another drone, the one with highest ID calculates the new destinations #####
-    def external_mobility_command(self, another_drone_position: list):
+    def external_mobility_command(self, another_drone_position: list, another_drone_id: int) -> tuple[np.ndarray, str]:
         map_center_offset = (self.MAP_WIDTH * self.DISTANCE_BETWEEN_CELLS) / 2
 
         # transform list to tuple
         another_drone_position = tuple(another_drone_position)
 
-        cells_fitness_scores = self.fitness.both_cells_priority(
+        destinations, best_fitness, commands = self.fitness.choose_two_cells(
             self.map[:, :, 0],
-            first_drone_pos = self.drone_position, 
-            second_drone_pos=another_drone_position,
+            self.drone_position,
+            another_drone_position,
+            self.CHARGING_BASE_POSITION,
+            self.battery.battery_status,
+            self.swarm_battery_status[another_drone_id],  
+            self.speed_command,
             map_center_offset=map_center_offset,
-            )
+        )
 
-        target_coords, value = self.fitness.choose_two_cells(cells_fitness_scores)
+        if commands[0] == "going_to_base":
+            self.status = DroneStatus.GOING_TO_BASE
+        else:
+            self.status = DroneStatus.MAPPING
+           
 
-        target_row_1, target_col_1 = target_coords[0]
-        target_row_2, target_col_2 = target_coords[1]
+        target_row_1, target_col_1 = destinations[0]
+        target_row_2, target_col_2 = destinations[1]
 
         if self.VERBOSE:
-            self._log.info(f"Drone {self.provider.get_id()} going to cell ({target_row_1}, {target_col_1}) and sending drone to cell ({target_row_2}, {target_col_2}). Fitness value: {value}")
+            self._log.info(f"Drone {self.provider.get_id()} going to cell ({target_row_1}, {target_col_1}) and sending drone to cell ({target_row_2}, {target_col_2}).")
 
         #### Setting position to go to
         x_goto = target_row_1 * self.DISTANCE_BETWEEN_CELLS - map_center_offset
@@ -317,24 +364,25 @@ class Drone(IProtocol):
         y_send_command = target_col_2 * self.DISTANCE_BETWEEN_CELLS - map_center_offset
         send_command = np.array([x_send_command, y_send_command, self.DRONE_ALTITUDE])
         
-        return send_command, value
+        return send_command, commands[1]  # Return also the command for the second drone
 
     def send_heartbeat(self):
         #self._log.info(f"Sending heartbeat ...")
         message: HeartBeatMessage = {
             'message_type': MessageType.HEARTBEAT_MESSAGE.value,
             'status': self.status.value,
-            'sender': self.provider.get_id()
+            'sender': self.provider.get_id(),
+            'current_battery_status': self.battery.battery_status
         }
         command = BroadcastMessageCommand(json.dumps(message))
         self.provider.send_communication_command(command)
 
-    def send_goto_command(self, send_command: np.array, destination_id: int, cell_priority: float):
+    def send_goto_command(self, send_command: np.array, destination_id: int, command: str):
         message: SendGoToMessage = {
             'message_type': MessageType.SHARE_GOTO_POSITION_MESSAGE.value,
             'goto': send_command.tolist(),
             'sender': self.provider.get_id(),
-            'priority_value': cell_priority
+            'command_str': command
         }
         command = SendMessageCommand(json.dumps(message), destination_id)
         self.provider.send_communication_command(command)
@@ -350,21 +398,26 @@ class Drone(IProtocol):
         heartbeat_msg: HeartBeatMessage = data
         #self._log.info(f"Received heartbeat from {heartbeat_msg['sender']}")
 
-        if heartbeat_msg['status'] == DroneStatus.MAPPING.value and self.status == DroneStatus.MAPPING:
-            message: ShareMapMessage = {
+        ### Updating the swarm battery status
+        self.swarm_battery_status[heartbeat_msg['sender']] = heartbeat_msg['current_battery_status']
+
+        message: ShareMapMessage = {
                 'message_type': MessageType.SHARE_MAP_MESSAGE.value,
                 'map': self.map.tolist(),
                 'sender': self.provider.get_id(),
-                'drone_position': np.array(self.drone_position).tolist()
+                'drone_position': np.array(self.drone_position).tolist(),
+                'drone_status': self.status.value,
+                'sender_battery_status': self.battery.battery_status
                 }
-            destination_id = heartbeat_msg['sender']                
-            command = SendMessageCommand(json.dumps(message), destination_id)
-            self.provider.send_communication_command(command)
+        destination_id = heartbeat_msg['sender']                
+        command = SendMessageCommand(json.dumps(message), destination_id)
+        self.provider.send_communication_command(command)
 
 
     def updated_map(self, data: dict):
         share_map_msg: ShareMapMessage = data
         updated_map = self.compare_maps(np.array(share_map_msg['map']))
+        self.swarm_battery_status[share_map_msg['sender']] = share_map_msg['sender_battery_status']
         
         #if self.visualizer:
         #    self.visualizer.update_map(self.provider.get_id(), self.map[:,:,0])
@@ -376,8 +429,9 @@ class Drone(IProtocol):
         if timer == "vanishing_map":
                 self.vanishing_map_routine()
                 
-                # Keep updating the uncertainty if the drone ran out of battery
-                if self.status == DroneStatus.DEAD:
+                # Keep updating the uncertainty if the drone ran out of battery or is frozen recharging,
+                # in both cases the camera routine is not running to account for it
+                if self.status == DroneStatus.DEAD or self.status == DroneStatus.CHARGING:
                     self.total_uncertainty = self.map[:,:,0].sum()
                     self.accomulated_uncertainty += self.total_uncertainty
 
@@ -386,7 +440,25 @@ class Drone(IProtocol):
                         self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} map has total uncertainty of {self.total_uncertainty}")
                 self.provider.schedule_timer("vanishing_map", self.provider.current_time() + self.VANISHING_UPDATE_TIME)
 
-        if self.status == DroneStatus.MAPPING:
+        ##### Handled outside of the status gate below, the drone is CHARGING when it fires #####
+        if timer == "recharge_done":
+            self.battery.charge_battery_to_full()
+            self.status = DroneStatus.MAPPING
+
+            if self.VERBOSE:
+                self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} finished recharging")
+
+            ##### Every routine was left without a pending timer while frozen, #####
+            ##### so all of them have to be started again here.                #####
+            self.internal_mobility_command()
+            self.provider.schedule_timer("mobility", self.provider.current_time() + self.MOBILITY_UPDATE_TIME)
+            self.provider.schedule_timer("camera", self.provider.current_time() + 1.0)
+            self.provider.schedule_timer("heartbeat", self.provider.current_time() + 1)
+            self.provider.schedule_timer("traveled_distance", self.provider.current_time() + 2)
+            self.provider.schedule_timer("battery_check", self.provider.current_time() + self.BATTERY_CHECK_INTERVAL)
+            return
+
+        if self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE:
             if timer == "camera":
                 self.camera_routine()
                 self.provider.schedule_timer("camera", self.provider.current_time() + 1.0)
@@ -396,24 +468,56 @@ class Drone(IProtocol):
                     current_pos_array = np.array(self.drone_position)
                     distance_to_goto = np.linalg.norm(current_pos_array - self.goto_command)
 
-                    ##### The tolerance has to cover the distance flown between two #####
-                    ##### ticks, otherwise the drone passes the destination without #####
-                    ##### ever reporting the arrival.                               #####
-                    if distance_to_goto < self.speed_command * self.MOBILITY_UPDATE_TIME:
-                        self.internal_mobility_command()
-                    else:
-                        ##### The handler only holds a velocity, so the heading has #####
-                        ##### to be refreshed every tick or the drone keeps flying  #####
-                        ##### in the direction of an already outdated destination.  #####
-                        command = GotoCoordsMobilityCommand(current_position=current_pos_array,
-                                                            destination=self.goto_command,
-                                                            speed=self.speed_command)
-                        self.provider.send_mobility_command(command)
+                    if self.status == DroneStatus.MAPPING:
+                        # Keep the monitoring activity
 
-                self.provider.schedule_timer(
-                    "mobility",
-                    self.provider.current_time() + self.MOBILITY_UPDATE_TIME
-                )
+                        ##### The tolerance has to cover the distance flown between two #####
+                        ##### ticks, otherwise the drone passes the destination without #####
+                        ##### ever reporting the arrival.                               #####
+                        if distance_to_goto < self.speed_command * self.MOBILITY_UPDATE_TIME:
+                            self.internal_mobility_command()
+                        else:
+                            ##### The handler only holds a velocity, so the heading has #####
+                            ##### to be refreshed every tick or the drone keeps flying  #####
+                            ##### in the direction of an already outdated destination.  #####
+                            command = GotoCoordsMobilityCommand(current_position=current_pos_array,
+                                                                destination=self.goto_command,
+                                                                speed=self.speed_command)
+                            self.provider.send_mobility_command(command)
+                       
+
+                    if self.status == DroneStatus.GOING_TO_BASE:
+                        if distance_to_goto < self.speed_command * self.MOBILITY_UPDATE_TIME:
+                            ##### The drone reached the base. It is frozen for TIME_TO_RECHARGE  #####
+                            ##### to simulate the recharge: the velocity is zeroed and no timer  #####
+                            ##### is rescheduled, so every routine (camera, heartbeat, mobility, #####
+                            ##### traveled distance, battery check) stops until "recharge_done". #####
+                            self.status = DroneStatus.CHARGING
+                            self.provider.send_mobility_command(SetVelocityMobilityCommand(0.0, 0.0, 0.0))
+
+                            if self.VERBOSE:
+                                self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} reached the base and is recharging for {self.TIME_TO_RECHARGE}")
+
+                            self.provider.schedule_timer(
+                                                        "recharge_done",
+                                                        self.provider.current_time() + self.TIME_TO_RECHARGE
+                                                    )
+                            return
+                        else:
+                            ##### Same refresh as in the MAPPING branch, and for the same  #####
+                            ##### reason. Without it the velocity set when the base was    #####
+                            ##### chosen is never re-aimed: the drone curves under the     #####
+                            ##### handler's acceleration limit, misses the arrival window, #####
+                            ##### and then flies in a straight line off the map forever.   #####
+                            command = GotoCoordsMobilityCommand(current_position=current_pos_array,
+                                                                destination=self.goto_command,
+                                                                speed=self.speed_command)
+                            self.provider.send_mobility_command(command)
+
+                    self.provider.schedule_timer(
+                                                "mobility",
+                                                self.provider.current_time() + self.MOBILITY_UPDATE_TIME
+                                            )
 
             if timer == "heartbeat":
                 self.send_heartbeat()
@@ -439,26 +543,32 @@ class Drone(IProtocol):
                 if self.VERBOSE:
                     self._log.info(f"At time {self.provider.current_time()} the battery status is: {self.battery_status}")
 
-                if self.battery_status <= 0.0:
-                    self._log.warning(f"Drone {self.provider.get_id()} has no battery. Drone will land.")
-                    #Making the drone land
-                    self.goto_command = np.array(self.drone_position)
-                    ### Altitude to zero
-                    self.goto_command[2] = 0.0 
-                    command = GotoCoordsMobilityCommand(current_position=self.drone_position,
-                                            destination=self.goto_command,
-                                            speed=self.speed_command)     
-                    self.provider.send_mobility_command(command)
-
+                if self.battery_status <= self.DEAD_BATTERY_THRESHOLD:
+                    self._log.warning(f"Drone {self.provider.get_id()} has no battery. Drone is dead.")
                     self.status = DroneStatus.DEAD
-                    ### The drone will stop moving and will have a larger penalty
+
+                    ##### The drone stops where it is. The mobility handler holds the last  #####
+                    ##### commanded velocity forever and no routine is rescheduled once     #####
+                    ##### DEAD, so the velocity has to be zeroed explicitly or the drone    #####
+                    ##### would keep drifting for the rest of the simulation.               #####
+                    self.provider.send_mobility_command(SetVelocityMobilityCommand(0.0, 0.0, 0.0))
+                    self.goto_command = np.array(self.drone_position)
+
+                    ##### Stopping the drone is not enough: the battery plugin drives its    #####
+                    ##### own timer, outside the status gate below, and at zero velocity the #####
+                    ##### model bills hover power - the most expensive point of the curve.   #####
+                    ##### Left running it reaches 0 J and raises, aborting the simulation.   #####
+                    self.battery.shutdown()
+
+                    ##### No timer is rescheduled from here on, so every routine stops. #####
+                    return
 
                 self.provider.schedule_timer("battery_check", self.provider.current_time() + self.BATTERY_CHECK_INTERVAL)
                 
 
 
     def handle_packet(self, message: str) -> None:
-        if self.status == DroneStatus.MAPPING:
+        if self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE:
             data: dict = json.loads(message)
 
             if 'message_type' not in data:
@@ -468,35 +578,51 @@ class Drone(IProtocol):
             msg_type = data['message_type']
 
             if msg_type == MessageType.HEARTBEAT_MESSAGE.value:
-
                 self.received_heartbeat(data)
 
             elif msg_type == MessageType.SHARE_MAP_MESSAGE.value:
                 self.map = self.updated_map(data)
 
-                if self.provider.current_time() - self.last_drone_interaction_time[data['sender']]  > self.TIMEOUT_TO_UPDATE_DESTINATION: # the drone id starts at 0
-                    if self.provider.get_id() >= data['sender']:
-                        ### Update the number of interactions ###
-                        Drone.Number_of_Encounters += 1
+                # If the drone is going to the recharge base, it will not update its destination.
+                if self.status == DroneStatus.MAPPING:
+                    # If the other drone is also mapping keep the both destination update
+                    if data['drone_status'] == DroneStatus.MAPPING.value:
+                        if self.provider.current_time() - self.last_drone_interaction_time[data['sender']]  > self.TIMEOUT_TO_UPDATE_DESTINATION: # the drone id starts at 0
+                            if self.provider.get_id() >= data['sender']:
+                                ### Update the number of interactions ###
+                                Drone.Number_of_Encounters += 1
 
-                        #self._log.info(f"Received map from drone {data['sender']}. My position: {self.drone_position}, other drone position: {another_drone_position}")
+                                #self._log.info(f"Received map from drone {data['sender']}. My position: {self.drone_position}, other drone position: {another_drone_position}")
 
-                        #self._log.info(f"Node {self.provider.get_id()} is calculating the new destinations")
-                        send_command, cell_priority = self.external_mobility_command(data['drone_position'])
+                                #self._log.info(f"Node {self.provider.get_id()} is calculating the new destinations")
+                                send_command, command = self.external_mobility_command(data['drone_position'], data['sender'])
 
-                        #self._log.info(f"After updating map going to {self.goto_command} and sending {send_command} to drone {data['sender']}")
-                        self.send_goto_command(send_command, data['sender'], cell_priority)
-                    self.last_drone_interaction_time[data['sender']] = self.provider.current_time() # the drone id starts at 0
+                                self.send_goto_command(send_command, data['sender'], command)
+                            self.last_drone_interaction_time[data['sender']] = self.provider.current_time() # the drone id starts at 0
+                    else:
+                        # The other drone is going to the recharge base, so this one will update its destination based only in the
+                        # internal_mobility_command routine, without considering the other 
+                        self.internal_mobility_command()
+                else:
+                    pass  # The drone is going to the recharge base, it will not update its destination.
+
 
             elif msg_type == MessageType.SHARE_GOTO_POSITION_MESSAGE.value:
-                goto_msg: SendGoToMessage = data
-                #self._log.info(f"Received goto command from {goto_msg['sender']}. Going to {goto_msg['goto']}")
+                # It should not receive messages to update its destination if it is not in the MAPPING status, but just in case
+                if self.status == DroneStatus.MAPPING:
+                    goto_msg: SendGoToMessage = data
+                    #self._log.info(f"Received goto command from {goto_msg['sender']}. Going to {goto_msg['goto']}")
 
-                self.goto_command = np.array(goto_msg['goto'], dtype=float)
-                command = GotoCoordsMobilityCommand(current_position=self.drone_position,
-                                                    destination=self.goto_command,
-                                                    speed=self.speed_command)
-                self.provider.send_mobility_command(command)       
+                    if goto_msg['command_str'] == "going_to_base":
+                        self.status = DroneStatus.GOING_TO_BASE
+                    else:
+                        self.status = DroneStatus.MAPPING
+
+                    self.goto_command = np.array(goto_msg['goto'], dtype=float)
+                    command = GotoCoordsMobilityCommand(current_position=self.drone_position,
+                                                        destination=self.goto_command,
+                                                        speed=self.speed_command)
+                    self.provider.send_mobility_command(command)       
 
             else:
                 self._log.warning(f"Received message with unknown type: {msg_type}")
@@ -536,8 +662,14 @@ def drone_protocol_factory(
     number_of_drones: int,
     map_width: int,
     map_height: int,
-    distance_norm: float,
-    distance_between_drone_norm: float,
+    base_variance: float,             # tunable, in cells^2
+    alpha_variance_modifier: float,   # tunable
+    energy_gamma: float,              # tunable
+    charging_base_multiplier: float,  # tunable
+    distance_between_drone_norm: float,  # tunable
+    kernel_n_sigma: int,              # tunable
+    discharge_rate: float,            # fixed
+    charging_base_position: tuple,    # fixed
     results_aggregator: dict,
     mode: str = "train",
     enable_map_plot: bool = False
@@ -556,8 +688,14 @@ def drone_protocol_factory(
         "number_of_drones": number_of_drones,
         "map_width": map_width,
         "map_height": map_height,
-        "distance_norm": distance_norm,
+        "base_variance": base_variance,
+        "alpha_variance_modifier": alpha_variance_modifier,
+        "energy_gamma": energy_gamma,
+        "charging_base_multiplier": charging_base_multiplier,
         "distance_between_drone_norm": distance_between_drone_norm,
+        "kernel_n_sigma": kernel_n_sigma,
+        "discharge_rate": discharge_rate,
+        "charging_base_position": charging_base_position,
         "results_aggregator": results_aggregator,
         "mode": mode,
         "enable_map_plot": enable_map_plot

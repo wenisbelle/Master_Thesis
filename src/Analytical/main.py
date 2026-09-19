@@ -30,6 +30,26 @@ UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 200
 
+##### Fixed protocol parameters, not tuned #####
+DISCHARGE_RATE = 0.001
+CHARGING_BASE_POSITION = (0.0, 0.0)
+
+##### GA genome layout: (name, low, high), in the order the individual stores them.
+##### These bounds are PLACEHOLDERS chosen to be dimensionally sane, they have not
+##### been calibrated against the scenario yet.
+GENE_BOUNDS = [
+    ("base_variance",            0.25,  9.0),   # sigma_0^2 of Eq. (11), in cells^2
+    ("alpha_variance_modifier",  0.0,   4.0),   # alpha of Eq. (11)
+    ("energy_gamma",             1.0,  60.0),   # gamma of Eqs. (14)/(15)
+    ("charging_base_multiplier", 0.0,  10.0),   # kappa of Eq. (15)
+    ("kernel_n_sigma",           2.0,   4.0),   # kernel truncation, rounded to int
+    ##### Encounter coupling, in metres. Measured on this scenario: at 500 the term
+    ##### changes 3% of encounters, at 100 it changes 11%, at 20 it changes 85% and
+    ##### triples the mean separation of the two targets. Anything above ~500 is
+    ##### indistinguishable from no coupling at all, so the useful range is low.
+    ("distance_between_drone_norm", 10.0, 500.0),
+]
+
 ##### GA parameters (mode "train") #####
 POPULATION_SIZE = 50
 NUMBER_OF_GENERATIONS = 20
@@ -38,13 +58,31 @@ MUTATION_PROBABILITY = 0.05
 GA_LOGBOOK_FILE = "ga_logbook.txt"
 
 ##### Test parameters (mode "test") #####
-##### Individual found by the GA tuning #####
-BEST_INDIVIDUAL = [3611.5, 3563.1]
+##### Individual found by the GA tuning. Placeholder: the protocol defaults,
+##### in the GENE_BOUNDS order. Replace after a real tuning run.
+BEST_INDIVIDUAL = [1.0, 1.0, 20.0, 1.0, 3.0, 50.0]
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####
 ENABLE_MAP_PLOT = False
 ENABLE_SIMULATION_PLOT = False
+
+
+def unpack_individual(individual):
+    """
+    Maps the flat GA genome onto the protocol's tunable parameters, in the
+    order declared by GENE_BOUNDS.
+    """
+    base_variance, alpha, gamma, kappa, n_sigma, drone_norm = individual
+    return dict(
+        base_variance=base_variance,
+        alpha_variance_modifier=alpha,
+        energy_gamma=gamma,
+        charging_base_multiplier=kappa,
+        ##### the protocol takes this one as an int #####
+        kernel_n_sigma=int(round(n_sigma)),
+        distance_between_drone_norm=drone_norm,
+    )
 
 
 #### Objective function using simulation execution ####
@@ -93,8 +131,9 @@ def create_and_run_simulation(individual, mode: str = "train",
         number_of_drones=NUMBER_OF_DRONES,
         map_width=MAP_WIDTH,
         map_height=MAP_HEIGHT,
-        distance_norm=individual[0],
-        distance_between_drone_norm=individual[1],
+        **unpack_individual(individual),
+        discharge_rate=DISCHARGE_RATE,
+        charging_base_position=CHARGING_BASE_POSITION,
         results_aggregator=results_aggregator,
         mode=mode,
         enable_map_plot=enable_map_plot
@@ -154,13 +193,12 @@ def objective_function(individual):
     return total_cost,
 
 def is_feasible(individual):
-    distance_norm=individual[0]
-    distance_between_drone_norm=individual[1]
-
-    if distance_norm <= 0:
+    """Every gene has to stay inside its own GENE_BOUNDS range."""
+    if len(individual) != len(GENE_BOUNDS):
         return False
-    if distance_between_drone_norm <= 0:
-        return False
+    for value, (_, low, high) in zip(individual, GENE_BOUNDS):
+        if not (low <= value <= high):
+            return False
     return True
 
 
@@ -175,13 +213,20 @@ def run_training():
     creator.create("Individual", list,  fitness=creator.FitnessMin) ## individual
 
     toolbox = base.Toolbox()
-    toolbox.register("attr_float", random.uniform, 0.1, 10000.0)
-    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_float, n=2)
+
+    ##### Each gene is drawn inside its own range, they are not commensurable #####
+    def random_individual():
+        return creator.Individual(random.uniform(low, high) for _, low, high in GENE_BOUNDS)
+
+    toolbox.register("individual", random_individual)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+
+    ##### Mutation step scaled per gene, a single sigma would be meaningless #####
+    mutation_sigmas = [(high - low) * 0.1 for _, low, high in GENE_BOUNDS]
 
     toolbox.register("evaluate", objective_function)
     toolbox.register("mate", tools.cxTwoPoint)
-    toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=100, indpb=0.05)
+    toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=mutation_sigmas, indpb=0.05)
     toolbox.register("select", tools.selTournament, tournsize=3)
 
     ### Parallelization
