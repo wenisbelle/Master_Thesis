@@ -1,0 +1,17 @@
+build/**
+.idea/**
+
+**.egg-info/**
+
+**__pycache__**
+
+dist/**
+
+.vscode/**
+
+venv/**
+
+.claude
+CLAUDE.md
+
+site/**
