@@ -19,7 +19,7 @@ from deap import algorithms, base, creator, tools
 import numpy as np
 
 how_many_simulations = 0
-CORES_TO_USE = 2
+CORES_TO_USE = 16
 
 ##### Scenario, shared by the tuning and the test runs 
 SIMULATION_DURATION = 5000
@@ -45,7 +45,7 @@ GENE_BOUNDS = [
     ("alpha_variance_modifier",  0.0,   50.0),   # alpha of Eq. (11)
     ("energy_gamma",             0.10,  100.0),   # gamma of Eqs. (14)/(15)
     ("charging_base_multiplier", 0.0,  100.0),   # kappa of Eq. (15)
-    ("kernel_n_sigma",           1.0,   20.0),   # kernel truncation, rounded to int
+    ("kernel_n_sigma",           2.0,   5.0),   # kernel truncation, rounded to int
     ("distance_between_drone_norm", 10.0, 1000.0),
 ]
 
