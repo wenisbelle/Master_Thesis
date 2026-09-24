@@ -486,7 +486,7 @@ class Drone(IProtocol):
                             self.provider.send_mobility_command(command)
                        
 
-                    if self.status == DroneStatus.GOING_TO_BASE:
+                    elif self.status == DroneStatus.GOING_TO_BASE:
                         if distance_to_goto < self.speed_command * self.MOBILITY_UPDATE_TIME:
                             ##### The drone reached the base. It is frozen for TIME_TO_RECHARGE  #####
                             ##### to simulate the recharge: the velocity is zeroed and no timer  #####

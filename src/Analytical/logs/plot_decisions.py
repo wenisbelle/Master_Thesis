@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 
 
-def plot_decisions(path="logs/recording.pkl", drone_id=0, fade_after=120.0):
+def plot_decisions(path="recording.pkl", drone_id=0, fade_after=120.0):
     data = pickle.load(open(path, "rb"))
     W, H = data["meta"]["map_width"], data["meta"]["map_height"]
     decs = data["decisions"].get(drone_id, [])
@@ -62,4 +62,4 @@ def plot_decisions(path="logs/recording.pkl", drone_id=0, fade_after=120.0):
 
 
 if __name__ == "__main__":
-    plot_decisions(drone_id=0)
+    plot_decisions(drone_id=1)
