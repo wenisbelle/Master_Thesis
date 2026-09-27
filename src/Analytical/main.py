@@ -41,8 +41,8 @@ GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
 ##### These bounds are PLACEHOLDERS chosen to be dimensionally sane, they have not
 ##### been calibrated against the scenario yet.
 GENE_BOUNDS = [
-    ("base_variance",            0.25,  20.0),   # sigma_0^2 of Eq. (11), in cells^2
-    ("alpha_variance_modifier",  0.0,   50.0),   # alpha of Eq. (11)
+    ("base_variance",            0.25,  100.0),   # sigma_0^2 of Eq. (11), in cells^2
+    ("alpha_variance_modifier",  0.0,   100.0),   # alpha of Eq. (11)
     ("energy_gamma",             0.10,  100.0),   # gamma of Eqs. (14)/(15)
     ("charging_base_multiplier", 0.0,  100.0),   # kappa of Eq. (15)
     ("kernel_n_sigma",           2.0,   5.0),   # kernel truncation, rounded to int
@@ -59,7 +59,7 @@ GA_LOGBOOK_FILE = "ga_logbook.txt"
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
-BEST_INDIVIDUAL = [1.0, 1.0, 20.0, 1.0, 3.0, 50.0]
+BEST_INDIVIDUAL = [20.0, 48.6, 13.3, 19.14, 3.3, 327.8]
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####
