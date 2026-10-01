@@ -12,7 +12,7 @@ Lateral (y) motion is not modelled.
 """
 
 import numpy as np
-
+from typing import Optional
 
 class BatteryPowerModel:
     """
@@ -30,7 +30,9 @@ class BatteryPowerModel:
                  X_ref_area: float = 0.015, Z_ref_area: float = 0.0335,
                  X_drag_coef: float = 0.8, Z_drag_coef: float = 0.8,
                  air_density: float = 1.225, gravity: float = 9.81, propeller_radius: float = 0.127,
-                 number_of_rotors: int = 4, time_step: float = 1.0):
+                 number_of_rotors: int = 4, time_step: float = 1.0,
+                 random_air_speed: bool = False, random_air_speed_u: Optional[float] = None, 
+                 random_air_speed_sigma: Optional[float] = None):
         self.mass = mass
         self.payload = payload
         self.external_power = external_power
@@ -51,6 +53,18 @@ class BatteryPowerModel:
         self.DISK_AREA = self.N_ROTORS * np.pi * (self.PROP_RADIUS ** 2)
         self.battery_status = battery_initial_charge  # fraction, 0 to 1
         self.TIME_STEP = time_step  # seconds
+        self.air_speed = 0.0 # the velocity is calculated relatively to the air speed
+        self.RANDOM_AIR_SPEED = random_air_speed
+
+        if self.RANDOM_AIR_SPEED == True:
+            if random_air_speed_u or random_air_speed_sigma == False:
+                raise RuntimeError("Must provide the mean and variance terms")
+            else:
+                self.random_air_speed_u = random_air_speed_u
+                self.random_air_speed_sigma = random_air_speed_sigma
+            
+
+
 
     @property
     def weight(self) -> float:
@@ -168,3 +182,8 @@ class BatteryPowerModel:
             raise RuntimeError("Battery depleted during flight.")
         self.update_battery_status()
 
+    def change_battery_efficiency(self, new_battery_efficiency: float):
+        """ This can happen because some regions are much hotter than others for instance or you want to simulate
+        some battery degradation during the flight"""
+        self.POWER_EFFICIENCY = new_battery_efficiency 
+    
