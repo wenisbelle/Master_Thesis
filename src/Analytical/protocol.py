@@ -29,22 +29,21 @@ class DroneStatus(enum.Enum):
 
 class MessageType(enum.Enum):
     HEARTBEAT_MESSAGE = 0
-    SHARE_MAP_MESSAGE = 1
+    GOSSIPING_MESSAGE = 1
     SHARE_GOTO_POSITION_MESSAGE = 2
 
 class HeartBeatMessage(TypedDict):
     message_type: int
     status: int
     sender: int
-    current_battery_status: float
 
-class ShareMapMessage(TypedDict):
+class GossipingMessage(TypedDict):
     message_type: int 
     map: list
     sender: int
     drone_position: list
     drone_status: int
-    sender_battery_status: float
+    sender_battery_swarm_status: list
 
 class SendGoToMessage(TypedDict):
     message_type: int 
@@ -204,7 +203,8 @@ class Drone(IProtocol):
         ##### Charge fraction below which the drone is considered lost #####
         self.DEAD_BATTERY_THRESHOLD = 0.10
         self.battery_status = self.battery.battery_status
-        self.swarm_battery_status = np.zeros(self.NUMBER_OF_DRONES)
+        # Battery of the specific drone and the time since the last observation
+        self.swarm_battery_status = np.zeros((self.NUMBER_OF_DRONES, 2))
 
 
         ##### Starting the callbacks #####
@@ -212,7 +212,8 @@ class Drone(IProtocol):
         self.provider.schedule_timer("camera",self.provider.current_time() + 1)
         self.provider.schedule_timer("heartbeat",self.provider.current_time() + 1)
         self.provider.schedule_timer("vanishing_map", self.provider.current_time() + self.VANISHING_UPDATE_TIME)
-        self.provider.schedule_timer("traveled_distance", self.provider.current_time() + 5)
+        if self.MODE == "test":
+            self.provider.schedule_timer("traveled_distance", self.provider.current_time() + 5)
         self.provider.schedule_timer("battery_check", self.provider.current_time() + self.BATTERY_CHECK_INTERVAL)
 
         ##### Visualizing the MAP #####
@@ -331,7 +332,7 @@ class Drone(IProtocol):
             another_drone_position,
             self.CHARGING_BASE_POSITION,
             self.battery.battery_status,
-            self.swarm_battery_status[another_drone_id],  
+            self.swarm_battery_status[another_drone_id, 0],
             self.speed_command,
             map_center_offset=map_center_offset,
         )
@@ -372,7 +373,6 @@ class Drone(IProtocol):
             'message_type': MessageType.HEARTBEAT_MESSAGE.value,
             'status': self.status.value,
             'sender': self.provider.get_id(),
-            'current_battery_status': self.battery.battery_status
         }
         command = BroadcastMessageCommand(json.dumps(message))
         self.provider.send_communication_command(command)
@@ -392,22 +392,26 @@ class Drone(IProtocol):
         condition = incoming_map[:, :, 1] > self.map[:, :, 1]
         condition_3d = condition[..., np.newaxis]
         return np.where(condition_3d, incoming_map, self.map)
-    
 
+    def compare_battery_status(self, incoming_battery_status: np.ndarray) -> np.ndarray:
+        condition = incoming_battery_status[:, 1] > self.swarm_battery_status[:, 1]
+        condition_2d = condition[..., np.newaxis]
+        return np.where(condition_2d, incoming_battery_status, self.swarm_battery_status)
+    
     def received_heartbeat(self, data: dict):
         heartbeat_msg: HeartBeatMessage = data
-        #self._log.info(f"Received heartbeat from {heartbeat_msg['sender']}")
 
-        ### Updating the swarm battery status
-        self.swarm_battery_status[heartbeat_msg['sender']] = heartbeat_msg['current_battery_status']
+        ### Updating the agent battery timer 
+        self.swarm_battery_status[self.provider.get_id(), 0] = self.battery.battery_status
+        self.swarm_battery_status[self.provider.get_id(), 1] = self.provider.current_time()
 
-        message: ShareMapMessage = {
-                'message_type': MessageType.SHARE_MAP_MESSAGE.value,
+        message: GossipingMessage = {
+                'message_type': MessageType.GOSSIPING_MESSAGE.value,
                 'map': self.map.tolist(),
                 'sender': self.provider.get_id(),
                 'drone_position': np.array(self.drone_position).tolist(),
                 'drone_status': self.status.value,
-                'sender_battery_status': self.battery.battery_status
+                'sender_battery_swarm_status': self.swarm_battery_status.tolist()
                 }
         destination_id = heartbeat_msg['sender']                
         command = SendMessageCommand(json.dumps(message), destination_id)
@@ -415,14 +419,14 @@ class Drone(IProtocol):
 
 
     def updated_map(self, data: dict):
-        share_map_msg: ShareMapMessage = data
-        updated_map = self.compare_maps(np.array(share_map_msg['map']))
-        self.swarm_battery_status[share_map_msg['sender']] = share_map_msg['sender_battery_status']
-        
-        #if self.visualizer:
-        #    self.visualizer.update_map(self.provider.get_id(), self.map[:,:,0])
-
+        gossiping_msg: GossipingMessage = data
+        updated_map = self.compare_maps(np.array(gossiping_msg['map']))
         return updated_map
+
+    def update_battery_status(self, data: dict):
+        gossiping_msg: GossipingMessage = data
+        updated_battery_status = self.compare_battery_status(np.array(gossiping_msg['sender_battery_swarm_status']))
+        return updated_battery_status
         
     def handle_timer(self, timer: str) -> None:
         
@@ -580,8 +584,13 @@ class Drone(IProtocol):
             if msg_type == MessageType.HEARTBEAT_MESSAGE.value:
                 self.received_heartbeat(data)
 
-            elif msg_type == MessageType.SHARE_MAP_MESSAGE.value:
+            elif msg_type == MessageType.GOSSIPING_MESSAGE.value:
                 self.map = self.updated_map(data)
+
+                # Just for sanity check
+                self._log.info(f"BEFORE: Drone {self.provider.get_id()} has the previous battery swarm status {self.swarm_battery_status}")
+                self.swarm_battery_status = self.update_battery_status(data)
+                self._log.info(f"AFTER: Drone {self.provider.get_id()} has the after battery swar status {self.swarm_battery_status}")
 
                 # If the drone is going to the recharge base, it will not update its destination.
                 if self.status == DroneStatus.MAPPING:
