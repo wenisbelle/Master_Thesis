@@ -53,9 +53,6 @@ GENE_BOUNDS = [
     ("charging_base_multiplier", 0.0,  100.0),   # kappa of Eq. (15)
     ("kernel_n_sigma",           2.0,   5.0),   # kernel truncation, rounded to int
     ("distance_between_drone_norm", 10.0, 1000.0),
-    ("a_battery_modifier", 0.0, 10.0),
-    ("b_battery_modifier", 0.0, 10.0),
-    ("c_battery_modifier", 0.0, 10.0),
     ("charge_margin", MIN_CHARGE_MARGIN, 0.5),  
 ]
 
@@ -70,7 +67,7 @@ GA_LOGBOOK_FILE = "ga_logbook.txt"
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
-BEST_INDIVIDUAL = [79.50, 59.04, 73.50, 26.86, 2.41, 94.44, 9.48, 4.11, 3.95, 0.27]
+BEST_INDIVIDUAL = [79.50, 59.04, 73.50, 26.86, 2.41, 94.44, 0.27]
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####

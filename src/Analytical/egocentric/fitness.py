@@ -22,9 +22,6 @@ class FitnessEvaluator:
                  charging_base_multiplier: float, # tunable - K in the article
                  distance_between_drone_norm: float, # tunable - couples the two targets at an encounter
                  kernel_n_sigma: int, # tunable
-                 a_battery_modifier: float, # tunable
-                 b_battery_modifier: float, # tunable
-                 c_battery_modifier: float, # tunable
                  charge_margin: float = 0.30, # tunable
                  min_charge_margin: float = 0.20, # fixed
                  discharge_rate: float = 0.001, # fixed, percentage per second. 1000 SECONDS the whole charge is depleted, reaching charge 1.
@@ -41,9 +38,6 @@ class FitnessEvaluator:
         self.base_variance = base_variance
         self.kernal_region_size = kernel_n_sigma
         self.alpha_variance_modifier = alpha_variance_modifier
-        self.a_battery_modifier = a_battery_modifier
-        self.b_battery_modifier = b_battery_modifier
-        self.c_battery_modifier = c_battery_modifier
         self.NUMBER_OF_CELLS_X_Y = number_of_cells_x_y
         self.INFORMATION_DECAY_RATE = information_decay_rate
         self.CHARGE_MARGIN = charge_margin
