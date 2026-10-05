@@ -58,6 +58,9 @@ class BatteryPowerPlugin:
             propeller_radius=configuration.propeller_radius,
             number_of_rotors=configuration.number_of_rotors,
             time_step=1.0,
+            random_air_speed=configuration.random_air_speed,
+            random_air_speed_u=configuration.random_air_speed_u,
+            random_air_speed_sigma=configuration.random_air_speed_sigma,
         )
         self.velocity = [0.0, 0.0]  # Initialize velocity to zero
         self._active = True

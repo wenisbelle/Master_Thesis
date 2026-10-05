@@ -7,7 +7,7 @@ import multiprocessing
 from gradysim.simulator.handler.timer import TimerHandler
 from gradysim.simulator.handler.visualization import VisualizationHandler
 from gradysim.simulator.simulation import SimulationConfiguration, SimulationBuilder
-from .protocol import drone_protocol_factory
+from .protocol import drone_protocol_factory, DroneStatus
 from gradysim.simulator.handler.communication import CommunicationHandler, CommunicationMedium
 
 from gradysim.simulator.handler.mobility import (
@@ -22,17 +22,23 @@ how_many_simulations = 0
 CORES_TO_USE = 16
 
 ##### Scenario, shared by the tuning and the test runs 
-SIMULATION_DURATION = 5000
+SIMULATION_DURATION = 10000
 MAP_WIDTH = 50
 MAP_HEIGHT = 50
-NUMBER_OF_DRONES = 3
+NUMBER_OF_DRONES = 5
 UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 200
 
 ##### Fixed protocol parameters, not tuned 
-DISCHARGE_RATE = 0.001
+DISCHARGE_RATE = 0.00075  # measured: 0.00074-0.00078 per second, flying at 10 m/s with the random air speed
 CHARGING_BASE_POSITION = (0.0, 0.0)
+MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
+NC_CHARGING_BASE = 2  # number of drones that can charge at the same time in the base. A bigger number will start receiving penalty
+
+##### Cost penalties, both integrated over time like the uncertainty.
+DEAD_DRONE_PENALTY = 10000.0           # cost per dead drone per simulated second
+CHARGING_CONGESTION_PENALTY = 100.0  # cost per drone above NC_CHARGING_BASE per simulated second
 
 ##### How often the global map is assembled and sampled, in simulated seconds. 
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
@@ -47,6 +53,10 @@ GENE_BOUNDS = [
     ("charging_base_multiplier", 0.0,  100.0),   # kappa of Eq. (15)
     ("kernel_n_sigma",           2.0,   5.0),   # kernel truncation, rounded to int
     ("distance_between_drone_norm", 10.0, 1000.0),
+    ("a_battery_modifier", 0.0, 10.0),
+    ("b_battery_modifier", 0.0, 10.0),
+    ("c_battery_modifier", 0.0, 10.0),
+    ("charge_margin", MIN_CHARGE_MARGIN, 0.5),  
 ]
 
 ##### GA parameters (mode "train") #####
@@ -54,12 +64,13 @@ POPULATION_SIZE = 50
 NUMBER_OF_GENERATIONS = 20
 CROSSOVER_PROBABILITY = 0.8
 MUTATION_PROBABILITY = 0.05
+RUNS_PER_EVALUATION = 3  # the simulation is stochastic, each individual is the average of this many runs
 GA_LOGBOOK_FILE = "ga_logbook.txt"
 
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
-BEST_INDIVIDUAL = [20.0, 48.6, 13.3, 19.14, 3.3, 327.8]
+BEST_INDIVIDUAL = [20.0, 48.6, 13.3, 19.14, 3.3, 327.8, 1.0, 1.0, 1.0, 0.4]
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####
@@ -72,7 +83,7 @@ def unpack_individual(individual):
     Maps the flat GA genome onto the protocol's tunable parameters, in the
     order declared by GENE_BOUNDS.
     """
-    base_variance, alpha, gamma, kappa, n_sigma, drone_norm = individual
+    base_variance, alpha, gamma, kappa, n_sigma, drone_norm, a_modifier, b_modifier, c_modifier, charge_margin = individual
     return dict(
         base_variance=base_variance,
         alpha_variance_modifier=alpha,
@@ -81,6 +92,11 @@ def unpack_individual(individual):
         ##### the protocol takes this one as an int
         kernel_n_sigma=int(round(n_sigma)),
         distance_between_drone_norm=drone_norm,
+        a_battery_modifier=a_modifier,
+        b_battery_modifier=b_modifier,
+        c_battery_modifier=c_modifier,
+        chage_margin=charge_margin
+
     )
 
 
@@ -99,12 +115,19 @@ class GlobalMapMonitor:
     accomulated_uncertainty is the integral of the global uncertainty over time,
     in uncertainty*second. That is the real cost of the simulation, the value the
     GA minimizes.
+
+    The status of the swarm is sampled at the same instants, for the penalties:
+    accomulated_dead_time is the integral of the number of DEAD drones, in
+    drone*second, and accomulated_charging_excess the integral of the number of
+    drones CHARGING above nc_charging_base, also in drone*second.
     """
 
-    def __init__(self, simulation, number_of_drones: int, sample_interval: float):
+    def __init__(self, simulation, number_of_drones: int, sample_interval: float,
+                 nc_charging_base: int = NC_CHARGING_BASE):
         self.sim = simulation
         self.number_of_drones = number_of_drones
         self.sample_interval = sample_interval
+        self.nc_charging_base = nc_charging_base
         self._protocols = None
 
         self.times = []
@@ -113,6 +136,11 @@ class GlobalMapMonitor:
         self.accomulated_uncertainty = 0.0
         self.map = None
         self.visited = None
+
+        self.dead_drones = []
+        self.charging_drones = []
+        self.accomulated_dead_time = 0.0
+        self.accomulated_charging_excess = 0.0
 
     def sample(self, time: float) -> None:
         if self._protocols is None:
@@ -130,6 +158,16 @@ class GlobalMapMonitor:
         self.times.append(float(time))
         self.uncertainty.append(uncertainty)
         self.unvisited.append(int(self.visited.size - self.visited.sum()))
+
+        ##### Penalties. A dead drone counts for every sample until the end of #####
+        ##### the run, so the earlier it dies the more it costs.                #####
+        dead = sum(p.status == DroneStatus.DEAD for p in self._protocols)
+        charging = sum(p.status == DroneStatus.CHARGING for p in self._protocols)
+        self.accomulated_dead_time += dead * self.sample_interval
+        self.accomulated_charging_excess += max(0, charging - self.nc_charging_base) * self.sample_interval
+
+        self.dead_drones.append(dead)
+        self.charging_drones.append(charging)
 
     @property
     def final_uncertainty(self) -> float:
@@ -236,6 +274,8 @@ def create_and_run_simulation(individual, mode: str = "train",
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
         charging_base_position=CHARGING_BASE_POSITION,
+        min_charge_margin=MIN_CHARGE_MARGIN,  
+        Nc_charging_base=NC_CHARGING_BASE,  
         results_aggregator=results_aggregator,
         mode=mode,
         enable_map_plot=enable_map_plot
@@ -247,7 +287,7 @@ def create_and_run_simulation(individual, mode: str = "train",
     # Building & starting
     simulation = builder.build()
 
-    global_map = GlobalMapMonitor(simulation, NUMBER_OF_DRONES, sample_interval)
+    global_map = GlobalMapMonitor(simulation, NUMBER_OF_DRONES, sample_interval, NC_CHARGING_BASE)
     observers = [global_map.sample]
     if observer_factory is not None:
         observers.append(observer_factory(simulation))
@@ -266,20 +306,21 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
     medium_uncertainty = 0
     for i in range(NUMBER_OF_DRONES):
         medium_uncertainty += results_aggregator[i]['accomulated_uncertainty']/NUMBER_OF_DRONES
-        ##### Giving a penalty if the drone ran out of battery #####
-        ##### 2 is the enum status for DEAD #####
-        # FUTURE ###################
-        if results_aggregator[i]['drone_status'] == 2:
-            print(f"Drone ran out of battery")
+
+    ##### Penalties, accumulated by the monitor on every sample #####
+    dead_penalty = DEAD_DRONE_PENALTY * global_map.accomulated_dead_time
+    charging_penalty = CHARGING_CONGESTION_PENALTY * global_map.accomulated_charging_excess
 
     ##### Cost for optimization #####
-    total_cost = global_map.accomulated_uncertainty*0.01
+    total_cost = global_map.accomulated_uncertainty*0.01 + dead_penalty + charging_penalty
 
     if mode == "test":
         logging.info(f"Global accomulated uncertainty: {global_map.accomulated_uncertainty}")
         logging.info(f"Global final uncertainty: {global_map.final_uncertainty}")
         logging.info(f"Global unvisited cells: {global_map.unvisited_cells}")
         logging.info(f"Medium accomulated uncertainty per drone: {medium_uncertainty}")
+        logging.info(f"Dead drone time: {global_map.accomulated_dead_time} drone*s, penalty: {dead_penalty}")
+        logging.info(f"Charging above Nc: {global_map.accomulated_charging_excess} drone*s, penalty: {charging_penalty}")
         logging.info(f"Cost: {total_cost}")
 
     return total_cost
@@ -290,10 +331,17 @@ def objective_function(individual):
     if not is_feasible(individual):
         return 1000000.0,  # Return a large cost for infeasible solutions
 
-    results_aggregator, global_map = create_and_run_simulation(individual, mode="train")
-    total_cost = evaluate_simulation_cost(results_aggregator, global_map, mode="train")
+    ##### The wind and the initial destinations are random, so a single run is a  #####
+    ##### noisy cost: the same individual can go from 52k to 93k. The individual   #####
+    ##### is evaluated by the average of RUNS_PER_EVALUATION runs instead.          #####
+    costs = []
+    for _ in range(RUNS_PER_EVALUATION):
+        results_aggregator, global_map = create_and_run_simulation(individual, mode="train")
+        costs.append(evaluate_simulation_cost(results_aggregator, global_map, mode="train"))
+    total_cost = float(np.mean(costs))
 
     print(f"Individual: {individual}")
+    print(f"Cost of each run: {costs}")
     print(f"Variable to be minimized: {total_cost}")
     print(f"Total number of simulations: {how_many_simulations}")
 
@@ -334,6 +382,21 @@ def run_training():
     toolbox.register("evaluate", objective_function)
     toolbox.register("mate", tools.cxTwoPoint)
     toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=mutation_sigmas, indpb=0.05)
+
+    ##### The Gaussian mutation can push a gene out of its GENE_BOUNDS range. Such an #####
+    ##### individual would cost 1e6 in objective_function, which is less than a drone #####
+    ##### dead for 100 s, so it would be preferred to a valid one. Clamping it back    #####
+    ##### keeps every individual valid.                                                #####
+    def clamp_to_bounds(mutate):
+        def wrapper(*args, **kwargs):
+            offspring = mutate(*args, **kwargs)
+            for child in offspring:
+                for k, (_, low, high) in enumerate(GENE_BOUNDS):
+                    child[k] = min(max(child[k], low), high)
+            return offspring
+        return wrapper
+
+    toolbox.decorate("mutate", clamp_to_bounds)
     toolbox.register("select", tools.selTournament, tournsize=3)
 
     ### Parallelization

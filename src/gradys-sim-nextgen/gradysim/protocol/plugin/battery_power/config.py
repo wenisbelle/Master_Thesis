@@ -3,6 +3,7 @@ Configuration dataclass for the Battery Power Plugin
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 @dataclass
 class BatteryPowerConfiguration:
@@ -58,6 +59,16 @@ class BatteryPowerConfiguration:
 
     number_of_rotors: int = 4
     """Number of rotors in the UAV"""
+
+    random_air_speed: bool = False
+    """If True, a random air speed is sampled at every battery step and subtracted from the
+    UAV's horizontal speed. Requires `random_air_speed_u` and `random_air_speed_sigma`."""
+
+    random_air_speed_u: Optional[float] = None
+    """Mean of the normal distribution of the air speed, in m/s"""
+
+    random_air_speed_sigma: Optional[float] = None
+    """Standard deviation of the normal distribution of the air speed, in m/s"""
 
 
 

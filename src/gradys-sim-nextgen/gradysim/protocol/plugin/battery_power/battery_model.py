@@ -57,14 +57,12 @@ class BatteryPowerModel:
         self.RANDOM_AIR_SPEED = random_air_speed
 
         if self.RANDOM_AIR_SPEED == True:
-            if random_air_speed_u or random_air_speed_sigma == False:
-                raise RuntimeError("Must provide the mean and variance terms")
+            if random_air_speed_u is None or random_air_speed_sigma is None:
+                raise RuntimeError("Must provide the mean and std deviation terms")
             else:
                 self.random_air_speed_u = random_air_speed_u
                 self.random_air_speed_sigma = random_air_speed_sigma
             
-
-
 
     @property
     def weight(self) -> float:
@@ -100,6 +98,13 @@ class BatteryPowerModel:
     def calculate_motors_power_consumption(self, drone_speed: tuple[float, float]) -> float:
         """Calculate the power consumption of the UAV based on its speed and drag forces."""
         vx, vz = drone_speed
+
+        if self.RANDOM_AIR_SPEED == True:
+            self.air_speed = np.random.normal(self.random_air_speed_u, self.random_air_speed_sigma)
+            vx = vx - self.air_speed
+
+        drone_speed = (vx, vz)
+
         thrust_x, thrust_z = self.get_thrust_components(drone_speed)
 
         trust = self.get_total_trust(drone_speed)
@@ -114,7 +119,7 @@ class BatteryPowerModel:
         induced_power = trust * v_i
 
         # Parasite Power
-        parasite_power = thrust_x * vx
+        parasite_power = thrust_x * abs(vx)
 
         # Vertical movement power: weight plus vertical drag, times climb rate.
         if vz > 0:
@@ -186,4 +191,5 @@ class BatteryPowerModel:
         """ This can happen because some regions are much hotter than others for instance or you want to simulate
         some battery degradation during the flight"""
         self.POWER_EFFICIENCY = new_battery_efficiency 
+
     

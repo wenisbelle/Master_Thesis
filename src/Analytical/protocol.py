@@ -19,8 +19,6 @@ from gradysim.protocol.messages.communication import SendMessageCommand, Broadca
 from gradysim.protocol.plugin.battery_power import BatteryPowerPlugin, BatteryPowerConfiguration
 
 
-
-
 class DroneStatus(enum.Enum):
     MAPPING = 0
     GOING_TO_BASE = 1
@@ -31,6 +29,7 @@ class MessageType(enum.Enum):
     HEARTBEAT_MESSAGE = 0
     GOSSIPING_MESSAGE = 1
     SHARE_GOTO_POSITION_MESSAGE = 2
+    DEAD_NOTIFICATION_MESSAGE = 3
 
 class HeartBeatMessage(TypedDict):
     message_type: int
@@ -43,13 +42,18 @@ class GossipingMessage(TypedDict):
     sender: int
     drone_position: list
     drone_status: int
-    sender_battery_swarm_status: list
+    sender_battery_swarm_status: list  # one row per drone: [battery, time of the observation, status]
 
 class SendGoToMessage(TypedDict):
     message_type: int 
     goto: list
     sender: int
     command_str: str
+
+class DeadNotificationMessage(TypedDict):
+    message_type: int
+    sender: int
+    dead_drone_id: int
 
 def GotoCoordsMobilityCommand(current_position: np.ndarray,
                               destination: np.ndarray,
@@ -77,7 +81,12 @@ def GotoCoordsMobilityCommand(current_position: np.ndarray,
     return SetVelocityMobilityCommand(float(vx), float(vy), float(vz))
 
 
-SHARED_BATTERY_CONFIG = BatteryPowerConfiguration()
+
+SHARED_BATTERY_CONFIG = BatteryPowerConfiguration(
+    random_air_speed=True,
+    random_air_speed_u=0.0,      # mean air speed, m/s
+    random_air_speed_sigma=4.0,  # std deviation, m/s
+)
 
 class Drone(IProtocol):
     ### Starting plugins ###
@@ -106,6 +115,12 @@ class Drone(IProtocol):
         ##### the term is swamped by the reward spread and does nothing.          #####
         'distance_between_drone_norm': 50.0,
         'kernel_n_sigma': 3,
+        'a_battery_modifier': 1.0,
+        'b_battery_modifier': 1.0,
+        'c_battery_modifier': 1.0,
+        'chage_margin': 0.25, # default charge margin, tunable
+        'min_charge_margin': 0.20, # minimum charge margin, fixed
+        'Nc_charging_base': 2,
         'discharge_rate': 0.001,
         'charging_base_position': (0.0, 0.0),
         ##### "train" runs silent and fast, "test" logs every routine #####
@@ -143,6 +158,12 @@ class Drone(IProtocol):
         self.KERNEL_N_SIGMA = self._config["kernel_n_sigma"]
         self.DISCHARGE_RATE = self._config["discharge_rate"]
         self.CHARGING_BASE_POSITION = self._config["charging_base_position"]
+        self.CHARGE_MARGIN = self._config["chage_margin"]
+        self.MIN_CHARGE_MARGIN = self._config["min_charge_margin"]
+        self.Nc_CHARGING_BASE = self._config["Nc_charging_base"]
+        self.A_BATTERY_MODIFIER = self._config["a_battery_modifier"]
+        self.B_BATTERY_MODIFIER = self._config["b_battery_modifier"]
+        self.C_BATTERY_MODIFIER = self._config["c_battery_modifier"] 
         self.results_aggregator = self._config.get("results_aggregator", {})
         
         self.DRONE_ALTITUDE = 50.0
@@ -184,7 +205,12 @@ class Drone(IProtocol):
                                         charging_base_multiplier=self.CHARGING_BASE_MULTIPLIER,
                                         distance_between_drone_norm=self.DISTANCE_BETWEEN_DRONE_NORM,
                                         kernel_n_sigma=self.KERNEL_N_SIGMA,
+                                        a_battery_modifier=self.A_BATTERY_MODIFIER,
+                                        b_battery_modifier=self.B_BATTERY_MODIFIER,
+                                        c_battery_modifier=self.C_BATTERY_MODIFIER,
                                         discharge_rate=self.DISCHARGE_RATE,
+                                        charge_margin =self.CHARGE_MARGIN,
+                                        Nc_charging_base=self.Nc_CHARGING_BASE,
                                         number_of_cells_x_y =self.CELLS_EVALUETED_FOR_PRIORITY)
         
         ##### Communication tracking. Avoiding communications loops #####
@@ -200,11 +226,17 @@ class Drone(IProtocol):
         #### Energy Parameters #####
         self.battery = BatteryPowerPlugin(self, SHARED_BATTERY_CONFIG)
         self.BATTERY_CHECK_INTERVAL = 5.0
+        ##### A DEAD drone still powers its electronics, it keeps telling the others it is DEAD with this period #####
+        self.DEAD_NOTIFICATION_INTERVAL = 5.0
         ##### Charge fraction below which the drone is considered lost #####
         self.DEAD_BATTERY_THRESHOLD = 0.10
         self.battery_status = self.battery.battery_status
-        # Battery of the specific drone and the time since the last observation
-        self.swarm_battery_status = np.zeros((self.NUMBER_OF_DRONES, 2))
+        # Battery of the specific drone, the time of the last observation and its status (DroneStatus value)
+        # Every drone starts at t=0 with the same full battery (SHARED_BATTERY_CONFIG), so that is the initial knowledge.
+        # Starting from 0 would make a drone not heard yet look dead in aproximate_battery_consumption_model
+        self.swarm_battery_status = np.zeros((self.NUMBER_OF_DRONES, 3))
+        self.swarm_battery_status[:, 0] = self.battery_status
+        self.swarm_battery_status[:, 2] = DroneStatus.MAPPING.value
 
 
         ##### Starting the callbacks #####
@@ -273,6 +305,51 @@ class Drone(IProtocol):
             self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} map has a accomulated uncertainty of {self.accomulated_uncertainty}")
             self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} map has total uncertainty of {self.total_uncertainty}")
 
+    def aproximate_battery_consumption_model(self, swarm_battery_vector: np.ndarray, current_time: float) -> tuple[float, int]:
+        """
+        This function approximates the battery consumption model based on the swarm battery vector and the current time.
+        Used for the prediction model when the drone is making a decision
+
+        Args:
+            swarm_battery_vector (np.ndarray): A 2D array where each row represents a drone's battery status, the last update time and its status.
+            current_time (float): The current simulation time.
+
+        Returns:
+            float: mean battery status of the other drones that are still alive
+            int: number of the other drones still alive with battery status below the MIN_CHARGE_MARGIN
+        """
+        updated_battery_vector = np.copy(swarm_battery_vector)
+
+        for i in range(updated_battery_vector.shape[0]):
+            last_update_time = updated_battery_vector[i, 1]
+            time_since_last_update = current_time - last_update_time
+
+            updated_battery_status = max(0.0, updated_battery_vector[i, 0] - self.DISCHARGE_RATE * time_since_last_update)
+
+            updated_battery_vector[i, 0] = updated_battery_status
+            updated_battery_vector[i, 1] = current_time 
+
+        # Only the other drones that are still alive enter the swarm terms:
+        # - the drone itself is left out, its own row is only refreshed on a heartbeat so it is stale. The caller
+        #   already uses its real battery, and recharge_base_fitness adds the +1 for it in the congestion term
+        # - a drone is dead when the swarm vector says so (it keeps broadcasting a DeadNotificationMessage, see
+        #   send_dead_notification), or when its estimated battery already reached the DEAD_BATTERY_THRESHOLD. A drone
+        #   that dies far from the others is only heard when someone flies by, until then the estimate covers it
+        others = np.arange(updated_battery_vector.shape[0]) != self.provider.get_id()
+        known_dead = updated_battery_vector[:, 2] == DroneStatus.DEAD.value
+        estimated_dead = updated_battery_vector[:, 0] <= self.DEAD_BATTERY_THRESHOLD
+        alive_others = others & ~known_dead & ~estimated_dead
+
+        if not alive_others.any():
+            # Nobody to compare with: the mean is the drone's own battery (no swarm shift) and nobody is charging
+            return self.battery.battery_status, 0
+
+        # calculate the mean battery status of the other drones still alive
+        mean_battery_status = np.mean(updated_battery_vector[alive_others, 0])
+        # calculate the number of the other drones still alive with battery status below the MIN_CHARGE_MARGIN threshold
+        drones_charging = np.sum(updated_battery_vector[alive_others, 0] < self.MIN_CHARGE_MARGIN)
+
+        return mean_battery_status, drones_charging
 
     ##### Map updating ##### 
     def vanishing_map_routine(self):
@@ -290,6 +367,8 @@ class Drone(IProtocol):
     def internal_mobility_command(self):
         map_center_offset = (self.MAP_WIDTH * self.DISTANCE_BETWEEN_CELLS) / 2
 
+        mean_battery, N_charging = self.aproximate_battery_consumption_model(self.swarm_battery_status, self.provider.current_time())
+
         target_coords, value, command = self.fitness.choose_one_cell(
             self.map[:, :, 0],
             self.drone_position, 
@@ -297,7 +376,10 @@ class Drone(IProtocol):
             self.battery.battery_status,
             self.speed_command,
             map_center_offset=map_center_offset,
+            mean_battery_value = mean_battery,
+            drones_charging = N_charging
         )
+
         if command == "going_to_base":
             self.status = DroneStatus.GOING_TO_BASE
         else:
@@ -326,6 +408,8 @@ class Drone(IProtocol):
         # transform list to tuple
         another_drone_position = tuple(another_drone_position)
 
+        mean_battery, N_charging = self.aproximate_battery_consumption_model(self.swarm_battery_status, self.provider.current_time())
+
         destinations, best_fitness, commands = self.fitness.choose_two_cells(
             self.map[:, :, 0],
             self.drone_position,
@@ -335,6 +419,8 @@ class Drone(IProtocol):
             self.swarm_battery_status[another_drone_id, 0],
             self.speed_command,
             map_center_offset=map_center_offset,
+            mean_battery_value = mean_battery,
+            drones_charging = N_charging
         )
 
         if commands[0] == "going_to_base":
@@ -401,9 +487,10 @@ class Drone(IProtocol):
     def received_heartbeat(self, data: dict):
         heartbeat_msg: HeartBeatMessage = data
 
-        ### Updating the agent battery timer 
+        ### Updating the agent battery timer
         self.swarm_battery_status[self.provider.get_id(), 0] = self.battery.battery_status
         self.swarm_battery_status[self.provider.get_id(), 1] = self.provider.current_time()
+        self.swarm_battery_status[self.provider.get_id(), 2] = self.status.value
 
         message: GossipingMessage = {
                 'message_type': MessageType.GOSSIPING_MESSAGE.value,
@@ -413,8 +500,20 @@ class Drone(IProtocol):
                 'drone_status': self.status.value,
                 'sender_battery_swarm_status': self.swarm_battery_status.tolist()
                 }
-        destination_id = heartbeat_msg['sender']                
+        destination_id = heartbeat_msg['sender']
         command = SendMessageCommand(json.dumps(message), destination_id)
+        self.provider.send_communication_command(command)
+
+    def send_dead_notification(self):
+        ##### The only thing a DEAD drone still does, every DEAD_NOTIFICATION_INTERVAL. It cannot #####
+        ##### fly anymore but its electronics still have power, so it keeps telling whoever is in #####
+        ##### range that it is DEAD, and they stop counting it in the swarm terms.                 #####
+        message: DeadNotificationMessage = {
+            'message_type': MessageType.DEAD_NOTIFICATION_MESSAGE.value,
+            'sender': self.provider.get_id(),
+            'dead_drone_id': self.provider.get_id(),
+        }
+        command = BroadcastMessageCommand(json.dumps(message))
         self.provider.send_communication_command(command)
 
 
@@ -443,6 +542,12 @@ class Drone(IProtocol):
                         self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} map has a accomulated uncertainty of {self.accomulated_uncertainty}")
                         self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} map has total uncertainty of {self.total_uncertainty}")
                 self.provider.schedule_timer("vanishing_map", self.provider.current_time() + self.VANISHING_UPDATE_TIME)
+
+        ##### Handled outside of the status gate below, the drone is DEAD when it fires #####
+        if timer == "dead_notification":
+            self.send_dead_notification()
+            self.provider.schedule_timer("dead_notification", self.provider.current_time() + self.DEAD_NOTIFICATION_INTERVAL)
+            return
 
         ##### Handled outside of the status gate below, the drone is CHARGING when it fires #####
         if timer == "recharge_done":
@@ -565,6 +670,10 @@ class Drone(IProtocol):
                     self.battery.shutdown()
 
                     ##### No timer is rescheduled from here on, so every routine stops. #####
+                    ##### The only one started is the DEAD notification, from now on    #####
+                    ##### the drone only tells the others in range that it is DEAD.     #####
+                    self.send_dead_notification()
+                    self.provider.schedule_timer("dead_notification", self.provider.current_time() + self.DEAD_NOTIFICATION_INTERVAL)
                     return
 
                 self.provider.schedule_timer("battery_check", self.provider.current_time() + self.BATTERY_CHECK_INTERVAL)
@@ -587,10 +696,7 @@ class Drone(IProtocol):
             elif msg_type == MessageType.GOSSIPING_MESSAGE.value:
                 self.map = self.updated_map(data)
 
-                # Just for sanity check
-                self._log.info(f"BEFORE: Drone {self.provider.get_id()} has the previous battery swarm status {self.swarm_battery_status}")
                 self.swarm_battery_status = self.update_battery_status(data)
-                self._log.info(f"AFTER: Drone {self.provider.get_id()} has the after battery swar status {self.swarm_battery_status}")
 
                 # If the drone is going to the recharge base, it will not update its destination.
                 if self.status == DroneStatus.MAPPING:
@@ -610,10 +716,18 @@ class Drone(IProtocol):
                             self.last_drone_interaction_time[data['sender']] = self.provider.current_time() # the drone id starts at 0
                     else:
                         # The other drone is going to the recharge base, so this one will update its destination based only in the
-                        # internal_mobility_command routine, without considering the other 
+                        # internal_mobility_command routine, without considering the other
                         self.internal_mobility_command()
                 else:
                     pass  # The drone is going to the recharge base, it will not update its destination.
+
+            elif msg_type == MessageType.DEAD_NOTIFICATION_MESSAGE.value:
+                # Only the swarm battery vector changes, the destination stays the same.
+                # The row gets the time of this observation, so it is newer than anything the gossip still carries
+                # about that drone and spreads from here with the normal gossip. The battery is kept, it is not used for a DEAD drone
+                dead_msg: DeadNotificationMessage = data
+                self.swarm_battery_status[dead_msg['dead_drone_id'], 1] = self.provider.current_time()
+                self.swarm_battery_status[dead_msg['dead_drone_id'], 2] = DroneStatus.DEAD.value
 
 
             elif msg_type == MessageType.SHARE_GOTO_POSITION_MESSAGE.value:
@@ -671,14 +785,20 @@ def drone_protocol_factory(
     number_of_drones: int,
     map_width: int,
     map_height: int,
-    base_variance: float,             # tunable, in cells^2
-    alpha_variance_modifier: float,   # tunable
-    energy_gamma: float,              # tunable
-    charging_base_multiplier: float,  # tunable
+    base_variance: float,                # tunable, in cells^2
+    alpha_variance_modifier: float,      # tunable
+    energy_gamma: float,                 # tunable
+    charging_base_multiplier: float,     # tunable
     distance_between_drone_norm: float,  # tunable
-    kernel_n_sigma: int,              # tunable
-    discharge_rate: float,            # fixed
-    charging_base_position: tuple,    # fixed
+    kernel_n_sigma: int,                 # tunable
+    a_battery_modifier: float,           # tunable
+    b_battery_modifier: float,           # tunable
+    c_battery_modifier: float,           # tunable
+    chage_margin: float,                 # tunable
+    min_charge_margin: float,            # fixed 
+    Nc_charging_base: int,               # fixed
+    discharge_rate: float,               # fixed
+    charging_base_position: tuple,       # fixed    
     results_aggregator: dict,
     mode: str = "train",
     enable_map_plot: bool = False
@@ -703,8 +823,14 @@ def drone_protocol_factory(
         "charging_base_multiplier": charging_base_multiplier,
         "distance_between_drone_norm": distance_between_drone_norm,
         "kernel_n_sigma": kernel_n_sigma,
+        "a_battery_modifier": a_battery_modifier,
+        "b_battery_modifier": b_battery_modifier,
+        "c_battery_modifier": c_battery_modifier,
+        "chage_margin": chage_margin,
+        "min_charge_margin": min_charge_margin,
+        'Nc_charging_base': Nc_charging_base,
         "discharge_rate": discharge_rate,
-        "charging_base_position": charging_base_position,
+        "charging_base_position": charging_base_position,        
         "results_aggregator": results_aggregator,
         "mode": mode,
         "enable_map_plot": enable_map_plot
