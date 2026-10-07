@@ -25,7 +25,7 @@ CORES_TO_USE = 16
 SIMULATION_DURATION = 10000
 MAP_WIDTH = 50
 MAP_HEIGHT = 50
-NUMBER_OF_DRONES = 5
+NUMBER_OF_DRONES = 5  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
 UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 200
@@ -62,6 +62,7 @@ NUMBER_OF_GENERATIONS = 20
 CROSSOVER_PROBABILITY = 0.8
 MUTATION_PROBABILITY = 0.05
 RUNS_PER_EVALUATION = 3  # the simulation is stochastic, each individual is the average of this many runs
+TRAINING_DRONE_COUNTS = (3, 5, 7, 10)  # swarm sizes each individual is evaluated on, the cost is the sum over them
 GA_LOGBOOK_FILE = "ga_logbook.txt"
 
 ##### Test parameters (mode "test") #####
@@ -213,7 +214,8 @@ def create_and_run_simulation(individual, mode: str = "train",
                               enable_map_plot: bool = False,
                               enable_simulation_plot: bool = False,
                               sample_interval: float = GLOBAL_MAP_SAMPLE_INTERVAL,
-                              observer_factory=None):
+                              observer_factory=None,
+                              number_of_drones: int = None):
     """
     Runs one simulation with the given individual and returns
     (results_aggregator, global_map): the per drone results filled in by
@@ -228,10 +230,16 @@ def create_and_run_simulation(individual, mode: str = "train",
     observer_factory, when given, is called with the built simulation and must
     return a callable observe(time), invoked on every sample next to the global
     map monitor. main_test.py uses it to record the run.
+
+    number_of_drones is the size of the swarm. When None, NUMBER_OF_DRONES is
+    read at call time, so main_test.py can still override the module value.
     """
     ##### Configuring global parameter
     global how_many_simulations
     how_many_simulations += 1
+
+    if number_of_drones is None:
+        number_of_drones = NUMBER_OF_DRONES
 
     ##### Configuring the simulation
     config = SimulationConfiguration(
@@ -262,7 +270,7 @@ def create_and_run_simulation(individual, mode: str = "train",
     ConfiguredDrone = drone_protocol_factory(
         uncertainty_rate=UNCERTAINTY_RATE,
         vanishing_update_time=VANISHING_UPDATE_TIME,
-        number_of_drones=NUMBER_OF_DRONES,
+        number_of_drones=number_of_drones,
         map_width=MAP_WIDTH,
         map_height=MAP_HEIGHT,
         **unpack_individual(individual),
@@ -275,13 +283,13 @@ def create_and_run_simulation(individual, mode: str = "train",
         enable_map_plot=enable_map_plot
     )
 
-    for _ in range(NUMBER_OF_DRONES):
+    for _ in range(number_of_drones):
         builder.add_node(ConfiguredDrone, (0, 0, 0))
 
     # Building & starting
     simulation = builder.build()
 
-    global_map = GlobalMapMonitor(simulation, NUMBER_OF_DRONES, sample_interval, NC_CHARGING_BASE)
+    global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval, NC_CHARGING_BASE)
     observers = [global_map.sample]
     if observer_factory is not None:
         observers.append(observer_factory(simulation))
@@ -297,9 +305,11 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
     Turns the result of the simulation into the single value to be minimized.
     """
     ##### Getting the results of the simulation #####
+    ##### The swarm size comes from the run itself, it changes during the tuning #####
+    number_of_drones = global_map.number_of_drones
     medium_uncertainty = 0
-    for i in range(NUMBER_OF_DRONES):
-        medium_uncertainty += results_aggregator[i]['accomulated_uncertainty']/NUMBER_OF_DRONES
+    for i in range(number_of_drones):
+        medium_uncertainty += results_aggregator[i]['accomulated_uncertainty']/number_of_drones
 
     ##### Penalties, accumulated by the monitor on every sample #####
     dead_penalty = DEAD_DRONE_PENALTY * global_map.accomulated_dead_time
@@ -328,15 +338,25 @@ def objective_function(individual):
     ##### The wind and the initial destinations are random, so a single run is a  #####
     ##### noisy cost: the same individual can go from 52k to 93k. The individual   #####
     ##### is evaluated by the average of RUNS_PER_EVALUATION runs instead.          #####
-    costs = []
-    for _ in range(RUNS_PER_EVALUATION):
-        results_aggregator, global_map = create_and_run_simulation(individual, mode="train")
-        costs.append(evaluate_simulation_cost(results_aggregator, global_map, mode="train"))
-    total_cost = float(np.mean(costs))
+    ##### The parameters must work for any swarm size, not only one, so this is     #####
+    ##### repeated for every TRAINING_DRONE_COUNTS and the averages are summed.     #####
+    run_costs = {}
+    average_costs = {}
+    for number_of_drones in TRAINING_DRONE_COUNTS:
+        costs = []
+        for _ in range(RUNS_PER_EVALUATION):
+            results_aggregator, global_map = create_and_run_simulation(
+                individual, mode="train", number_of_drones=number_of_drones)
+            costs.append(evaluate_simulation_cost(results_aggregator, global_map, mode="train"))
+        run_costs[number_of_drones] = costs
+        average_costs[number_of_drones] = float(np.mean(costs))
+    total_cost = sum(average_costs.values())
 
-    print(f"Individual: {individual}")
-    print(f"Cost of each run: {costs}")
-    print(f"Variable to be minimized: {total_cost}")
+    ##### Single print, the evaluations run in parallel and the lines would interleave #####
+    print(f"Individual: {individual}\n"
+          + "".join(f"{n} drones, cost of each run: {run_costs[n]}, average: {average_costs[n]}\n"
+                    for n in TRAINING_DRONE_COUNTS)
+          + f"Variable to be minimized: {total_cost}")
     print(f"Total number of simulations: {how_many_simulations}")
 
     return total_cost,
