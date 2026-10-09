@@ -71,7 +71,7 @@ GA_LOGBOOK_FILE = "ga_logbook.txt"
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
-BEST_INDIVIDUAL = [79.50, 59.04, 73.50, 26.86, 2.41, 94.44, 9.48, 4.11, 3.95, 0.27]
+BEST_INDIVIDUAL =  [45.86, 41.44, 25.42, 87.50, 3.41, 49.96, 6.29, 1.41, 2.53, 0.31]
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####

@@ -1,0 +1,7 @@
+*.pkl
+*.h5
+*.npy
+*.csv
+*.dat
+*.log
+pycache/
