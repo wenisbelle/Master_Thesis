@@ -25,7 +25,7 @@ from .protocol import DroneStatus, Drone, drone_protocol_factory
 
 
 SIMULATION_DURATION = 10000
-NUMBER_OF_DRONES = 10
+NUMBER_OF_DRONES = 5
 
 ##### How often the drone state is sampled.
 MONITOR_INTERVAL = 10.0

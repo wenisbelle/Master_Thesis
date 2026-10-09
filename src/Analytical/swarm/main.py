@@ -34,7 +34,6 @@ TRANSMISSION_RANGE = 200
 DISCHARGE_RATE = 0.00075  # measured: 0.00074-0.00078 per second, flying at 10 m/s with the random air speed
 CHARGING_BASE_POSITION = (0.0, 0.0)
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
-NC_CHARGING_BASE = 2  # number of drones that can charge at the same time in the base. A bigger number will start receiving penalty
 
 ##### Cost penalties, both integrated over time like the uncertainty.
 DEAD_DRONE_PENALTY = 10000.0           # cost per dead drone per simulated second
@@ -123,12 +122,11 @@ class GlobalMapMonitor:
     drones CHARGING above nc_charging_base, also in drone*second.
     """
 
-    def __init__(self, simulation, number_of_drones: int, sample_interval: float,
-                 nc_charging_base: int = NC_CHARGING_BASE):
+    def __init__(self, simulation, number_of_drones: int, sample_interval: float):
         self.sim = simulation
         self.number_of_drones = number_of_drones
         self.sample_interval = sample_interval
-        self.nc_charging_base = nc_charging_base
+        self.nc_charging_base = int(number_of_drones/3)
         self._protocols = None
 
         self.times = []
@@ -283,7 +281,7 @@ def create_and_run_simulation(individual, mode: str = "train",
         discharge_rate=DISCHARGE_RATE,
         charging_base_position=CHARGING_BASE_POSITION,
         min_charge_margin=MIN_CHARGE_MARGIN,  
-        Nc_charging_base=NC_CHARGING_BASE,  
+        Nc_charging_base=int(number_of_drones/3),  
         results_aggregator=results_aggregator,
         mode=mode,
         enable_map_plot=enable_map_plot
@@ -295,7 +293,7 @@ def create_and_run_simulation(individual, mode: str = "train",
     # Building & starting
     simulation = builder.build()
 
-    global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval, NC_CHARGING_BASE)
+    global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval)
     observers = [global_map.sample]
     if observer_factory is not None:
         observers.append(observer_factory(simulation))
