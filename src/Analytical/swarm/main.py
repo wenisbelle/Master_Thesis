@@ -3,6 +3,7 @@ import random
 import logging
 import argparse
 import multiprocessing
+from functools import partial
 
 from gradysim.simulator.handler.timer import TimerHandler
 from gradysim.simulator.handler.visualization import VisualizationHandler
@@ -62,7 +63,8 @@ GENE_BOUNDS = [
 POPULATION_SIZE = 50
 NUMBER_OF_GENERATIONS = 20
 CROSSOVER_PROBABILITY = 0.8
-MUTATION_PROBABILITY = 0.05
+MUTATION_PROBABILITY = 0.30
+ELITE_SIZE = 2  # best individuals copied unchanged into the next generation
 RUNS_PER_EVALUATION = 3  # the simulation is stochastic, each individual is the average of this many runs
 TRAINING_DRONE_COUNTS = (3, 5, 7, 10)  # swarm sizes each individual is evaluated on, the cost is the sum over them
 GA_LOGBOOK_FILE = "ga_logbook.txt"
@@ -219,7 +221,8 @@ def create_and_run_simulation(individual, mode: str = "train",
                               enable_simulation_plot: bool = False,
                               sample_interval: float = GLOBAL_MAP_SAMPLE_INTERVAL,
                               observer_factory=None,
-                              number_of_drones: int = None):
+                              number_of_drones: int = None,
+                              seed: int = None):
     """
     Runs one simulation with the given individual and returns
     (results_aggregator, global_map): the per drone results filled in by
@@ -237,10 +240,18 @@ def create_and_run_simulation(individual, mode: str = "train",
 
     number_of_drones is the size of the swarm. When None, NUMBER_OF_DRONES is
     read at call time, so main_test.py can still override the module value.
+
+    seed, when given, seeds both random generators before the run, so the same
+    seed gives the same scenario: initial destinations (random) and wind
+    (np.random, in gradysim's battery_model.py). When None the run is random.
     """
     ##### Configuring global parameter
     global how_many_simulations
     how_many_simulations += 1
+
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
 
     if number_of_drones is None:
         number_of_drones = NUMBER_OF_DRONES
@@ -335,7 +346,7 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
 
 
 ########### GA part ##########
-def objective_function(individual):
+def objective_function(individual, seeds):
     if not is_feasible(individual):
         return 1000000.0,  # Return a large cost for infeasible solutions
 
@@ -344,13 +355,17 @@ def objective_function(individual):
     ##### is evaluated by the average of RUNS_PER_EVALUATION runs instead.          #####
     ##### The parameters must work for any swarm size, not only one, so this is     #####
     ##### repeated for every TRAINING_DRONE_COUNTS and the averages are summed.     #####
+    ##### Run r uses seeds[r], the same for every individual of a generation      #####
+    ##### (common random numbers), so cost differences come from the parameters,   #####
+    ##### not from the wind or start positions each individual happened to get.    #####
     run_costs = {}
     average_costs = {}
     for number_of_drones in TRAINING_DRONE_COUNTS:
         costs = []
-        for _ in range(RUNS_PER_EVALUATION):
+        for r in range(RUNS_PER_EVALUATION):
             results_aggregator, global_map = create_and_run_simulation(
-                individual, mode="train", number_of_drones=number_of_drones)
+                individual, mode="train", number_of_drones=number_of_drones,
+                seed=seeds[r] + number_of_drones)
             costs.append(evaluate_simulation_cost(results_aggregator, global_map, mode="train"))
         run_costs[number_of_drones] = costs
         average_costs[number_of_drones] = float(np.mean(costs))
@@ -398,8 +413,11 @@ def run_training():
     mutation_sigmas = [(high - low) * 0.1 for _, low, high in GENE_BOUNDS]
 
     toolbox.register("evaluate", objective_function)
-    toolbox.register("mate", tools.cxTwoPoint)
-    toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=mutation_sigmas, indpb=0.05)
+    LOW  = [low  for _, low, high in GENE_BOUNDS]
+    HIGH = [high for _, low, high in GENE_BOUNDS]
+    toolbox.register("mate", tools.cxSimulatedBinaryBounded, low=LOW, up=HIGH, eta=15)
+    toolbox.register("mutate", tools.mutPolynomialBounded, low=LOW, up=HIGH, eta=20,
+                     indpb=1.0 / len(GENE_BOUNDS))
 
     ##### The Gaussian mutation can push a gene out of its GENE_BOUNDS range. Such an #####
     ##### individual would cost 1e6 in objective_function, which is less than a drone #####
@@ -429,12 +447,32 @@ def run_training():
     stats.register("min", np.min)
     stats.register("max", np.max)
 
+    log = tools.Logbook()
+    log.header = ["gen", "nevals"] + stats.fields
+
+    def evaluate_generation(gen, population):
+        ##### New scenarios every generation, shared by all its individuals (see    #####
+        ##### objective_function). Everyone is re-evaluated, elites included, so a  #####
+        ##### lucky score from an earlier generation does not stick.                 #####
+        seeds = [random.randrange(2**31) for _ in range(RUNS_PER_EVALUATION)]
+        print(f"Generation {gen} seeds: {seeds}")
+        fitnesses = toolbox.map(partial(toolbox.evaluate, seeds=seeds), population)
+        for ind, fit in zip(population, fitnesses):
+            ind.fitness.values = fit
+        hof.update(population)
+        log.record(gen=gen, nevals=len(population), **stats.compile(population))
+        print(log.stream)
+
+    ##### Own loop instead of eaSimple: eaSimple has no elitism and only evaluates #####
+    ##### changed individuals, so with a noisy cost it keeps old lucky scores.     #####
     try:
-        pop, log = algorithms.eaSimple(pop, toolbox,
-                                       cxpb=CROSSOVER_PROBABILITY,
-                                       mutpb=MUTATION_PROBABILITY,
-                                       ngen=NUMBER_OF_GENERATIONS,
-                                       stats=stats, halloffame=hof, verbose=True)
+        evaluate_generation(0, pop)
+        for gen in range(1, NUMBER_OF_GENERATIONS + 1):
+            elites = [toolbox.clone(ind) for ind in tools.selBest(pop, ELITE_SIZE)]
+            offspring = algorithms.varAnd(toolbox.select(pop, len(pop) - ELITE_SIZE), toolbox,
+                                          CROSSOVER_PROBABILITY, MUTATION_PROBABILITY)
+            pop = elites + offspring
+            evaluate_generation(gen, pop)
     finally:
         pool.close()
         pool.join()
@@ -445,6 +483,14 @@ def run_training():
     with open(GA_LOGBOOK_FILE, "w") as f:
         # Use str(log) to get the Logbook content as a string
         f.write(str(log))
+
+    ##### The Hall of Fame compares costs measured on different seeds, so it keeps #####
+    ##### the luckiest evaluation. The best of the last generation was measured on #####
+    ##### the same seeds as its competitors, and survived several re-evaluations.  #####
+    final_best = tools.selBest(pop, 1)[0]
+    print("=== Best Individual of the Last Generation ===")
+    print(f"Fitness: {final_best.fitness.values[0]}")
+    print(f"Parameters: {final_best}\n")
 
     print("=== Top Best Individuals ===")
     for rank, individual in enumerate(hof):
