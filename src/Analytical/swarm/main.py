@@ -34,6 +34,8 @@ TRANSMISSION_RANGE = 200
 ##### Fixed protocol parameters, not tuned 
 DISCHARGE_RATE = 0.00075  # measured: 0.00074-0.00078 per second, flying at 10 m/s with the random air speed
 CHARGING_BASE_POSITION = (0.0, 0.0)
+KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
+INITIAL_UNCERTAINTY = 0.5  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
 
 ##### Cost penalties, both integrated over time like the uncertainty.
@@ -51,7 +53,6 @@ GENE_BOUNDS = [
     ("alpha_variance_modifier",  0.0,   100.0),   # alpha of Eq. (11)
     ("energy_gamma",             0.10,  100.0),   # gamma of Eqs. (14)/(15)
     ("charging_base_multiplier", 0.0,  100.0),   # kappa of Eq. (15)
-    ("kernel_n_sigma",           2.0,   5.0),   # kernel truncation, rounded to int
     ("distance_between_drone_norm", 10.0, 1000.0),
     ("a_battery_modifier", 0.0, 10.0),
     ("b_battery_modifier", 0.0, 10.0),
@@ -72,7 +73,7 @@ GA_LOGBOOK_FILE = "ga_logbook.txt"
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
-BEST_INDIVIDUAL =  [45.86, 41.44, 25.42, 87.50, 3.41, 49.96, 6.29, 1.41, 2.53, 0.31]
+BEST_INDIVIDUAL =  [45.86, 41.44, 25.42, 87.50, 49.96, 6.29, 1.41, 2.53, 0.31]
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####
@@ -85,14 +86,12 @@ def unpack_individual(individual):
     Maps the flat GA genome onto the protocol's tunable parameters, in the
     order declared by GENE_BOUNDS.
     """
-    base_variance, alpha, gamma, kappa, n_sigma, drone_norm, a_modifier, b_modifier, c_modifier, charge_margin = individual
+    base_variance, alpha, gamma, kappa, drone_norm, a_modifier, b_modifier, c_modifier, charge_margin = individual
     return dict(
         base_variance=base_variance,
         alpha_variance_modifier=alpha,
         energy_gamma=gamma,
         charging_base_multiplier=kappa,
-        ##### the protocol takes this one as an int
-        kernel_n_sigma=int(round(n_sigma)),
         distance_between_drone_norm=drone_norm,
         a_battery_modifier=a_modifier,
         b_battery_modifier=b_modifier,
@@ -241,9 +240,12 @@ def create_and_run_simulation(individual, mode: str = "train",
     number_of_drones is the size of the swarm. When None, NUMBER_OF_DRONES is
     read at call time, so main_test.py can still override the module value.
 
-    seed, when given, seeds both random generators before the run, so the same
-    seed gives the same scenario: initial destinations (random) and wind
-    (np.random, in gradysim's battery_model.py). When None the run is random.
+    seed, when given, fixes the scenario: every drone draws its initial
+    destination and its wind from its own streams, seeded by (seed, drone id),
+    see the protocol's initialize. The same seed gives the same scenario to
+    every individual, even after their decisions diverge. The global
+    generators are seeded too, for anything else that draws from them. When
+    None the run is random.
     """
     ##### Configuring global parameter
     global how_many_simulations
@@ -295,7 +297,10 @@ def create_and_run_simulation(individual, mode: str = "train",
         Nc_charging_base=int(number_of_drones/3),  
         results_aggregator=results_aggregator,
         mode=mode,
-        enable_map_plot=enable_map_plot
+        enable_map_plot=enable_map_plot,
+        kernel_n_sigma=KERNEL_N_SIGMA,
+        initial_uncertainty=INITIAL_UNCERTAINTY,
+        seed=seed
     )
 
     for _ in range(number_of_drones):
@@ -331,7 +336,8 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
     charging_penalty = CHARGING_CONGESTION_PENALTY * global_map.accomulated_charging_excess
 
     ##### Cost for optimization #####
-    total_cost = global_map.accomulated_uncertainty*0.01 + dead_penalty + charging_penalty
+    ##### Divided by the swarm size, so the cost is per drone #####
+    total_cost = (global_map.accomulated_uncertainty*0.01 + dead_penalty + charging_penalty) / number_of_drones
 
     if mode == "test":
         logging.info(f"Global accomulated uncertainty: {global_map.accomulated_uncertainty}")
@@ -480,14 +486,20 @@ def run_training():
     print("=== Final Results ===")
     print(log)
 
-    with open(GA_LOGBOOK_FILE, "w") as f:
-        # Use str(log) to get the Logbook content as a string
-        f.write(str(log))
-
     ##### The Hall of Fame compares costs measured on different seeds, so it keeps #####
     ##### the luckiest evaluation. The best of the last generation was measured on #####
     ##### the same seeds as its competitors, and survived several re-evaluations.  #####
     final_best = tools.selBest(pop, 1)[0]
+
+    with open(GA_LOGBOOK_FILE, "w") as f:
+        # Use str(log) to get the Logbook content as a string
+        f.write(str(log))
+        f.write("\n\n=== Best Individual of the Last Generation ===\n")
+        f.write(f"Fitness: {final_best.fitness.values[0]}\n")
+        for (name, _, _), value in zip(GENE_BOUNDS, final_best):
+            f.write(f"{name}: {value}\n")
+        f.write(f"Parameters: {list(final_best)}\n")
+
     print("=== Best Individual of the Last Generation ===")
     print(f"Fitness: {final_best.fitness.values[0]}")
     print(f"Parameters: {final_best}\n")

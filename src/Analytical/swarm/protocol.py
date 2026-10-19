@@ -5,7 +5,6 @@ from typing import TypedDict, Type
 import numpy as np
 from dataclasses import dataclass
 import json
-import random
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
@@ -114,7 +113,12 @@ class Drone(IProtocol):
         ##### the two drones are pushed apart harder when they meet. Above ~500   #####
         ##### the term is swamped by the reward spread and does nothing.          #####
         'distance_between_drone_norm': 50.0,
-        'kernel_n_sigma': 3,
+        'kernel_n_sigma': 3, # fixed, the truncation radius of the kernel in sigmas
+        ##### Uncertainty of every cell at t=0. Below 1 so the first sweep of the map, #####
+        ##### the same for every individual, weighs less in the cost.                  #####
+        'initial_uncertainty': 0.5,
+        ##### Seed of the drone's own random streams, see initialize. None is random #####
+        'seed': None,
         'a_battery_modifier': 1.0,
         'b_battery_modifier': 1.0,
         'c_battery_modifier': 1.0,
@@ -174,7 +178,7 @@ class Drone(IProtocol):
         
         ##### Initialize map #####
         self.map = np.zeros((self.MAP_WIDTH, self.MAP_HEIGHT, 2))
-        self.map[:,:,0] = 1
+        self.map[:,:,0] = self._config["initial_uncertainty"]
         self.total_uncertainty = self.map[:,:,0].sum()
         self.is_cell_visited = np.zeros((self.MAP_WIDTH, self.MAP_HEIGHT))
         self.accomulated_uncertainty = 0.0
@@ -217,14 +221,22 @@ class Drone(IProtocol):
         self.last_drone_interaction_time = np.zeros(self.NUMBER_OF_DRONES)  
 
         ##### Initial random position #####
-        self.goto_command = np.array([random.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2), random.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2), self.DRONE_ALTITUDE])
+        ##### Each drone has its own random streams, one for the initial destination and #####
+        ##### one for the wind, derived from (seed, drone id). Drawing from them never   #####
+        ##### moves the stream of another drone, so two runs with the same seed keep    #####
+        ##### the same scenario for every drone, even after their decisions diverge.     #####
+        destination_seed, wind_seed = np.random.SeedSequence(
+            None if self._config["seed"] is None else [self._config["seed"], self.provider.get_id()]
+        ).spawn(2)
+        destination_rng = np.random.default_rng(destination_seed)
+        self.goto_command = np.array([destination_rng.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2), destination_rng.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2), self.DRONE_ALTITUDE])
         command = GotoCoordsMobilityCommand(current_position=self.drone_position,
                                             destination=self.goto_command,
                                             speed=self.speed_command)
         self.provider.send_mobility_command(command)
 
         #### Energy Parameters #####
-        self.battery = BatteryPowerPlugin(self, SHARED_BATTERY_CONFIG)
+        self.battery = BatteryPowerPlugin(self, SHARED_BATTERY_CONFIG, rng=np.random.default_rng(wind_seed))
         self.BATTERY_CHECK_INTERVAL = 5.0
         ##### A DEAD drone still powers its electronics, it keeps telling the others it is DEAD with this period #####
         self.DEAD_NOTIFICATION_INTERVAL = 5.0
@@ -790,7 +802,7 @@ def drone_protocol_factory(
     energy_gamma: float,                 # tunable
     charging_base_multiplier: float,     # tunable
     distance_between_drone_norm: float,  # tunable
-    kernel_n_sigma: int,                 # tunable
+    kernel_n_sigma: int,                 # fixed
     a_battery_modifier: float,           # tunable
     b_battery_modifier: float,           # tunable
     c_battery_modifier: float,           # tunable
@@ -801,7 +813,9 @@ def drone_protocol_factory(
     charging_base_position: tuple,       # fixed    
     results_aggregator: dict,
     mode: str = "train",
-    enable_map_plot: bool = False
+    enable_map_plot: bool = False,
+    initial_uncertainty: float = 0.5,
+    seed: int = None
 ) -> Type[Drone]:
     """
     Creates a new Drone protocol class with the specified configuration.
@@ -809,6 +823,9 @@ def drone_protocol_factory(
     mode is either "train" (silent, used by the GA tuning) or "test" (writes
     the detailed routine logs). enable_map_plot turns on the live map plot,
     which should only be used on a single test run.
+
+    initial_uncertainty is the uncertainty of every cell at t=0. seed seeds the
+    random streams of every drone (initial destination and wind), None is random.
     """
     # Create a new configuration dictionary
     config = {
@@ -833,7 +850,9 @@ def drone_protocol_factory(
         "charging_base_position": charging_base_position,        
         "results_aggregator": results_aggregator,
         "mode": mode,
-        "enable_map_plot": enable_map_plot
+        "enable_map_plot": enable_map_plot,
+        "initial_uncertainty": initial_uncertainty,
+        "seed": seed
     }
 
     # Define a new class that inherits from Drone

@@ -6,7 +6,7 @@ Beware that this plugin needs to receive the Dynamic Velocity Mobility Telemetry
 """
 
 import logging
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -33,7 +33,16 @@ class BatteryPowerPlugin:
     This plugin requires the node's mobility to be provided by Dynamic Velocity Mobility Handler.
     """
 
-    def __init__(self, protocol: IProtocol, configuration: BatteryPowerConfiguration):
+    def __init__(self, protocol: IProtocol, configuration: BatteryPowerConfiguration,
+                 rng: Optional[np.random.Generator] = None):
+        """
+        rng, when given, is the random generator of this node's wind. The air speed is
+        then a fixed sequence indexed by the battery tick (simulated time / TIME_STEP),
+        drawn from rng. The wind a node gets at time t only depends on rng, not on how
+        many draws this or any other node made before, so two runs seeded alike keep the
+        same wind even after their nodes take different decisions. When None the air
+        speed is drawn from the global np.random at every step, as before.
+        """
 
         self._dispatcher = create_dispatcher(protocol)
         self._protocol = protocol
@@ -62,6 +71,8 @@ class BatteryPowerPlugin:
             random_air_speed_u=configuration.random_air_speed_u,
             random_air_speed_sigma=configuration.random_air_speed_sigma,
         )
+        self._wind_rng = rng if configuration.random_air_speed else None
+        self._wind = np.empty(0)
         self.velocity = [0.0, 0.0]  # Initialize velocity to zero
         self._active = True
         self._initialize_telemetry_handling()
@@ -107,9 +118,19 @@ class BatteryPowerPlugin:
             self._protocol.provider.current_time() + self._battery_model.TIME_STEP,
         )
 
+    def _air_speed_at_current_tick(self) -> float:
+        tick = int(round(self._protocol.provider.current_time() / self._battery_model.TIME_STEP))
+        if tick >= len(self._wind):
+            # Extended in blocks, so the value of a tick never depends on when it was asked
+            block = max(1024, tick + 1 - len(self._wind))
+            self._wind = np.concatenate((self._wind, self._wind_rng.normal(
+                self._config.random_air_speed_u, self._config.random_air_speed_sigma, size=block)))
+        return float(self._wind[tick])
+
     def battery_step(self):
         """Perform a single step of the battery management model."""
-        self._battery_model.manage_battery_during_flight(tuple(self.velocity))
+        air_speed = self._air_speed_at_current_tick() if self._wind_rng is not None else None
+        self._battery_model.manage_battery_during_flight(tuple(self.velocity), air_speed)
 
     @property
     def battery_status(self) -> float:

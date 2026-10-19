@@ -95,12 +95,18 @@ class BatteryPowerModel:
         thrust_x, thrust_z = self.get_thrust_components(drone_speed)
         return np.sqrt(thrust_x**2 + thrust_z**2)
 
-    def calculate_motors_power_consumption(self, drone_speed: tuple[float, float]) -> float:
-        """Calculate the power consumption of the UAV based on its speed and drag forces."""
+    def calculate_motors_power_consumption(self, drone_speed: tuple[float, float],
+                                           air_speed: Optional[float] = None) -> float:
+        """Calculate the power consumption of the UAV based on its speed and drag forces.
+
+        air_speed, when given, is used as the random air speed of this step instead of
+        drawing one from np.random. It lets the caller own the random stream."""
         vx, vz = drone_speed
 
         if self.RANDOM_AIR_SPEED == True:
-            self.air_speed = np.random.normal(self.random_air_speed_u, self.random_air_speed_sigma)
+            if air_speed is None:
+                air_speed = np.random.normal(self.random_air_speed_u, self.random_air_speed_sigma)
+            self.air_speed = air_speed
             vx = vx - self.air_speed
 
         drone_speed = (vx, vz)
@@ -129,10 +135,11 @@ class BatteryPowerModel:
 
         return (induced_power + parasite_power + climb_power) / self.POWER_EFFICIENCY
 
-    def get_power_consumption(self, drone_speed: tuple[float, float]) -> float:
+    def get_power_consumption(self, drone_speed: tuple[float, float],
+                              air_speed: Optional[float] = None) -> float:
         """Calculate the total power drawn from the battery pack, including losses from
         battery internal resistance/inefficiency (BATTERY_EFFICIENCY)."""
-        motor_consumption = self.calculate_motors_power_consumption(drone_speed)
+        motor_consumption = self.calculate_motors_power_consumption(drone_speed, air_speed)
         return (motor_consumption + self.external_power) / self.BATTERY_EFFICIENCY
 
     def update_external_power(self, external_power: float):
@@ -176,9 +183,10 @@ class BatteryPowerModel:
         """Remove payload from the UAV, affecting its weight and power consumption."""
         self.payload = max(0.0, self.payload - removed_payload)
 
-    def manage_battery_during_flight(self, drone_speed: tuple[float, float]):
+    def manage_battery_during_flight(self, drone_speed: tuple[float, float],
+                                     air_speed: Optional[float] = None):
         """Manage the battery during flight by calculating power consumption and updating battery status."""
-        power_consumption = self.get_power_consumption(drone_speed)
+        power_consumption = self.get_power_consumption(drone_speed, air_speed)
         energy_consumed = self.get_energy_consumed(power_consumption, self.TIME_STEP)
         self.battery_current_energy -= energy_consumed
         if self.battery_current_energy < 0:
