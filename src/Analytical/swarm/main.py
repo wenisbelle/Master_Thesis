@@ -40,7 +40,7 @@ MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recha
 
 ##### Cost penalties, both integrated over time like the uncertainty.
 DEAD_DRONE_PENALTY = 10000.0           # cost per dead drone per simulated second
-CHARGING_CONGESTION_PENALTY = 100.0  # cost per drone above NC_CHARGING_BASE per simulated second
+CHARGING_CONGESTION_PENALTY = 1000.0  # cost per drone above NC_CHARGING_BASE per simulated second
 
 ##### How often the global map is assembled and sampled, in simulated seconds. 
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
@@ -65,7 +65,7 @@ POPULATION_SIZE = 50
 NUMBER_OF_GENERATIONS = 20
 CROSSOVER_PROBABILITY = 0.8
 MUTATION_PROBABILITY = 0.30
-ELITE_SIZE = 2  # best individuals copied unchanged into the next generation
+ELITE_SIZE = 1  # best individuals copied unchanged into the next generation
 RUNS_PER_EVALUATION = 3  # the simulation is stochastic, each individual is the average of this many runs
 TRAINING_DRONE_COUNTS = (3, 5, 7, 10)  # swarm sizes each individual is evaluated on, the cost is the sum over them
 GA_LOGBOOK_FILE = "ga_logbook.txt"
@@ -73,7 +73,7 @@ GA_LOGBOOK_FILE = "ga_logbook.txt"
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
-BEST_INDIVIDUAL =  [45.86, 41.44, 25.42, 87.50, 49.96, 6.29, 1.41, 2.53, 0.31]
+BEST_INDIVIDUAL =   [74.77, 38.67, 9.23, 33.13, 12.04, 7.76, 1.75, 5.25, 0.27]
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####
@@ -337,7 +337,7 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
 
     ##### Cost for optimization #####
     ##### Divided by the swarm size, so the cost is per drone #####
-    total_cost = (global_map.accomulated_uncertainty*0.01 + dead_penalty + charging_penalty) / number_of_drones
+    total_cost = (global_map.accomulated_uncertainty*0.01 + dead_penalty + charging_penalty)
 
     if mode == "test":
         logging.info(f"Global accomulated uncertainty: {global_map.accomulated_uncertainty}")
