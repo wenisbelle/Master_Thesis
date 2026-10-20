@@ -419,7 +419,7 @@ def run_training():
     HIGH = [high for _, low, high in GENE_BOUNDS]
     toolbox.register("mate", tools.cxSimulatedBinaryBounded, low=LOW, up=HIGH, eta=15)
     toolbox.register("mutate", tools.mutPolynomialBounded, low=LOW, up=HIGH, eta=20,
-                         indpb=1.0 / len(GENE_BOUNDS))
+                         indpb=1.0 / len(GENE_BOUNDS)) # aproximadamente 1 cromossomo é mutado
 
     ##### The Gaussian mutation can push a gene out of its GENE_BOUNDS range. Such an #####
     ##### individual would cost 1e6 in objective_function, which is less than a drone #####
