@@ -39,8 +39,8 @@ INITIAL_UNCERTAINTY = 0.5  # uncertainty of every cell at t=0, the first sweep o
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
 
 ##### Cost penalties, both integrated over time like the uncertainty.
-DEAD_DRONE_PENALTY = 10000.0           # cost per dead drone per simulated second
-CHARGING_CONGESTION_PENALTY = 1000.0  # cost per drone above NC_CHARGING_BASE per simulated second
+DEAD_DRONE_PENALTY = 1000.0           # cost per dead drone per simulated second
+CHARGING_CONGESTION_PENALTY = 10.0  # cost per drone above NC_CHARGING_BASE per simulated second
 
 ##### How often the global map is assembled and sampled, in simulated seconds. 
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
