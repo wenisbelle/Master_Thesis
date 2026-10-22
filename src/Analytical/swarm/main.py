@@ -26,7 +26,7 @@ CORES_TO_USE = 16
 SIMULATION_DURATION = 10000
 MAP_WIDTH = 50
 MAP_HEIGHT = 50
-NUMBER_OF_DRONES = 5  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
+NUMBER_OF_DRONES = 3  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
 UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 200
@@ -73,7 +73,8 @@ GA_LOGBOOK_FILE = "ga_logbook.txt"
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
-BEST_INDIVIDUAL =   [74.77, 38.67, 9.23, 33.13, 12.04, 7.76, 1.75, 5.25, 0.27]
+BEST_INDIVIDUAL =  [1.07, 1.14, 68.06, 15.65, 741.23, 5.94, 1.69, 1.66, 0.27]
+
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####

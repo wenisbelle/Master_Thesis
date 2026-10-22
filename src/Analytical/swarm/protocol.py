@@ -29,6 +29,7 @@ class MessageType(enum.Enum):
     GOSSIPING_MESSAGE = 1
     SHARE_GOTO_POSITION_MESSAGE = 2
     DEAD_NOTIFICATION_MESSAGE = 3
+    CHARGING_NOTIFICATION_MESSAGE = 4
 
 class HeartBeatMessage(TypedDict):
     message_type: int
@@ -44,15 +45,21 @@ class GossipingMessage(TypedDict):
     sender_battery_swarm_status: list  # one row per drone: [battery, time of the observation, status]
 
 class SendGoToMessage(TypedDict):
-    message_type: int 
+    message_type: int
     goto: list
     sender: int
-    command_str: str
+    status: int  # DroneStatus value the receiver takes with the new destination
 
 class DeadNotificationMessage(TypedDict):
     message_type: int
     sender: int
     dead_drone_id: int
+
+class ChargingNotificationMessage(TypedDict):
+    message_type: int
+    sender: int
+    charging_start_time: float  # time the sender reached the base, its charge ends TIME_TO_RECHARGE later
+    battery: float  # battery of the sender when it reached the base
 
 def GotoCoordsMobilityCommand(current_position: np.ndarray,
                               destination: np.ndarray,
@@ -197,6 +204,14 @@ class Drone(IProtocol):
         ##### Drone speed #####
         self.speed_command = 10.0
 
+        ##### Expected flight time to the base of a drone that decided to go there, from the mean distance #####
+        ##### of the cells to the base. Used to guess when a drone seen GOING_TO_BASE starts charging.      #####
+        cells_x = np.arange(self.MAP_WIDTH) * self.DISTANCE_BETWEEN_CELLS - (self.MAP_WIDTH * self.DISTANCE_BETWEEN_CELLS) / 2
+        cells_y = np.arange(self.MAP_HEIGHT) * self.DISTANCE_BETWEEN_CELLS - (self.MAP_HEIGHT * self.DISTANCE_BETWEEN_CELLS) / 2
+        distance_cells_to_base = np.hypot(cells_x[:, np.newaxis] - self.CHARGING_BASE_POSITION[0],
+                                          cells_y[np.newaxis, :] - self.CHARGING_BASE_POSITION[1])
+        self.EXPECTED_TIME_TO_BASE = float(distance_cells_to_base.mean()) / self.speed_command
+
         ### It's considered that the at any high the camera reach will be enough #####
         ##### Cluster plugins initialization #####
         self.fitness = FitnessEvaluator(map_width=self.MAP_WIDTH,
@@ -249,6 +264,9 @@ class Drone(IProtocol):
         self.swarm_battery_status = np.zeros((self.NUMBER_OF_DRONES, 3))
         self.swarm_battery_status[:, 0] = self.battery_status
         self.swarm_battery_status[:, 2] = DroneStatus.MAPPING.value
+        # Time this drone reached the base and its battery at that moment, sent in the ChargingNotificationMessage
+        self.charging_start_time = 0.0
+        self.battery_at_charging_start = self.battery_status
 
 
         ##### Starting the callbacks #####
@@ -328,29 +346,24 @@ class Drone(IProtocol):
 
         Returns:
             float: mean battery status of the other drones that are still alive
-            int: number of the other drones still alive with battery status below the MIN_CHARGE_MARGIN
+            int: number of the other drones still alive estimated to be charging at the base, see estimate_drone_battery
         """
         updated_battery_vector = np.copy(swarm_battery_vector)
+        is_charging = np.zeros(updated_battery_vector.shape[0], dtype=bool)
 
         for i in range(updated_battery_vector.shape[0]):
-            last_update_time = updated_battery_vector[i, 1]
-            time_since_last_update = current_time - last_update_time
-
-            updated_battery_status = max(0.0, updated_battery_vector[i, 0] - self.DISCHARGE_RATE * time_since_last_update)
+            updated_battery_status, is_charging[i] = self.estimate_drone_battery(updated_battery_vector[i, 0],
+                                                                                 updated_battery_vector[i, 1],
+                                                                                 updated_battery_vector[i, 2],
+                                                                                 current_time)
 
             updated_battery_vector[i, 0] = updated_battery_status
-            updated_battery_vector[i, 1] = current_time 
+            updated_battery_vector[i, 1] = current_time
 
         # Only the other drones that are still alive enter the swarm terms:
-        # - the drone itself is left out, its own row is only refreshed on a heartbeat so it is stale. The caller
-        #   already uses its real battery, and recharge_base_fitness adds the +1 for it in the congestion term
-        # - a drone is dead when the swarm vector says so (it keeps broadcasting a DeadNotificationMessage, see
-        #   send_dead_notification), or when its estimated battery already reached the DEAD_BATTERY_THRESHOLD. A drone
-        #   that dies far from the others is only heard when someone flies by, until then the estimate covers it
         others = np.arange(updated_battery_vector.shape[0]) != self.provider.get_id()
         known_dead = updated_battery_vector[:, 2] == DroneStatus.DEAD.value
-        estimated_dead = updated_battery_vector[:, 0] <= self.DEAD_BATTERY_THRESHOLD
-        alive_others = others & ~known_dead & ~estimated_dead
+        alive_others = others & ~known_dead
 
         if not alive_others.any():
             # Nobody to compare with: the mean is the drone's own battery (no swarm shift) and nobody is charging
@@ -358,10 +371,58 @@ class Drone(IProtocol):
 
         # calculate the mean battery status of the other drones still alive
         mean_battery_status = np.mean(updated_battery_vector[alive_others, 0])
-        # calculate the number of the other drones still alive with battery status below the MIN_CHARGE_MARGIN threshold
-        drones_charging = np.sum(updated_battery_vector[alive_others, 0] < self.MIN_CHARGE_MARGIN)
+        # calculate the number of the other drones still alive estimated to be charging at the base
+        drones_charging = np.sum(is_charging[alive_others])
 
         return mean_battery_status, drones_charging
+
+    def estimate_drone_battery(self, battery: float, observation_time: float, status: float, current_time: float) -> tuple[float, bool]:
+        """
+        Estimates the battery of another drone at current_time, and whether it is charging at the base,
+        from the last observation of it.
+
+        The drone is assumed to fly discharging at DISCHARGE_RATE, to charge at the base for TIME_TO_RECHARGE and
+        to leave it with a full battery. When the charge starts depends on the status of the observation:
+        - CHARGING: the row holds the time it reached the base and its battery then (ChargingNotificationMessage)
+        - GOING_TO_BASE: it reaches the base EXPECTED_TIME_TO_BASE after the observation
+        - MAPPING: it reaches the base when its battery reaches MIN_CHARGE_MARGIN
+        After the charge the drone is MAPPING again with a full battery, and the same cycle repeats.
+        DEAD drones go through the MAPPING case, the caller leaves them out.
+
+        Args:
+            battery (float): battery of the drone at the observation.
+            observation_time (float): time of the observation.
+            status (float): DroneStatus value of the drone at the observation.
+            current_time (float): The current simulation time.
+
+        Returns:
+            float: estimated battery of the drone at current_time
+            bool: True if the drone is estimated to be charging at the base at current_time
+        """
+        while True:
+            if status == DroneStatus.CHARGING.value:
+                charging_start_time = observation_time
+                battery_at_charging_start = battery
+            elif status == DroneStatus.GOING_TO_BASE.value:
+                charging_start_time = observation_time + self.EXPECTED_TIME_TO_BASE
+                battery_at_charging_start = max(0.0, battery - self.DISCHARGE_RATE * self.EXPECTED_TIME_TO_BASE)
+            else:
+                time_to_min_charge = max(0.0, (battery - self.MIN_CHARGE_MARGIN) / self.DISCHARGE_RATE)
+                charging_start_time = observation_time + time_to_min_charge
+                battery_at_charging_start = min(battery, self.MIN_CHARGE_MARGIN)
+
+            # Still flying, discharging since the observation
+            if current_time < charging_start_time:
+                return max(0.0, battery - self.DISCHARGE_RATE * (current_time - observation_time)), False
+
+            # At the base, the battery stays the one it arrived with until the charge ends
+            if current_time < charging_start_time + self.TIME_TO_RECHARGE:
+                return battery_at_charging_start, True
+
+            # The charge already ended: from then on it is MAPPING with a full battery
+            battery = 1.0
+            observation_time = charging_start_time + self.TIME_TO_RECHARGE
+            status = DroneStatus.MAPPING.value
 
     ##### Map updating ##### 
     def vanishing_map_routine(self):
@@ -414,7 +475,7 @@ class Drone(IProtocol):
 
     
     ##### External mobility command. When receiving encountering another drone, the one with highest ID calculates the new destinations #####
-    def external_mobility_command(self, another_drone_position: list, another_drone_id: int) -> tuple[np.ndarray, str]:
+    def external_mobility_command(self, another_drone_position: list, another_drone_id: int) -> tuple[np.ndarray, DroneStatus]:
         map_center_offset = (self.MAP_WIDTH * self.DISTANCE_BETWEEN_CELLS) / 2
 
         # transform list to tuple
@@ -439,7 +500,9 @@ class Drone(IProtocol):
             self.status = DroneStatus.GOING_TO_BASE
         else:
             self.status = DroneStatus.MAPPING
-           
+
+        ### Status of the second drone, sent to it together with its destination
+        another_drone_status = DroneStatus.GOING_TO_BASE if commands[1] == "going_to_base" else DroneStatus.MAPPING
 
         target_row_1, target_col_1 = destinations[0]
         target_row_2, target_col_2 = destinations[1]
@@ -463,7 +526,7 @@ class Drone(IProtocol):
         y_send_command = target_col_2 * self.DISTANCE_BETWEEN_CELLS - map_center_offset
         send_command = np.array([x_send_command, y_send_command, self.DRONE_ALTITUDE])
         
-        return send_command, commands[1]  # Return also the command for the second drone
+        return send_command, another_drone_status  # Return also the status for the second drone
 
     def send_heartbeat(self):
         #self._log.info(f"Sending heartbeat ...")
@@ -475,12 +538,12 @@ class Drone(IProtocol):
         command = BroadcastMessageCommand(json.dumps(message))
         self.provider.send_communication_command(command)
 
-    def send_goto_command(self, send_command: np.array, destination_id: int, command: str):
+    def send_goto_command(self, send_command: np.array, destination_id: int, status: DroneStatus):
         message: SendGoToMessage = {
             'message_type': MessageType.SHARE_GOTO_POSITION_MESSAGE.value,
             'goto': send_command.tolist(),
             'sender': self.provider.get_id(),
-            'command_str': command
+            'status': status.value
         }
         command = SendMessageCommand(json.dumps(message), destination_id)
         self.provider.send_communication_command(command)
@@ -524,6 +587,16 @@ class Drone(IProtocol):
             'message_type': MessageType.DEAD_NOTIFICATION_MESSAGE.value,
             'sender': self.provider.get_id(),
             'dead_drone_id': self.provider.get_id(),
+        }
+        command = BroadcastMessageCommand(json.dumps(message))
+        self.provider.send_communication_command(command)
+
+    def send_charging_notification(self):
+        message: ChargingNotificationMessage = {
+            'message_type': MessageType.CHARGING_NOTIFICATION_MESSAGE.value,
+            'sender': self.provider.get_id(),
+            'charging_start_time': self.charging_start_time,
+            'battery': self.battery_at_charging_start,
         }
         command = BroadcastMessageCommand(json.dumps(message))
         self.provider.send_communication_command(command)
@@ -579,6 +652,11 @@ class Drone(IProtocol):
             self.provider.schedule_timer("battery_check", self.provider.current_time() + self.BATTERY_CHECK_INTERVAL)
             return
 
+        if timer == "charging_notification":
+            if self.status == DroneStatus.CHARGING:
+                self.send_charging_notification()
+                self.provider.schedule_timer("charging_notification", self.provider.current_time() + 1)
+
         if self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE:
             if timer == "camera":
                 self.camera_routine()
@@ -615,9 +693,14 @@ class Drone(IProtocol):
                             ##### traveled distance, battery check) stops until "recharge_done". #####
                             self.status = DroneStatus.CHARGING
                             self.provider.send_mobility_command(SetVelocityMobilityCommand(0.0, 0.0, 0.0))
+                            self.charging_start_time = self.provider.current_time()
+                            self.battery_at_charging_start = self.battery.battery_status
 
                             if self.VERBOSE:
                                 self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} reached the base and is recharging for {self.TIME_TO_RECHARGE}")
+
+                            # Warn other drones that this one is charging, so they can update their swarm battery
+                            self.provider.schedule_timer("charging_notification", self.provider.current_time() + 1)
 
                             self.provider.schedule_timer(
                                                         "recharge_done",
@@ -693,15 +776,37 @@ class Drone(IProtocol):
 
 
     def handle_packet(self, message: str) -> None:
-        if self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE:
-            data: dict = json.loads(message)
+        data: dict = json.loads(message)
+        
+        if 'message_type' not in data:
+            self._log.warning(f"Received message without a message_type: {data}")
+            return
 
-            if 'message_type' not in data:
-               self._log.warning(f"Received message without a message_type: {data}")
-               return
+        msg_type = data['message_type']
 
-            msg_type = data['message_type']
+        if msg_type == MessageType.CHARGING_NOTIFICATION_MESSAGE.value:
+            charging_msg: ChargingNotificationMessage = data
+            # The notification is repeated every second while the sender charges, it is only new information when
+            # the sender was not counted as charging yet, or when the stored charge is an older one that already ended
+            is_new_charging = (self.swarm_battery_status[charging_msg['sender'], 2] != DroneStatus.CHARGING.value
+                               or self.swarm_battery_status[charging_msg['sender'], 1] < charging_msg['charging_start_time'])
 
+            # The row keeps the battery and the time the charge started, not the time it was heard,
+            # so aproximate_battery_consumption_model knows exactly when the charge ends
+            self.swarm_battery_status[charging_msg['sender'], 0] = charging_msg['battery']
+            self.swarm_battery_status[charging_msg['sender'], 1] = charging_msg['charging_start_time']
+            self.swarm_battery_status[charging_msg['sender'], 2] = DroneStatus.CHARGING.value
+
+            # The number of drones charging changed, so the destination is chosen again with it.
+            # A CHARGING or DEAD drone only stores it, it has no destination to change
+            if is_new_charging and (self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE):
+                self.internal_mobility_command()
+
+            # Handled here for every status, it must not reach the status gate below
+            return
+
+        if self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE:        
+            
             if msg_type == MessageType.HEARTBEAT_MESSAGE.value:
                 self.received_heartbeat(data)
 
@@ -710,28 +815,21 @@ class Drone(IProtocol):
 
                 self.swarm_battery_status = self.update_battery_status(data)
 
-                # If the drone is going to the recharge base, it will not update its destination.
-                if self.status == DroneStatus.MAPPING:
-                    # If the other drone is also mapping keep the both destination update
-                    if data['drone_status'] == DroneStatus.MAPPING.value:
-                        if self.provider.current_time() - self.last_drone_interaction_time[data['sender']]  > self.TIMEOUT_TO_UPDATE_DESTINATION: # the drone id starts at 0
-                            if self.provider.get_id() >= data['sender']:
-                                ### Update the number of interactions ###
-                                Drone.Number_of_Encounters += 1
+                # If the drone is going to the recharge base, it can uptada its destination based on
+                # the information received from the other drone
+                if self.provider.current_time() - self.last_drone_interaction_time[data['sender']]  > self.TIMEOUT_TO_UPDATE_DESTINATION: # the drone id starts at 0
+                    if self.provider.get_id() >= data['sender']:
+                        ### Update the number of interactions ###
+                        Drone.Number_of_Encounters += 1
 
-                                #self._log.info(f"Received map from drone {data['sender']}. My position: {self.drone_position}, other drone position: {another_drone_position}")
+                        #self._log.info(f"Received map from drone {data['sender']}. My position: {self.drone_position}, other drone position: {another_drone_position}")
 
-                                #self._log.info(f"Node {self.provider.get_id()} is calculating the new destinations")
-                                send_command, command = self.external_mobility_command(data['drone_position'], data['sender'])
+                        #self._log.info(f"Node {self.provider.get_id()} is calculating the new destinations")
+                        send_command, another_drone_status = self.external_mobility_command(data['drone_position'], data['sender'])
 
-                                self.send_goto_command(send_command, data['sender'], command)
-                            self.last_drone_interaction_time[data['sender']] = self.provider.current_time() # the drone id starts at 0
-                    else:
-                        # The other drone is going to the recharge base, so this one will update its destination based only in the
-                        # internal_mobility_command routine, without considering the other
-                        self.internal_mobility_command()
-                else:
-                    pass  # The drone is going to the recharge base, it will not update its destination.
+                        self.send_goto_command(send_command, data['sender'], another_drone_status)
+                        self.last_drone_interaction_time[data['sender']] = self.provider.current_time() # the drone id starts at 0
+
 
             elif msg_type == MessageType.DEAD_NOTIFICATION_MESSAGE.value:
                 # Only the swarm battery vector changes, the destination stays the same.
@@ -743,21 +841,18 @@ class Drone(IProtocol):
 
 
             elif msg_type == MessageType.SHARE_GOTO_POSITION_MESSAGE.value:
-                # It should not receive messages to update its destination if it is not in the MAPPING status, but just in case
-                if self.status == DroneStatus.MAPPING:
-                    goto_msg: SendGoToMessage = data
-                    #self._log.info(f"Received goto command from {goto_msg['sender']}. Going to {goto_msg['goto']}")
+                # Destination and status chosen for this drone by the one with the highest ID in the encounter.
+                # Taken while MAPPING or GOING_TO_BASE, so a drone going to the base can be sent back to mapping
+                goto_msg: SendGoToMessage = data
+                #self._log.info(f"Received goto command from {goto_msg['sender']}. Going to {goto_msg['goto']}")
 
-                    if goto_msg['command_str'] == "going_to_base":
-                        self.status = DroneStatus.GOING_TO_BASE
-                    else:
-                        self.status = DroneStatus.MAPPING
+                self.status = DroneStatus(goto_msg['status'])
 
-                    self.goto_command = np.array(goto_msg['goto'], dtype=float)
-                    command = GotoCoordsMobilityCommand(current_position=self.drone_position,
-                                                        destination=self.goto_command,
-                                                        speed=self.speed_command)
-                    self.provider.send_mobility_command(command)       
+                self.goto_command = np.array(goto_msg['goto'], dtype=float)
+                command = GotoCoordsMobilityCommand(current_position=self.drone_position,
+                                                    destination=self.goto_command,
+                                                    speed=self.speed_command)
+                self.provider.send_mobility_command(command)
 
             else:
                 self._log.warning(f"Received message with unknown type: {msg_type}")
