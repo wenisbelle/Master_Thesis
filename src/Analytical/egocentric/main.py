@@ -438,7 +438,9 @@ def run_training():
     toolbox.register("select", tools.selTournament, tournsize=3)
 
     ### Parallelization
-    pool = multiprocessing.Pool(processes=CORES_TO_USE)
+    ##### Forked explicitly: the workers have to inherit the module constants main() may have #####
+    ##### changed. A spawned worker would import them again with their default values.        #####
+    pool = multiprocessing.get_context("fork").Pool(processes=CORES_TO_USE)
     toolbox.register("map", pool.map)
 
     pop = toolbox.population(n=POPULATION_SIZE)
@@ -551,11 +553,22 @@ def run_test():
 
 
 def main():
+    global TRANSMISSION_RANGE, GA_LOGBOOK_FILE
     parser = argparse.ArgumentParser(description="Analytical coordination protocol")
     parser.add_argument("--mode", choices=["train", "test"], default="train",
                         help="train tunes the parameters with the GA, "
                              "test repeats the simulation with the tuned individual")
+    parser.add_argument("--transmission-range", type=float, default=TRANSMISSION_RANGE,
+                        help="communication range of the drones, in m (default: %(default)s)")
+    parser.add_argument("--logbook", default=GA_LOGBOOK_FILE,
+                        help="file the GA logbook is written to in train mode (default: %(default)s)")
     args = parser.parse_args()
+
+    ##### Module constants, read when each simulation is built. The GA workers are #####
+    ##### forked after this point (see run_training), so they get these values too. #####
+    TRANSMISSION_RANGE = args.transmission_range
+    GA_LOGBOOK_FILE = args.logbook
+    print(f"Mode: {args.mode}, transmission range: {TRANSMISSION_RANGE:g} m, logbook: {GA_LOGBOOK_FILE}")
 
     if args.mode == "train":
         run_training()

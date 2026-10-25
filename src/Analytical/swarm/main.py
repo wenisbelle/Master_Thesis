@@ -24,22 +24,28 @@ CORES_TO_USE = 16
 
 ##### Scenario, shared by the tuning and the test runs 
 SIMULATION_DURATION = 10000
-MAP_WIDTH = 50
-MAP_HEIGHT = 50
+MAP_WIDTH = 100   # cells, 20 m apart: 2000 m x 2000 m centred on (0, 0)
+MAP_HEIGHT = 100
 NUMBER_OF_DRONES = 3  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
 UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 200
+DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility handler
+DRONE_MAX_ACCELERATION = 3.0  # horizontal acceleration limit of the mobility handler, m/s^2
 
 ##### Fixed protocol parameters, not tuned 
-DISCHARGE_RATE = 0.00075  # measured: 0.00074-0.00078 per second, flying at 10 m/s with the random air speed
-CHARGING_BASE_POSITION = (0.0, 0.0)
+DISCHARGE_RATE = 0.00073  # measured: 0.000725-0.000733 per second, flying at 15 m/s with the random air speed (0.00077 at 10 m/s)
+CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
+DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 0.5  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
 
 ##### Cost weights, every term is integrated over time.
-UNCERTAINTY_WEIGHT = 0.01             # cost per unit of global uncertainty per simulated second
+##### UNCERTAINTY_WEIGHT was 0.01 on the 50x50 map at 10 m/s. On 100x100 at 15 m/s the accumulated #####
+##### uncertainty of BEST_INDIVIDUAL is 13.9x larger (GA aggregate, 3 seeds x sizes 3/5/7/10), so the  #####
+##### weight is divided by it: the uncertainty term keeps its old size next to the penalties.         #####
+UNCERTAINTY_WEIGHT = 0.00072          # cost per unit of global uncertainty per simulated second
 DEAD_DRONE_PENALTY = 1000.0           # cost per dead drone per simulated second
 CHARGING_CONGESTION_PENALTY = 30.0    # K of congestion_penalty_rate, cost per simulated second
 CHARGING_CONGESTION_STEEPNESS = 5.0   # beta of congestion_penalty_rate, how fast the cost grows with the share of the swarm above Nc
@@ -69,14 +75,16 @@ NUMBER_OF_GENERATIONS = 20
 CROSSOVER_PROBABILITY = 0.8
 MUTATION_PROBABILITY = 0.30
 ELITE_SIZE = 1  # best individuals copied unchanged into the next generation
-RUNS_PER_EVALUATION = 3  # the simulation is stochastic, each individual is the average of this many runs
+RUNS_PER_EVALUATION = 5  # the simulation is stochastic, each individual is the average of this many runs, each one with its own base
 TRAINING_DRONE_COUNTS = (3, 5, 7, 10)  # swarm sizes each individual is evaluated on, the cost is the sum over them
+BASE_POSITION_SIGMA = 333.0  # std deviation of the base around the map centre, m. 3 sigma reaches the map border
 GA_LOGBOOK_FILE = "ga_logbook.txt"
 
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
-BEST_INDIVIDUAL =  [1.07, 1.14, 68.06, 15.65, 741.23, 5.94, 1.69, 1.66, 0.27]
+BEST_INDIVIDUAL =  [46.85, 72.90, 27.0, 0.02, 25.26, 9.23, 1.12, 6.35, 0.49]
+
 
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
@@ -103,6 +111,27 @@ def unpack_individual(individual):
         chage_margin=charge_margin
 
     )
+
+
+def sample_base_position(seed: int) -> tuple:
+    """
+    Position of the recharge base of the training run seeded by seed: a Gaussian
+    centred in the middle of the map, with BASE_POSITION_SIGMA, snapped to the
+    nearest cell centre, which is the point the drones fly to when going to the
+    base. Draws outside the map are drawn again (a truncated Gaussian), clipping
+    them would pile the bases up on the border.
+
+    It only depends on the seed, so every individual evaluated on that seed gets
+    the same base.
+    """
+    rng = np.random.default_rng(seed)
+    cells = np.array([MAP_WIDTH, MAP_HEIGHT])
+    map_center_offset = cells * DISTANCE_BETWEEN_CELLS / 2
+    while True:
+        cell = np.round((rng.normal(0.0, BASE_POSITION_SIGMA, size=2) + map_center_offset)
+                        / DISTANCE_BETWEEN_CELLS)
+        if np.all(cell >= 0) and np.all(cell < cells):
+            return tuple(float(c) for c in cell * DISTANCE_BETWEEN_CELLS - map_center_offset)
 
 
 def congestion_penalty_rate(excess: int, number_of_drones: int) -> float:
@@ -243,7 +272,8 @@ def create_and_run_simulation(individual, mode: str = "train",
                               sample_interval: float = GLOBAL_MAP_SAMPLE_INTERVAL,
                               observer_factory=None,
                               number_of_drones: int = None,
-                              seed: int = None):
+                              seed: int = None,
+                              charging_base_position: tuple = None):
     """
     Runs one simulation with the given individual and returns
     (results_aggregator, global_map): the per drone results filled in by
@@ -268,6 +298,9 @@ def create_and_run_simulation(individual, mode: str = "train",
     every individual, even after their decisions diverge. The global
     generators are seeded too, for anything else that draws from them. When
     None the run is random.
+
+    charging_base_position is the (x, y) of the recharge base, the drones also
+    take off from it. When None, CHARGING_BASE_POSITION is used.
     """
     ##### Configuring global parameter
     global how_many_simulations
@@ -280,6 +313,9 @@ def create_and_run_simulation(individual, mode: str = "train",
     if number_of_drones is None:
         number_of_drones = NUMBER_OF_DRONES
 
+    if charging_base_position is None:
+        charging_base_position = CHARGING_BASE_POSITION
+
     ##### Configuring the simulation
     config = SimulationConfiguration(
         duration=SIMULATION_DURATION,
@@ -291,9 +327,9 @@ def create_and_run_simulation(individual, mode: str = "train",
     # BatteryPowerPlugin requires DynamicVelocityMobilityHandler for velocity telemetry.
     mobility_config = DynamicVelocityMobilityConfiguration(
         update_rate=0.05,
-        max_speed_xy=10.0,
+        max_speed_xy=DRONE_SPEED,
         max_speed_z=10.0,
-        max_acc_xy=3.0,
+        max_acc_xy=DRONE_MAX_ACCELERATION,
         max_acc_z=3.0,
         send_telemetry=True,
     )
@@ -312,9 +348,11 @@ def create_and_run_simulation(individual, mode: str = "train",
         number_of_drones=number_of_drones,
         map_width=MAP_WIDTH,
         map_height=MAP_HEIGHT,
+        drone_speed=DRONE_SPEED,
+        drone_max_acceleration=DRONE_MAX_ACCELERATION,
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
-        charging_base_position=CHARGING_BASE_POSITION,
+        charging_base_position=charging_base_position,
         min_charge_margin=MIN_CHARGE_MARGIN,  
         Nc_charging_base=int(number_of_drones/3),  
         results_aggregator=results_aggregator,
@@ -325,8 +363,9 @@ def create_and_run_simulation(individual, mode: str = "train",
         seed=seed
     )
 
+    ##### The drones take off from the recharge base #####
     for _ in range(number_of_drones):
-        builder.add_node(ConfiguredDrone, (0, 0, 0))
+        builder.add_node(ConfiguredDrone, (charging_base_position[0], charging_base_position[1], 0))
 
     # Building & starting
     simulation = builder.build()
@@ -391,7 +430,7 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
 
 
 ########### GA part ##########
-def objective_function(individual, seeds):
+def objective_function(individual, seeds, base_positions):
     """
     Returns (fitness, cost_terms): the fitness tuple and the COST_TERMS that add
     up to it, aggregated the same way. evaluate_generation stores the terms on
@@ -405,9 +444,11 @@ def objective_function(individual, seeds):
     ##### is evaluated by the average of RUNS_PER_EVALUATION runs instead.          #####
     ##### The parameters must work for any swarm size, not only one, so this is     #####
     ##### repeated for every TRAINING_DRONE_COUNTS and the averages are summed.     #####
-    ##### Run r uses seeds[r], the same for every individual of a generation      #####
-    ##### (common random numbers), so cost differences come from the parameters,   #####
-    ##### not from the wind or start positions each individual happened to get.    #####
+    ##### Run r uses seeds[r] and base_positions[r], the same for every individual #####
+    ##### of a generation (common random numbers), so cost differences come from   #####
+    ##### the parameters, not from the wind, start positions or base each          #####
+    ##### individual happened to get. The base of run r is also the same for every #####
+    ##### swarm size, every size is tested in the same RUNS_PER_EVALUATION places.  #####
     run_costs = {}
     average_costs = {}
     average_terms = {}
@@ -417,7 +458,8 @@ def objective_function(individual, seeds):
         for r in range(RUNS_PER_EVALUATION):
             results_aggregator, global_map = create_and_run_simulation(
                 individual, mode="train", number_of_drones=number_of_drones,
-                seed=seeds[r] + number_of_drones)
+                seed=seeds[r] + number_of_drones,
+                charging_base_position=base_positions[r])
             costs.append(evaluate_simulation_cost(results_aggregator, global_map, mode="train"))
             terms.append(simulation_cost_terms(global_map))
         run_costs[number_of_drones] = costs
@@ -495,7 +537,9 @@ def run_training():
     toolbox.register("select", tools.selTournament, tournsize=3)
 
     ### Parallelization
-    pool = multiprocessing.Pool(processes=CORES_TO_USE)
+    ##### Forked explicitly: the workers have to inherit the module constants main() may have #####
+    ##### changed. A spawned worker would import them again with their default values.        #####
+    pool = multiprocessing.get_context("fork").Pool(processes=CORES_TO_USE)
     toolbox.register("map", pool.map)
 
     pop = toolbox.population(n=POPULATION_SIZE)
@@ -517,8 +561,10 @@ def run_training():
         ##### objective_function). Everyone is re-evaluated, elites included, so a  #####
         ##### lucky score from an earlier generation does not stick.                 #####
         seeds = [random.randrange(2**31) for _ in range(RUNS_PER_EVALUATION)]
-        print(f"Generation {gen} seeds: {seeds}")
-        evaluations = toolbox.map(partial(toolbox.evaluate, seeds=seeds), population)
+        base_positions = [sample_base_position(seed) for seed in seeds]
+        print(f"Generation {gen} seeds: {seeds}, base positions: {base_positions}")
+        evaluations = toolbox.map(partial(toolbox.evaluate, seeds=seeds, base_positions=base_positions),
+                                  population)
         for ind, (fit, cost_terms) in zip(population, evaluations):
             ind.fitness.values = fit
             ind.cost_terms = cost_terms
@@ -617,11 +663,22 @@ def run_test():
 
 
 def main():
+    global TRANSMISSION_RANGE, GA_LOGBOOK_FILE
     parser = argparse.ArgumentParser(description="Analytical coordination protocol")
     parser.add_argument("--mode", choices=["train", "test"], default="train",
                         help="train tunes the parameters with the GA, "
                              "test repeats the simulation with the tuned individual")
+    parser.add_argument("--transmission-range", type=float, default=TRANSMISSION_RANGE,
+                        help="communication range of the drones, in m (default: %(default)s)")
+    parser.add_argument("--logbook", default=GA_LOGBOOK_FILE,
+                        help="file the GA logbook is written to in train mode (default: %(default)s)")
     args = parser.parse_args()
+
+    ##### Module constants, read when each simulation is built. The GA workers are #####
+    ##### forked after this point (see run_training), so they get these values too. #####
+    TRANSMISSION_RANGE = args.transmission_range
+    GA_LOGBOOK_FILE = args.logbook
+    print(f"Mode: {args.mode}, transmission range: {TRANSMISSION_RANGE:g} m, logbook: {GA_LOGBOOK_FILE}")
 
     if args.mode == "train":
         run_training()

@@ -1,11 +1,17 @@
 """
 Run it from the src directory, with gradysim on the PYTHONPATH:
 
-    python3 -m Analytical.main_test
-    python3 -m Analytical.main_test --duration 1000 --drones 2
-    python3 -m Analytical.main_test --sample-interval 0.5   # finer global map sampling
-    python3 -m Analytical.main_test --map-plot        # live per-drone map (very slow)
-    python3 -m Analytical.main_test --simulation-plot # gradysim 3D view
+    python3 -m Analytical.egocentric.main_test
+    python3 -m Analytical.egocentric.main_test --duration 1000 --drones 2
+    python3 -m Analytical.egocentric.main_test --sample-interval 0.5   # finer global map sampling
+    python3 -m Analytical.egocentric.main_test --map-plot        # live per-drone map (very slow)
+    python3 -m Analytical.egocentric.main_test --simulation-plot # gradysim 3D view
+    python3 -m Analytical.egocentric.main_test --logs_directory logs_3   # keep this run apart
+
+The protocol log and the recording go to the logs directory, next to this file
+(logs by default). Plot it from the plots directory with:
+
+    python3 plot_drones.py --directory logs_3
 
 The exit status is 0 when every check passes and 1 otherwise, so it can also
 be used as a regression gate.
@@ -33,8 +39,12 @@ MONITOR_INTERVAL = 10.0
 ##### Cell spacing of the protocol, needed to turn metres into cells #####
 DISTANCE_BETWEEN_CELLS = 20
 
-DEFAULT_LOG_FILE = os.path.join(os.path.dirname(__file__), "logs", "main_test.log")
-DEFAULT_RECORDING_FILE = os.path.join(os.path.dirname(__file__), "logs", "test_recording.pkl")
+##### Each run is written into a logs directory next to this file, so runs can #####
+##### be kept apart. The file names are fixed, plots/*.py look them up there.   #####
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_LOGS_DIRECTORY = "logs"
+LOG_FILE = "main_test.log"
+RECORDING_FILE = "test_recording.pkl"
 
 
 def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
@@ -332,12 +342,10 @@ def main_test() -> int:
                         help="simulated seconds (default: %(default)s)")
     parser.add_argument("--drones", type=int, default=NUMBER_OF_DRONES,
                         help="number of drones (default: %(default)s)")
-    parser.add_argument("--log-file", default=DEFAULT_LOG_FILE,
-                        help="where the per-routine protocol log is written "
-                             "(default: %(default)s)")
-    parser.add_argument("--recording-file", default=DEFAULT_RECORDING_FILE,
-                        help="where the recording read by the plot scripts is written "
-                             "(default: %(default)s)")
+    parser.add_argument("--logs_directory", "--logs-directory", default=DEFAULT_LOGS_DIRECTORY,
+                        help=f"directory, relative to {ROOT_DIR}, where the per-routine "
+                             f"protocol log ({LOG_FILE}) and the recording read by the plot "
+                             f"scripts ({RECORDING_FILE}) are written (default: %(default)s)")
     parser.add_argument("--monitor-interval", type=float, default=MONITOR_INTERVAL,
                         help="simulated seconds between two samples of the drone state "
                              "(default: %(default)s)")
@@ -353,17 +361,21 @@ def main_test() -> int:
                         help="open the gradysim visualization (slow)")
     args = parser.parse_args()
 
+    logs_directory = os.path.join(ROOT_DIR, args.logs_directory)
+    os.makedirs(logs_directory, exist_ok=True)
+    log_file = os.path.join(logs_directory, LOG_FILE)
+    recording_file = os.path.join(logs_directory, RECORDING_FILE)
+
     mode = "train" if args.quiet else "test"
     if mode == "test":
-        os.makedirs(os.path.dirname(os.path.abspath(args.log_file)), exist_ok=True)
         logging.basicConfig(
             level=logging.INFO,
-            filename=args.log_file,
+            filename=log_file,
             filemode="w",
             format="%(message)s",
             force=True,
         )
-        print(f"Protocol log: {args.log_file}")
+        print(f"Protocol log: {log_file}")
 
     print(f"Running {args.drones} drones for {args.duration} simulated seconds ...")
     results, recorder, global_map, cost = run_simulation(
@@ -376,12 +388,11 @@ def main_test() -> int:
         enable_simulation_plot=args.simulation_plot,
     )
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.recording_file)), exist_ok=True)
-    recorder.save(args.recording_file, results)
-    print(f"Recording: {args.recording_file} ({len(recorder.times)} samples)")
-    print(f"Plot it from the Analytical directory with: python3 logs/plot_drones.py "
-          f"{args.recording_file}  (same for logs/plot_metrics.py, logs/plot_more_metrics.py "
-          f"and logs/plot_states.py)")
+    recorder.save(recording_file, results)
+    print(f"Recording: {recording_file} ({len(recorder.times)} samples)")
+    print(f"Plot it from the plots directory with: python3 plot_drones.py "
+          f"--directory {args.logs_directory}  (same for plot_metrics.py, plot_more_metrics.py, "
+          f"plot_states.py and plot_decisions.py)")
     print()
 
     passed = report(results, recorder, global_map, cost, args.duration, args.drones,

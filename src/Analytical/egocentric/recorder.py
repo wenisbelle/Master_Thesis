@@ -1,12 +1,12 @@
 """
 Records the state of every drone during a simulation and writes it to a pickle
-that the plot scripts in the logs directory read back.
+that the plot scripts in the plots directory read back.
 
 The recorder pulls the state out of the running simulator, so it needs the
 simulation object and a driver that calls snapshot() every few simulated
 seconds (see Analytical/main_test.py). Besides the uncertainty maps and the
 positions, it samples the per-drone scalars listed in SERIES, which is what
-logs/plot_drones.py and logs/plot_more_metrics.py plot.
+plots/plot_drones.py and plots/plot_more_metrics.py plot.
 
 Next to the map of each drone it also stores the global map of the swarm, the
 element-wise minimum of all of them: the cell as the best informed drone knows
@@ -106,7 +106,7 @@ class SimulationRecorder:
     def record_decision(self, drone_id, time, current_position, target_position):
         """
         Stores one change of destination, in cell coordinates, the way
-        logs/plot_decisions.py expects it. Both positions are in metres.
+        plots/plot_decisions.py expects it. Both positions are in metres.
         """
         self.decisions[drone_id].append({
             "t": float(time),
