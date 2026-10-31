@@ -1,0 +1,51 @@
+Protocol log: /Thesis/src/Analytical/swarm/test_logs/100/10/main_test.log
+Running 10 drones for 10000 simulated seconds ...
+Recording: /Thesis/src/Analytical/swarm/test_logs/100/10/test_recording.pkl (1002 samples)
+Plot it from the plots directory with: python3 plot_drones.py --directory test_logs/100/10  (same for plot_metrics.py, plot_more_metrics.py, plot_states.py and plot_decisions.py)
+
+=== Scenario ===
+Duration: 10000 s, drones: 10, map: 100x100 cells (10000 cells)
+Uncertainty rate: 0.001 every 1.0 s, transmission range: 100.0 m, speed: 15.0 m/s
+Recharge base at (0.0, 0.0), map spans +-1000 m on each axis
+Individual: base_variance=90.6405, alpha_variance_modifier=95.3956, energy_gamma=96.9002, charging_base_multiplier=87.5386, distance_between_drone_norm=63.0873, a_battery_modifier=0.874841, b_battery_modifier=0.262987, c_battery_modifier=6.43216, charge_margin=0.494376
+
+=== Per drone ===
+ id  coverage  final unc   distance  battery         status  recharges  charging s  decisions
+  0    100.0%    12440.8    114654m    0.69        MAPPING         11         990        659
+  1    100.0%    11907.5    113478m    0.49        MAPPING         11         990        702
+  2    100.0%    14746.7    113585m    0.75        MAPPING         12        1080        705
+  3    100.0%     9868.5    117556m    0.39       CHARGING         12        1020        665
+  4    100.0%    12384.9    115126m    0.89        MAPPING         12        1080        689
+  5    100.0%    12088.7    115091m    0.79        MAPPING         12        1080        687
+  6    100.0%     9732.4    114923m    0.79        MAPPING         12        1080        696
+  7    100.0%     9792.1    113688m    0.49       CHARGING         12         990        657
+  8    100.0%    15086.0    112889m    0.85        MAPPING         12        1080        698
+  9    100.0%    14032.4    117314m    0.50  GOING_TO_BASE         11         990        671
+
+=== Status timeline (sampled every 10 s) ===
+drone 0: MAPPING 0-640 | GOING_TO_BASE 650-720 | MAPPING 730-800 | GOING_TO_BASE 810-840 | MAPPING 850-890 | GOING_TO_BASE 900-930 | CHARGING 940-1030 | MAPPING 1040-1660 | GOING_TO_BASE 1670-1670 | MAPPING 1680-1750 | GOING_TO_BASE 1760-1800 | MAPPING 1810-1870 | ... (+32 more)
+drone 1: MAPPING 0-700 | GOING_TO_BASE 710-720 | MAPPING 730-800 | GOING_TO_BASE 810-850 | MAPPING 860-890 | GOING_TO_BASE 900-930 | CHARGING 940-1030 | MAPPING 1040-1670 | GOING_TO_BASE 1680-1760 | CHARGING 1770-1860 | MAPPING 1870-2520 | GOING_TO_BASE 2530-2620 | ... (+26 more)
+drone 2: MAPPING 0-600 | GOING_TO_BASE 610-690 | CHARGING 700-790 | MAPPING 800-1440 | GOING_TO_BASE 1450-1480 | CHARGING 1490-1580 | MAPPING 1590-2200 | GOING_TO_BASE 2210-2270 | CHARGING 2280-2370 | MAPPING 2380-3040 | GOING_TO_BASE 3050-3110 | CHARGING 3120-3210 | ... (+29 more)
+drone 3: MAPPING 0-700 | GOING_TO_BASE 710-740 | MAPPING 750-800 | GOING_TO_BASE 810-830 | CHARGING 840-930 | MAPPING 940-1610 | GOING_TO_BASE 1620-1650 | CHARGING 1660-1750 | MAPPING 1760-2400 | GOING_TO_BASE 2410-2480 | CHARGING 2490-2580 | MAPPING 2590-3210 | ... (+30 more)
+drone 4: MAPPING 0-660 | GOING_TO_BASE 670-720 | MAPPING 730-800 | GOING_TO_BASE 810-830 | CHARGING 840-930 | MAPPING 940-1590 | GOING_TO_BASE 1600-1630 | CHARGING 1640-1730 | MAPPING 1740-2370 | GOING_TO_BASE 2380-2440 | CHARGING 2450-2540 | MAPPING 2550-3140 | ... (+29 more)
+drone 5: MAPPING 0-640 | GOING_TO_BASE 650-720 | CHARGING 730-820 | MAPPING 830-1440 | GOING_TO_BASE 1450-1510 | CHARGING 1520-1610 | MAPPING 1620-2220 | GOING_TO_BASE 2230-2300 | CHARGING 2310-2400 | MAPPING 2410-3020 | GOING_TO_BASE 3030-3100 | CHARGING 3110-3200 | ... (+29 more)
+drone 6: MAPPING 0-620 | GOING_TO_BASE 630-720 | CHARGING 730-820 | MAPPING 830-1410 | GOING_TO_BASE 1420-1520 | CHARGING 1530-1620 | MAPPING 1630-2250 | GOING_TO_BASE 2260-2300 | CHARGING 2310-2400 | MAPPING 2410-3060 | GOING_TO_BASE 3070-3140 | CHARGING 3150-3240 | ... (+27 more)
+drone 7: MAPPING 0-660 | GOING_TO_BASE 670-720 | MAPPING 730-800 | GOING_TO_BASE 810-840 | MAPPING 850-870 | GOING_TO_BASE 880-900 | CHARGING 910-1000 | MAPPING 1010-1680 | GOING_TO_BASE 1690-1760 | CHARGING 1770-1860 | MAPPING 1870-2510 | GOING_TO_BASE 2520-2560 | ... (+30 more)
+drone 8: MAPPING 0-680 | GOING_TO_BASE 690-740 | MAPPING 750-800 | GOING_TO_BASE 810-840 | CHARGING 850-940 | MAPPING 950-1590 | GOING_TO_BASE 1600-1650 | CHARGING 1660-1750 | MAPPING 1760-2390 | GOING_TO_BASE 2400-2450 | CHARGING 2460-2550 | MAPPING 2560-3090 | ... (+33 more)
+drone 9: MAPPING 0-670 | GOING_TO_BASE 680-720 | MAPPING 730-800 | GOING_TO_BASE 810-860 | MAPPING 870-890 | GOING_TO_BASE 900-920 | CHARGING 930-1020 | MAPPING 1030-1730 | GOING_TO_BASE 1740-1780 | CHARGING 1790-1880 | MAPPING 1890-2590 | GOING_TO_BASE 2600-2660 | ... (+29 more)
+
+=== Swarm (global map) ===
+Cells seen by at least one drone: 10000/10000 (100.0%)
+Encounters between drones: 1044
+Global final uncertainty: 7504.1 (sum over the 10000 cells)
+Global accumulated uncertainty: 63525396.3 (integrated every 1 s, 10002 samples)
+Mean per-drone accumulated uncertainty: 96219570.9
+Cost (the value the GA minimizes): 48464.0767
+
+=== Checks ===
+[ok  ] every drone mapped something (10/10 did)
+[ok  ] the swarm covered 100.0% of the map
+[ok  ] the global map (7504.1) is at least as good as the best single drone (9732.4)
+[ok  ] every drone reached the base and recharged at least once (10/10 did, 117 recharges in total)
+[ok  ] no drone ran out of battery
+[ok  ] every drone stayed within 1200 m of the map centre

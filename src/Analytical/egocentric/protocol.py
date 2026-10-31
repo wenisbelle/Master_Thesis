@@ -5,6 +5,7 @@ from typing import TypedDict, Type
 import numpy as np
 from dataclasses import dataclass
 import json
+import base64
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
@@ -36,8 +37,8 @@ class HeartBeatMessage(TypedDict):
     sender: int
 
 class GossipingMessage(TypedDict):
-    message_type: int 
-    map: list
+    message_type: int
+    map: str  # see encode_map
     sender: int
     drone_position: list
     drone_status: int
@@ -54,6 +55,21 @@ class DeadNotificationMessage(TypedDict):
     sender: int
     dead_drone_id: int
 
+def encode_map(map_array: np.ndarray) -> str:
+    """
+    The map of a GossipingMessage, as the base64 of its raw float64 bytes. Every
+    received heartbeat is answered with the whole map, and as a JSON list of floats
+    a 100x100 map took ~18 ms to encode and decode, the largest cost of a run.
+    This takes ~1 ms and gives back the same values bit for bit.
+    """
+    return base64.b64encode(np.ascontiguousarray(map_array, dtype=np.float64).tobytes()).decode("ascii")
+
+
+def decode_map(encoded: str, shape: tuple) -> np.ndarray:
+    """Inverse of encode_map. Every drone has a map of the same shape, so the receiver uses its own."""
+    return np.frombuffer(base64.b64decode(encoded), dtype=np.float64).reshape(shape)
+
+
 def GotoCoordsMobilityCommand(current_position: np.ndarray,
                               destination: np.ndarray,
                               speed: float = 10.0) -> SetVelocityMobilityCommand:
@@ -65,8 +81,7 @@ def GotoCoordsMobilityCommand(current_position: np.ndarray,
     it, with magnitude speed. If the drone already is at the destination, a
     zero velocity is returned.
     """
-    ##### Before the first telemetry the drone has no known position yet. #####
-    ##### The nodes are added at the origin, so that is the safe assumption. #####
+    ##### Before the first telemetry the drone has no known position yet, the origin is assumed. #####
     if current_position is None:
         current_position = np.zeros(3)
 
@@ -103,6 +118,8 @@ class Drone(IProtocol):
         "number_of_drones": 3,
         "map_width": 10,
         "map_height": 10,
+        "drone_speed": 10.0,  # cruise speed, m/s
+        "drone_max_acceleration": 3.0,  # horizontal acceleration limit of the mobility handler, m/s^2
         ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this #####
         ##### is in cells^2: 1.0 == one cell spacing, not one metre.               #####
         'base_variance': 1.0,
@@ -189,7 +206,24 @@ class Drone(IProtocol):
         self.camera = CameraHardware(self, configuration)
 
         ##### Drone speed #####
-        self.speed_command = 10.0
+        self.speed_command = self._config["drone_speed"]
+
+        ##### Approach to the base. The drone has to stop on the base, but the handler brakes at most  #####
+        ##### at drone_max_acceleration: zeroing the velocity on arrival, at 15 m/s, stops it up to      #####
+        ##### 37.5 m past the base. The drone flies a braking profile instead, see the mobility timer:   #####
+        ##### min(speed, sqrt(2 a d), d / tau), d the distance to the base. The sqrt part brakes at a,   #####
+        ##### the d / tau part settles the last metres, at up to 2a where it takes over, so a is kept   #####
+        ##### at 0.4 of the handler's limit. Inside BASE_APPROACH_RADIUS the drone could pass the point  #####
+        ##### where it has to start braking before the next 1 s update, so it is updated more often.    #####
+        self.BASE_APPROACH_DECELERATION = 0.4 * self._config["drone_max_acceleration"]
+        self.BASE_APPROACH_TIME_CONSTANT = 1.0  # tau, s. Several updates long, so it does not overshoot between two
+        self.BASE_APPROACH_UPDATE_TIME = 0.1
+        self.BASE_APPROACH_RADIUS = (self.speed_command**2 / (2 * self.BASE_APPROACH_DECELERATION)
+                                     + self.speed_command * self.MOBILITY_UPDATE_TIME)
+        ##### The charge starts once the drone is on the base and almost stopped, the drift left #####
+        ##### when the velocity is zeroed is BASE_ARRIVAL_SPEED^2 / (2 * max acceleration), < 2 mm. #####
+        self.BASE_ARRIVAL_TOLERANCE = 0.05
+        self.BASE_ARRIVAL_SPEED = 0.1
 
         ### It's considered that the at any high the camera reach will be enough #####
         ##### Cluster plugins initialization #####
@@ -221,7 +255,8 @@ class Drone(IProtocol):
         ).spawn(2)
         destination_rng = np.random.default_rng(destination_seed)
         self.goto_command = np.array([destination_rng.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2), destination_rng.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2), self.DRONE_ALTITUDE])
-        command = GotoCoordsMobilityCommand(current_position=self.drone_position,
+        ##### No telemetry has arrived yet, but the drones take off from the base, see main.py #####
+        command = GotoCoordsMobilityCommand(current_position=(*self.CHARGING_BASE_POSITION, 0.0),
                                             destination=self.goto_command,
                                             speed=self.speed_command)
         self.provider.send_mobility_command(command)
@@ -497,7 +532,7 @@ class Drone(IProtocol):
 
         message: GossipingMessage = {
                 'message_type': MessageType.GOSSIPING_MESSAGE.value,
-                'map': self.map.tolist(),
+                'map': encode_map(self.map),
                 'sender': self.provider.get_id(),
                 'drone_position': np.array(self.drone_position).tolist(),
                 'drone_status': self.status.value,
@@ -522,7 +557,7 @@ class Drone(IProtocol):
 
     def updated_map(self, data: dict):
         gossiping_msg: GossipingMessage = data
-        updated_map = self.compare_maps(np.array(gossiping_msg['map']))
+        updated_map = self.compare_maps(decode_map(gossiping_msg['map'], self.map.shape))
         return updated_map
 
     def update_battery_status(self, data: dict):
@@ -579,6 +614,7 @@ class Drone(IProtocol):
                 if self.drone_position is not None:
                     current_pos_array = np.array(self.drone_position)
                     distance_to_goto = np.linalg.norm(current_pos_array - self.goto_command)
+                    next_mobility_update = self.MOBILITY_UPDATE_TIME
 
                     if self.status == DroneStatus.MAPPING:
                         # Keep the monitoring activity
@@ -599,7 +635,8 @@ class Drone(IProtocol):
                        
 
                     elif self.status == DroneStatus.GOING_TO_BASE:
-                        if distance_to_goto < self.speed_command * self.MOBILITY_UPDATE_TIME:
+                        speed = 0.0 if self.drone_velocity is None else float(np.linalg.norm(self.drone_velocity))
+                        if distance_to_goto < self.BASE_ARRIVAL_TOLERANCE and speed < self.BASE_ARRIVAL_SPEED:
                             ##### The drone reached the base. It is frozen for TIME_TO_RECHARGE  #####
                             ##### to simulate the recharge: the velocity is zeroed and no timer  #####
                             ##### is rescheduled, so every routine (camera, heartbeat, mobility, #####
@@ -621,14 +658,21 @@ class Drone(IProtocol):
                             ##### chosen is never re-aimed: the drone curves under the     #####
                             ##### handler's acceleration limit, misses the arrival window, #####
                             ##### and then flies in a straight line off the map forever.   #####
+                            ##### The speed follows the braking profile, so the drone stops #####
+                            ##### on the base, see BASE_APPROACH_DECELERATION.              #####
+                            approach_speed = min(self.speed_command,
+                                                 np.sqrt(2 * self.BASE_APPROACH_DECELERATION * distance_to_goto),
+                                                 distance_to_goto / self.BASE_APPROACH_TIME_CONSTANT)
                             command = GotoCoordsMobilityCommand(current_position=current_pos_array,
                                                                 destination=self.goto_command,
-                                                                speed=self.speed_command)
+                                                                speed=approach_speed)
                             self.provider.send_mobility_command(command)
+                            if distance_to_goto < self.BASE_APPROACH_RADIUS:
+                                next_mobility_update = self.BASE_APPROACH_UPDATE_TIME
 
                     self.provider.schedule_timer(
                                                 "mobility",
-                                                self.provider.current_time() + self.MOBILITY_UPDATE_TIME
+                                                self.provider.current_time() + next_mobility_update
                                             )
 
             if timer == "heartbeat":
@@ -788,6 +832,8 @@ def drone_protocol_factory(
     number_of_drones: int,
     map_width: int,
     map_height: int,
+    drone_speed: float,                  # fixed, m/s
+    drone_max_acceleration: float,       # fixed, m/s^2
     base_variance: float,                # tunable, in cells^2
     alpha_variance_modifier: float,      # tunable
     energy_gamma: float,                 # tunable
@@ -822,6 +868,8 @@ def drone_protocol_factory(
         "number_of_drones": number_of_drones,
         "map_width": map_width,
         "map_height": map_height,
+        "drone_speed": drone_speed,
+        "drone_max_acceleration": drone_max_acceleration,
         "base_variance": base_variance,
         "alpha_variance_modifier": alpha_variance_modifier,
         "energy_gamma": energy_gamma,

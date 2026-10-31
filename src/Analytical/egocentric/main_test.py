@@ -7,6 +7,8 @@ Run it from the src directory, with gradysim on the PYTHONPATH:
     python3 -m Analytical.egocentric.main_test --map-plot        # live per-drone map (very slow)
     python3 -m Analytical.egocentric.main_test --simulation-plot # gradysim 3D view
     python3 -m Analytical.egocentric.main_test --logs_directory logs_3   # keep this run apart
+    python3 -m Analytical.egocentric.main_test --transmission-range 500 --individual 90.6 95.4 ...  # a tuned individual
+    python3 -m Analytical.egocentric.main_test --base-position 400 -200  # recharge base off the map centre
 
 The protocol log and the recording go to the logs directory, next to this file
 (logs by default). Plot it from the plots directory with:
@@ -31,7 +33,7 @@ from .protocol import DroneStatus, Drone, drone_protocol_factory
 
 
 SIMULATION_DURATION = 10000
-NUMBER_OF_DRONES = 5
+NUMBER_OF_DRONES = 10
 
 ##### How often the drone state is sampled.
 MONITOR_INTERVAL = 10.0
@@ -97,10 +99,12 @@ def run_simulation(duration: int, number_of_drones: int,
                    monitor_interval: float = MONITOR_INTERVAL,
                    sample_interval: float = main.GLOBAL_MAP_SAMPLE_INTERVAL,
                    enable_map_plot: bool = False,
-                   enable_simulation_plot: bool = False):
+                   enable_simulation_plot: bool = False,
+                   individual=BEST_INDIVIDUAL,
+                   charging_base_position: tuple = main.CHARGING_BASE_POSITION):
     """
-    Runs a single simulation of main.py, recording the state of every drone
-    every monitor_interval seconds.
+    Runs a single simulation of main.py with the given individual and recharge
+    base, recording the state of every drone every monitor_interval seconds.
 
     main.py already steps the simulation to sample the global map every
     sample_interval seconds, so the recording rides on the same samples and only
@@ -155,12 +159,13 @@ def run_simulation(duration: int, number_of_drones: int,
 
     try:
         results, global_map = main.create_and_run_simulation(
-            BEST_INDIVIDUAL,
+            individual,
             mode=mode,
             enable_map_plot=enable_map_plot,
             enable_simulation_plot=enable_simulation_plot,
             sample_interval=sample_interval,
             observer_factory=make_recorder,
+            charging_base_position=charging_base_position,
         )
         cost = main.evaluate_simulation_cost(results, global_map, mode=mode)
     finally:
@@ -209,7 +214,9 @@ def format_episodes(episodes: list, max_episodes: int = 12) -> str:
 def report(results: dict, recorder: SimulationRecorder,
            global_map: main.GlobalMapMonitor, cost: float,
            duration: int, number_of_drones: int,
-           monitor_interval: float = MONITOR_INTERVAL) -> bool:
+           monitor_interval: float = MONITOR_INTERVAL,
+           individual=BEST_INDIVIDUAL,
+           charging_base_position: tuple = main.CHARGING_BASE_POSITION) -> bool:
     """
     Prints the summary of the run and returns whether every check passed.
     """
@@ -220,11 +227,11 @@ def report(results: dict, recorder: SimulationRecorder,
     print(f"Duration: {duration} s, drones: {number_of_drones}, "
           f"map: {main.MAP_WIDTH}x{main.MAP_HEIGHT} cells ({total_cells} cells)")
     print(f"Uncertainty rate: {main.UNCERTAINTY_RATE} every {main.VANISHING_UPDATE_TIME} s, "
-          f"transmission range: {main.TRANSMISSION_RANGE} m")
-    print(f"Recharge base at {main.CHARGING_BASE_POSITION}, map spans "
+          f"transmission range: {main.TRANSMISSION_RANGE} m, speed: {main.DRONE_SPEED} m/s")
+    print(f"Recharge base at {tuple(charging_base_position)}, map spans "
           f"+-{map_half_extent:.0f} m on each axis")
     print("Individual: " + ", ".join(
-        f"{name}={value:g}" for (name, _, _), value in zip(GENE_BOUNDS, BEST_INDIVIDUAL)))
+        f"{name}={value:g}" for (name, _, _), value in zip(GENE_BOUNDS, individual)))
     print()
 
     print("=== Per drone ===")
@@ -325,7 +332,7 @@ def report(results: dict, recorder: SimulationRecorder,
                   if distance > tolerance}
     checks.append((
         not far_drones,
-        f"every drone stayed within {tolerance:.0f} m of the base"
+        f"every drone stayed within {tolerance:.0f} m of the map centre"
         f"{'' if not far_drones else f' (outside: {far_drones})'}"))
 
     for passed, description in checks:
@@ -353,6 +360,16 @@ def main_test() -> int:
                         default=main.GLOBAL_MAP_SAMPLE_INTERVAL,
                         help="simulated seconds between two samples of the global map, "
                              "the integration step of the cost (default: %(default)s)")
+    parser.add_argument("--individual", type=float, nargs=len(GENE_BOUNDS), default=BEST_INDIVIDUAL,
+                        metavar=tuple(name.upper() for name, _, _ in GENE_BOUNDS),
+                        help="genes of the individual to run, in the GENE_BOUNDS order "
+                             "(default: BEST_INDIVIDUAL of main.py, %(default)s)")
+    parser.add_argument("--transmission-range", type=float, default=main.TRANSMISSION_RANGE,
+                        help="communication range of the drones, in m (default: %(default)s)")
+    parser.add_argument("--base-position", type=float, nargs=2, default=main.CHARGING_BASE_POSITION,
+                        metavar=("X", "Y"),
+                        help="position of the recharge base, in m, the map centre is (0, 0). "
+                             "The drones take off from it (default: %(default)s)")
     parser.add_argument("--quiet", action="store_true",
                         help="run the protocol in train mode, without the per-routine log")
     parser.add_argument("--map-plot", action="store_true",
@@ -360,6 +377,16 @@ def main_test() -> int:
     parser.add_argument("--simulation-plot", action="store_true",
                         help="open the gradysim visualization (slow)")
     args = parser.parse_args()
+
+    charging_base_position = tuple(args.base_position)
+    map_half_extents = (main.MAP_WIDTH * DISTANCE_BETWEEN_CELLS / 2,
+                        main.MAP_HEIGHT * DISTANCE_BETWEEN_CELLS / 2)
+    if any(abs(c) > half for c, half in zip(charging_base_position, map_half_extents)):
+        parser.error(f"--base-position {charging_base_position} is outside the map, "
+                     f"+-{map_half_extents[0]:g} m x +-{map_half_extents[1]:g} m")
+
+    ##### Module constant, read when the simulation is built #####
+    main.TRANSMISSION_RANGE = args.transmission_range
 
     logs_directory = os.path.join(ROOT_DIR, args.logs_directory)
     os.makedirs(logs_directory, exist_ok=True)
@@ -386,6 +413,8 @@ def main_test() -> int:
         sample_interval=args.sample_interval,
         enable_map_plot=args.map_plot,
         enable_simulation_plot=args.simulation_plot,
+        individual=args.individual,
+        charging_base_position=charging_base_position,
     )
 
     recorder.save(recording_file, results)
@@ -396,7 +425,9 @@ def main_test() -> int:
     print()
 
     passed = report(results, recorder, global_map, cost, args.duration, args.drones,
-                    monitor_interval=args.monitor_interval)
+                    monitor_interval=args.monitor_interval,
+                    individual=args.individual,
+                    charging_base_position=charging_base_position)
     return 0 if passed else 1
 
 

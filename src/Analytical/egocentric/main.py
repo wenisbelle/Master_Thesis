@@ -24,24 +24,32 @@ CORES_TO_USE = 16
 
 ##### Scenario, shared by the tuning and the test runs 
 SIMULATION_DURATION = 10000
-MAP_WIDTH = 50
-MAP_HEIGHT = 50
-NUMBER_OF_DRONES = 5  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
+MAP_WIDTH = 100   # cells, 20 m apart: 2000 m x 2000 m centred on (0, 0)
+MAP_HEIGHT = 100
+NUMBER_OF_DRONES = 3  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
 UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 200
+DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility handler
+DRONE_MAX_ACCELERATION = 3.0  # horizontal acceleration limit of the mobility handler, m/s^2
 
 ##### Fixed protocol parameters, not tuned 
-DISCHARGE_RATE = 0.00075  # measured: 0.00074-0.00078 per second, flying at 10 m/s with the random air speed
-CHARGING_BASE_POSITION = (0.0, 0.0)
+DISCHARGE_RATE = 0.00073  # measured: 0.000725-0.000733 per second, flying at 15 m/s with the random air speed (0.00077 at 10 m/s)
+CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
+DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 0.5  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
-NC_CHARGING_BASE = 2  # number of drones that can charge at the same time in the base. A bigger number will start receiving penalty
 
-##### Cost penalties, both integrated over time like the uncertainty.
-DEAD_DRONE_PENALTY = 10000.0           # cost per dead drone per simulated second
-CHARGING_CONGESTION_PENALTY = 100.0  # cost per drone above NC_CHARGING_BASE per simulated second
+##### Cost weights, every term is integrated over time.
+##### UNCERTAINTY_WEIGHT was 0.01 on the 50x50 map at 10 m/s. On 100x100 at 15 m/s the accumulated #####
+##### uncertainty of BEST_INDIVIDUAL is 13.9x larger (GA aggregate, 3 seeds x sizes 3/5/7/10), so the  #####
+##### weight is divided by it: the uncertainty term keeps its old size next to the penalties.         #####
+UNCERTAINTY_WEIGHT = 0.00072          # cost per unit of global uncertainty per simulated second
+DEAD_DRONE_PENALTY = 1000.0           # cost per dead drone per simulated second
+CHARGING_CONGESTION_PENALTY = 30.0    # K of congestion_penalty_rate, cost per simulated second
+CHARGING_CONGESTION_STEEPNESS = 5.0   # beta of congestion_penalty_rate, how fast the cost grows with the share of the swarm above Nc
+COST_TERMS = ("uncertainty", "dead", "charging")  # the terms summed into the cost, see simulation_cost_terms
 
 ##### How often the global map is assembled and sampled, in simulated seconds. 
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
@@ -63,15 +71,19 @@ POPULATION_SIZE = 50
 NUMBER_OF_GENERATIONS = 20
 CROSSOVER_PROBABILITY = 0.8
 MUTATION_PROBABILITY = 0.30
-ELITE_SIZE = 2  # best individuals copied unchanged into the next generation
-RUNS_PER_EVALUATION = 3  # the simulation is stochastic, each individual is the average of this many runs
+ELITE_SIZE = 1  # best individuals copied unchanged into the next generation
+RUNS_PER_EVALUATION = 5  # the simulation is stochastic, each individual is the average of this many runs, each one with its own base
 TRAINING_DRONE_COUNTS = (3, 5, 7, 10)  # swarm sizes each individual is evaluated on, the cost is the sum over them
+BASE_POSITION_SIGMA = 333.0  # std deviation of the base around the map centre, m. 3 sigma reaches the map border
 GA_LOGBOOK_FILE = "ga_logbook.txt"
 
 ##### Test parameters (mode "test") #####
 ##### Individual found by the GA tuning. Placeholder: the protocol defaults,
 ##### in the GENE_BOUNDS order. Replace after a real tuning run.
+##### Tuned on the old scenario (50x50 map, 10 m/s, base fixed at the map centre) #####
 BEST_INDIVIDUAL = [76.31, 40.14, 7.44, 52.38, 455.63, 0.26]
+
+
 NUMBER_OF_TEST_RUNS = 10
 TEST_LOG_DIR = "/logs"
 ##### Plots. Only makes sense on a single test run, they slow the simulation down #####
@@ -96,6 +108,38 @@ def unpack_individual(individual):
     )
 
 
+def sample_base_position(seed: int) -> tuple:
+    """
+    Position of the recharge base of the training run seeded by seed: a Gaussian
+    centred in the middle of the map, with BASE_POSITION_SIGMA, snapped to the
+    nearest cell centre, which is the point the drones fly to when going to the
+    base. Draws outside the map are drawn again (a truncated Gaussian), clipping
+    them would pile the bases up on the border.
+
+    It only depends on the seed, so every individual evaluated on that seed gets
+    the same base.
+    """
+    rng = np.random.default_rng(seed)
+    cells = np.array([MAP_WIDTH, MAP_HEIGHT])
+    map_center_offset = cells * DISTANCE_BETWEEN_CELLS / 2
+    while True:
+        cell = np.round((rng.normal(0.0, BASE_POSITION_SIGMA, size=2) + map_center_offset)
+                        / DISTANCE_BETWEEN_CELLS)
+        if np.all(cell >= 0) and np.all(cell < cells):
+            return tuple(float(c) for c in cell * DISTANCE_BETWEEN_CELLS - map_center_offset)
+
+
+def congestion_penalty_rate(excess: int, number_of_drones: int) -> float:
+    """
+    Cost per simulated second of having excess drones CHARGING above the base
+    capacity: K * (exp(beta * excess / number_of_drones) - 1). It is zero with
+    no excess, grows faster than linearly with every extra drone, and the same
+    excess costs more in a smaller swarm, where it is a bigger share of it.
+    """
+    return CHARGING_CONGESTION_PENALTY * (
+        np.exp(CHARGING_CONGESTION_STEEPNESS * excess / number_of_drones) - 1.0)
+
+
 class GlobalMapMonitor:
     """
     Assembles and samples the global map of the swarm while the simulation runs.
@@ -116,14 +160,16 @@ class GlobalMapMonitor:
     accomulated_dead_time is the integral of the number of DEAD drones, in
     drone*second, and accomulated_charging_excess the integral of the number of
     drones CHARGING above nc_charging_base, also in drone*second.
+    accomulated_charging_penalty is the integral of congestion_penalty_rate of
+    that number, the congestion term of the cost. It is not linear, so it has
+    to be accumulated sample by sample.
     """
 
-    def __init__(self, simulation, number_of_drones: int, sample_interval: float,
-                 nc_charging_base: int = NC_CHARGING_BASE):
+    def __init__(self, simulation, number_of_drones: int, sample_interval: float):
         self.sim = simulation
         self.number_of_drones = number_of_drones
         self.sample_interval = sample_interval
-        self.nc_charging_base = nc_charging_base
+        self.nc_charging_base = int(number_of_drones/3)
         self._protocols = None
 
         self.times = []
@@ -137,6 +183,7 @@ class GlobalMapMonitor:
         self.charging_drones = []
         self.accomulated_dead_time = 0.0
         self.accomulated_charging_excess = 0.0
+        self.accomulated_charging_penalty = 0.0
 
     def sample(self, time: float) -> None:
         if self._protocols is None:
@@ -160,7 +207,10 @@ class GlobalMapMonitor:
         dead = sum(p.status == DroneStatus.DEAD for p in self._protocols)
         charging = sum(p.status == DroneStatus.CHARGING for p in self._protocols)
         self.accomulated_dead_time += dead * self.sample_interval
-        self.accomulated_charging_excess += max(0, charging - self.nc_charging_base) * self.sample_interval
+        excess = max(0, charging - self.nc_charging_base)
+        self.accomulated_charging_excess += excess * self.sample_interval
+        self.accomulated_charging_penalty += (congestion_penalty_rate(excess, self.number_of_drones)
+                                              * self.sample_interval)
 
         self.dead_drones.append(dead)
         self.charging_drones.append(charging)
@@ -217,7 +267,8 @@ def create_and_run_simulation(individual, mode: str = "train",
                               sample_interval: float = GLOBAL_MAP_SAMPLE_INTERVAL,
                               observer_factory=None,
                               number_of_drones: int = None,
-                              seed: int = None):
+                              seed: int = None,
+                              charging_base_position: tuple = None):
     """
     Runs one simulation with the given individual and returns
     (results_aggregator, global_map): the per drone results filled in by
@@ -242,6 +293,9 @@ def create_and_run_simulation(individual, mode: str = "train",
     every individual, even after their decisions diverge. The global
     generators are seeded too, for anything else that draws from them. When
     None the run is random.
+
+    charging_base_position is the (x, y) of the recharge base, the drones also
+    take off from it. When None, CHARGING_BASE_POSITION is used.
     """
     ##### Configuring global parameter
     global how_many_simulations
@@ -254,6 +308,9 @@ def create_and_run_simulation(individual, mode: str = "train",
     if number_of_drones is None:
         number_of_drones = NUMBER_OF_DRONES
 
+    if charging_base_position is None:
+        charging_base_position = CHARGING_BASE_POSITION
+
     ##### Configuring the simulation
     config = SimulationConfiguration(
         duration=SIMULATION_DURATION,
@@ -265,9 +322,9 @@ def create_and_run_simulation(individual, mode: str = "train",
     # BatteryPowerPlugin requires DynamicVelocityMobilityHandler for velocity telemetry.
     mobility_config = DynamicVelocityMobilityConfiguration(
         update_rate=0.05,
-        max_speed_xy=10.0,
+        max_speed_xy=DRONE_SPEED,
         max_speed_z=10.0,
-        max_acc_xy=3.0,
+        max_acc_xy=DRONE_MAX_ACCELERATION,
         max_acc_z=3.0,
         send_telemetry=True,
     )
@@ -286,11 +343,13 @@ def create_and_run_simulation(individual, mode: str = "train",
         number_of_drones=number_of_drones,
         map_width=MAP_WIDTH,
         map_height=MAP_HEIGHT,
+        drone_speed=DRONE_SPEED,
+        drone_max_acceleration=DRONE_MAX_ACCELERATION,
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
-        charging_base_position=CHARGING_BASE_POSITION,
+        charging_base_position=charging_base_position,
         min_charge_margin=MIN_CHARGE_MARGIN,  
-        Nc_charging_base=NC_CHARGING_BASE,  
+        Nc_charging_base=int(number_of_drones/3),  
         results_aggregator=results_aggregator,
         mode=mode,
         enable_map_plot=enable_map_plot,
@@ -299,13 +358,14 @@ def create_and_run_simulation(individual, mode: str = "train",
         seed=seed
     )
 
+    ##### The drones take off from the recharge base #####
     for _ in range(number_of_drones):
-        builder.add_node(ConfiguredDrone, (0, 0, 0))
+        builder.add_node(ConfiguredDrone, (charging_base_position[0], charging_base_position[1], 0))
 
     # Building & starting
     simulation = builder.build()
 
-    global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval, NC_CHARGING_BASE)
+    global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval)
     observers = [global_map.sample]
     if observer_factory is not None:
         observers.append(observer_factory(simulation))
@@ -313,6 +373,23 @@ def create_and_run_simulation(individual, mode: str = "train",
     run_stepped_simulation(simulation, sample_interval, observers)
 
     return results_aggregator, global_map
+
+
+def simulation_cost_terms(global_map: GlobalMapMonitor) -> dict:
+    """
+    The weighted terms of the cost of one simulation, keyed by COST_TERMS. Their
+    sum is the value minimized, they are kept apart so the GA can log which one
+    drives it.
+    """
+    return dict(
+        uncertainty=UNCERTAINTY_WEIGHT * global_map.accomulated_uncertainty,
+        dead=DEAD_DRONE_PENALTY * global_map.accomulated_dead_time,
+        charging=global_map.accomulated_charging_penalty,
+    )
+
+
+def format_cost_terms(terms: dict) -> str:
+    return ", ".join(f"{term}: {terms[term]:.6g}" for term in COST_TERMS)
 
 
 def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
@@ -328,15 +405,15 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
         medium_uncertainty += results_aggregator[i]['accomulated_uncertainty']/number_of_drones
 
     ##### Penalties, accumulated by the monitor on every sample #####
-    dead_penalty = DEAD_DRONE_PENALTY * global_map.accomulated_dead_time
-    charging_penalty = CHARGING_CONGESTION_PENALTY * global_map.accomulated_charging_excess
+    terms = simulation_cost_terms(global_map)
+    dead_penalty = terms["dead"]
+    charging_penalty = terms["charging"]
 
     ##### Cost for optimization #####
-    ##### Divided by the swarm size, so the cost is per drone #####
-    total_cost = (global_map.accomulated_uncertainty*0.01 + dead_penalty + charging_penalty) / number_of_drones
+    total_cost = sum(terms.values())
 
     if mode == "test":
-        logging.info(f"Global accomulated uncertainty: {global_map.accomulated_uncertainty}")
+        logging.info(f"Global accomulated uncertainty: {global_map.accomulated_uncertainty}, cost: {terms['uncertainty']}")
         logging.info(f"Global final uncertainty: {global_map.final_uncertainty}")
         logging.info(f"Global unvisited cells: {global_map.unvisited_cells}")
         logging.info(f"Medium accomulated uncertainty per drone: {medium_uncertainty}")
@@ -348,39 +425,56 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
 
 
 ########### GA part ##########
-def objective_function(individual, seeds):
+def objective_function(individual, seeds, base_positions):
+    """
+    Returns (fitness, cost_terms): the fitness tuple and the COST_TERMS that add
+    up to it, aggregated the same way. evaluate_generation stores the terms on
+    the individual, so the logbook can show what the best cost is made of.
+    """
     if not is_feasible(individual):
-        return 1000000.0,  # Return a large cost for infeasible solutions
+        return (1000000.0,), dict.fromkeys(COST_TERMS, float("nan"))  # Return a large cost for infeasible solutions
 
     ##### The wind and the initial destinations are random, so a single run is a  #####
     ##### noisy cost: the same individual can go from 52k to 93k. The individual   #####
     ##### is evaluated by the average of RUNS_PER_EVALUATION runs instead.          #####
     ##### The parameters must work for any swarm size, not only one, so this is     #####
     ##### repeated for every TRAINING_DRONE_COUNTS and the averages are summed.     #####
-    ##### Run r uses seeds[r], the same for every individual of a generation      #####
-    ##### (common random numbers), so cost differences come from the parameters,   #####
-    ##### not from the wind or start positions each individual happened to get.    #####
+    ##### Run r uses seeds[r] and base_positions[r], the same for every individual #####
+    ##### of a generation (common random numbers), so cost differences come from   #####
+    ##### the parameters, not from the wind, start positions or base each          #####
+    ##### individual happened to get. The base of run r is also the same for every #####
+    ##### swarm size, every size is tested in the same RUNS_PER_EVALUATION places.  #####
     run_costs = {}
     average_costs = {}
+    average_terms = {}
     for number_of_drones in TRAINING_DRONE_COUNTS:
         costs = []
+        terms = []
         for r in range(RUNS_PER_EVALUATION):
             results_aggregator, global_map = create_and_run_simulation(
                 individual, mode="train", number_of_drones=number_of_drones,
-                seed=seeds[r] + number_of_drones)
+                seed=seeds[r] + number_of_drones,
+                charging_base_position=base_positions[r])
             costs.append(evaluate_simulation_cost(results_aggregator, global_map, mode="train"))
+            terms.append(simulation_cost_terms(global_map))
         run_costs[number_of_drones] = costs
         average_costs[number_of_drones] = float(np.mean(costs))
+        average_terms[number_of_drones] = {term: float(np.mean([t[term] for t in terms]))
+                                           for term in COST_TERMS}
     total_cost = sum(average_costs.values())
+    ##### Same aggregation as total_cost, term by term, so the terms add up to it #####
+    cost_terms = {term: sum(average_terms[n][term] for n in TRAINING_DRONE_COUNTS)
+                  for term in COST_TERMS}
 
     ##### Single print, the evaluations run in parallel and the lines would interleave #####
     print(f"Individual: {individual}\n"
-          + "".join(f"{n} drones, cost of each run: {run_costs[n]}, average: {average_costs[n]}\n"
+          + "".join(f"{n} drones, cost of each run: {run_costs[n]}, average: {average_costs[n]} "
+                    f"({format_cost_terms(average_terms[n])})\n"
                     for n in TRAINING_DRONE_COUNTS)
-          + f"Variable to be minimized: {total_cost}")
+          + f"Variable to be minimized: {total_cost} ({format_cost_terms(cost_terms)})")
     print(f"Total number of simulations: {how_many_simulations}")
 
-    return total_cost,
+    return (total_cost,), cost_terms
 
 def is_feasible(individual):
     """Every gene has to stay inside its own GENE_BOUNDS range."""
@@ -419,7 +513,7 @@ def run_training():
     HIGH = [high for _, low, high in GENE_BOUNDS]
     toolbox.register("mate", tools.cxSimulatedBinaryBounded, low=LOW, up=HIGH, eta=15)
     toolbox.register("mutate", tools.mutPolynomialBounded, low=LOW, up=HIGH, eta=20,
-                         indpb=1.0 / len(GENE_BOUNDS)) # aproximadamente 1 cromossomo é mutado
+                     indpb=1.0 / len(GENE_BOUNDS))
 
     ##### The Gaussian mutation can push a gene out of its GENE_BOUNDS range. Such an #####
     ##### individual would cost 1e6 in objective_function, which is less than a drone #####
@@ -451,20 +545,28 @@ def run_training():
     stats.register("min", np.min)
     stats.register("max", np.max)
 
+    ##### min_<term> columns: the COST_TERMS of the individual that scored min, #####
+    ##### they add up to it. They show which term the GA is actually fighting.  #####
+    min_term_fields = [f"min_{term}" for term in COST_TERMS]
     log = tools.Logbook()
-    log.header = ["gen", "nevals"] + stats.fields
+    log.header = ["gen", "nevals"] + stats.fields + min_term_fields
 
     def evaluate_generation(gen, population):
         ##### New scenarios every generation, shared by all its individuals (see    #####
         ##### objective_function). Everyone is re-evaluated, elites included, so a  #####
         ##### lucky score from an earlier generation does not stick.                 #####
         seeds = [random.randrange(2**31) for _ in range(RUNS_PER_EVALUATION)]
-        print(f"Generation {gen} seeds: {seeds}")
-        fitnesses = toolbox.map(partial(toolbox.evaluate, seeds=seeds), population)
-        for ind, fit in zip(population, fitnesses):
+        base_positions = [sample_base_position(seed) for seed in seeds]
+        print(f"Generation {gen} seeds: {seeds}, base positions: {base_positions}")
+        evaluations = toolbox.map(partial(toolbox.evaluate, seeds=seeds, base_positions=base_positions),
+                                  population)
+        for ind, (fit, cost_terms) in zip(population, evaluations):
             ind.fitness.values = fit
+            ind.cost_terms = cost_terms
         hof.update(population)
-        log.record(gen=gen, nevals=len(population), **stats.compile(population))
+        best = tools.selBest(population, 1)[0]
+        log.record(gen=gen, nevals=len(population), **stats.compile(population),
+                   **{field: best.cost_terms[term] for field, term in zip(min_term_fields, COST_TERMS)})
         print(log.stream)
 
     ##### Own loop instead of eaSimple: eaSimple has no elitism and only evaluates #####
@@ -494,18 +596,21 @@ def run_training():
         f.write(str(log))
         f.write("\n\n=== Best Individual of the Last Generation ===\n")
         f.write(f"Fitness: {final_best.fitness.values[0]}\n")
+        f.write(f"Cost terms: {format_cost_terms(final_best.cost_terms)}\n")
         for (name, _, _), value in zip(GENE_BOUNDS, final_best):
             f.write(f"{name}: {value}\n")
         f.write(f"Parameters: {list(final_best)}\n")
 
     print("=== Best Individual of the Last Generation ===")
     print(f"Fitness: {final_best.fitness.values[0]}")
+    print(f"Cost terms: {format_cost_terms(final_best.cost_terms)}")
     print(f"Parameters: {final_best}\n")
 
     print("=== Top Best Individuals ===")
     for rank, individual in enumerate(hof):
         print(f"Rank {rank + 1}:")
         print(f"Fitness: {individual.fitness.values[0]}")
+        print(f"Cost terms: {format_cost_terms(individual.cost_terms)}")
         print(f"Parameters: {individual}\n")
 
 
