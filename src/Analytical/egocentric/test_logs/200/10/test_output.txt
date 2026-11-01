@@ -1,0 +1,51 @@
+Protocol log: /Thesis/src/Analytical/egocentric/test_logs/200/10/main_test.log
+Running 10 drones for 10000 simulated seconds ...
+Recording: /Thesis/src/Analytical/egocentric/test_logs/200/10/test_recording.pkl (1002 samples)
+Plot it from the plots directory with: python3 plot_drones.py --directory test_logs/200/10  (same for plot_metrics.py, plot_more_metrics.py, plot_states.py and plot_decisions.py)
+
+=== Scenario ===
+Duration: 10000 s, drones: 10, map: 100x100 cells (10000 cells)
+Uncertainty rate: 0.001 every 1.0 s, transmission range: 200.0 m, speed: 15.0 m/s
+Recharge base at (0.0, 0.0), map spans +-1000 m on each axis
+Individual: base_variance=28.4697, alpha_variance_modifier=55.3251, energy_gamma=3.92711, charging_base_multiplier=24.0329, distance_between_drone_norm=109.334, charge_margin=0.342489
+
+=== Per drone ===
+ id  coverage  final unc   distance  battery         status  recharges  charging s  decisions
+  0     95.1%    89263.6     30037m    0.10           DEAD          1          90        201
+  1     97.5%    82544.9     42830m    0.10           DEAD          2         180        335
+  2     86.8%    94419.7     16626m    0.10           DEAD          0           0        101
+  3     96.8%    85515.1     30581m    0.10           DEAD          1          90        207
+  4     96.0%    87713.0     32977m    0.10           DEAD          1          90        207
+  5     61.0%    99424.7     15145m    0.10           DEAD          0           0        115
+  6     84.3%    95546.1     16481m    0.10           DEAD          0           0        119
+  7     96.8%    85576.0     30961m    0.10           DEAD          1          90        215
+  8     96.4%    85619.0     43485m    0.10           DEAD          2         180        312
+  9     84.2%    95572.6     14911m    0.10           DEAD          0           0        120
+
+=== Status timeline (sampled every 10 s) ===
+drone 0: MAPPING 0-1040 | GOING_TO_BASE 1050-1140 | CHARGING 1150-1240 | MAPPING 1250-2380 | GOING_TO_BASE 2390-2440 | DEAD 2450-10000
+drone 1: MAPPING 0-1040 | GOING_TO_BASE 1050-1150 | CHARGING 1160-1250 | MAPPING 1260-2240 | GOING_TO_BASE 2250-2350 | CHARGING 2360-2450 | MAPPING 2460-3660 | DEAD 3670-10000
+drone 2: MAPPING 0-1160 | GOING_TO_BASE 1170-1220 | DEAD 1230-10000
+drone 3: MAPPING 0-1080 | GOING_TO_BASE 1090-1180 | CHARGING 1190-1280 | MAPPING 1290-2430 | GOING_TO_BASE 2440-2510 | DEAD 2520-10000
+drone 4: MAPPING 0-1090 | GOING_TO_BASE 1100-1190 | CHARGING 1200-1290 | MAPPING 1300-2540 | DEAD 2550-10000
+drone 5: MAPPING 0-1180 | GOING_TO_BASE 1190-1210 | DEAD 1220-10000
+drone 6: MAPPING 0-1200 | GOING_TO_BASE 1210-1230 | DEAD 1240-10000
+drone 7: MAPPING 0-1090 | GOING_TO_BASE 1100-1180 | CHARGING 1190-1280 | MAPPING 1290-2420 | GOING_TO_BASE 2430-2500 | DEAD 2510-10000
+drone 8: MAPPING 0-1180 | GOING_TO_BASE 1190-1200 | CHARGING 1210-1300 | MAPPING 1310-2350 | GOING_TO_BASE 2360-2460 | CHARGING 2470-2560 | MAPPING 2570-3720 | DEAD 3730-10000
+drone 9: MAPPING 0-1160 | GOING_TO_BASE 1170-1220 | DEAD 1230-10000
+
+=== Swarm (global map) ===
+Cells seen by at least one drone: 9809/10000 (98.1%)
+Encounters between drones: 316
+Global final uncertainty: 80862.9 (sum over the 10000 cells)
+Global accumulated uncertainty: 345294413.1 (integrated every 1 s, 10002 samples)
+Mean per-drone accumulated uncertainty: 419682245.9
+Cost (the value the GA minimizes): 77990804.2113
+
+=== Checks ===
+[ok  ] every drone mapped something (10/10 did)
+[ok  ] the swarm covered 98.1% of the map
+[ok  ] the global map (80862.9) is at least as good as the best single drone (82544.9)
+[FAIL] every drone reached the base and recharged at least once (6/10 did, 8 recharges in total)
+[FAIL] no drone ran out of battery (dead: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+[ok  ] every drone stayed within 1200 m of the map centre

@@ -1,0 +1,37 @@
+Protocol log: /Thesis/src/Analytical/egocentric/test_logs/200/3/main_test.log
+Running 3 drones for 10000 simulated seconds ...
+Recording: /Thesis/src/Analytical/egocentric/test_logs/200/3/test_recording.pkl (1002 samples)
+Plot it from the plots directory with: python3 plot_drones.py --directory test_logs/200/3  (same for plot_metrics.py, plot_more_metrics.py, plot_states.py and plot_decisions.py)
+
+=== Scenario ===
+Duration: 10000 s, drones: 3, map: 100x100 cells (10000 cells)
+Uncertainty rate: 0.001 every 1.0 s, transmission range: 200.0 m, speed: 15.0 m/s
+Recharge base at (0.0, 0.0), map spans +-1000 m on each axis
+Individual: base_variance=28.4697, alpha_variance_modifier=55.3251, energy_gamma=3.92711, charging_base_multiplier=24.0329, distance_between_drone_norm=109.334, charge_margin=0.342489
+
+=== Per drone ===
+ id  coverage  final unc   distance  battery         status  recharges  charging s  decisions
+  0     34.8%   101274.5     15625m    0.10           DEAD          0           0         93
+  1     35.2%   101213.5     15259m    0.10           DEAD          0           0        101
+  2     32.3%   101633.6     16810m    0.10           DEAD          0           0        100
+
+=== Status timeline (sampled every 10 s) ===
+drone 0: MAPPING 0-1160 | DEAD 1170-10000
+drone 1: MAPPING 0-1200 | DEAD 1210-10000
+drone 2: MAPPING 0-1210 | DEAD 1220-10000
+
+=== Swarm (global map) ===
+Cells seen by at least one drone: 4155/10000 (41.5%)
+Encounters between drones: 28
+Global final uncertainty: 100155.0 (sum over the 10000 cells)
+Global accumulated uncertainty: 505087392.3 (integrated every 1 s, 10002 samples)
+Mean per-drone accumulated uncertainty: 516316257.0
+Cost (the value the GA minimizes): 26791662.9225
+
+=== Checks ===
+[ok  ] every drone mapped something (3/3 did)
+[ok  ] the swarm covered 41.5% of the map
+[ok  ] the global map (100155.0) is at least as good as the best single drone (101213.5)
+[FAIL] every drone reached the base and recharged at least once (0/3 did, 0 recharges in total)
+[FAIL] no drone ran out of battery (dead: [0, 1, 2])
+[ok  ] every drone stayed within 1200 m of the map centre
