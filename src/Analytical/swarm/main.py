@@ -38,7 +38,7 @@ DISCHARGE_RATE = 0.00073  # measured: 0.000725-0.000733 per second, flying at 15
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
-INITIAL_UNCERTAINTY = 0.5  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
+INITIAL_UNCERTAINTY = 1.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
 
 ##### Cost weights, every term is integrated over time.
