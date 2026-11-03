@@ -11,7 +11,8 @@ systems can be compared.
 It can be started from any directory. The ranges are the ones tuned by
 all_optimizations_distance.py, found in <system>/ga_logs/ga_logbook_<range>.txt. The
 individual of a range is the best of the last generation, the "Parameters:" line
-of its logbook (main.py explains why it is preferred over the Hall of Fame).
+of its logbook (main.py explains why it is preferred over the Hall of Fame). A range
+without a logbook, or without the Parameters line in it, is an error: nothing is run.
 
 Each range and swarm size writes, in <system>/test_logs/<range>/<drones>:
     main_test.log        the protocol log
@@ -76,12 +77,40 @@ def tuned_ranges(system: str) -> dict:
 
 
 def best_individual(logbook: str) -> list:
-    """The best individual of the last generation, written by main.py at the end of the logbook."""
+    """
+    The best individual of the last generation, written by main.py at the end of the
+    logbook. Raises ValueError when the logbook has none.
+    """
     with open(logbook) as f:
         parameters = [line for line in f if line.startswith("Parameters:")]
     if not parameters:
         raise ValueError(f"{logbook} has no Parameters line, the tuning did not finish")
-    return [float(value) for value in ast.literal_eval(parameters[-1].split(":", 1)[1].strip())]
+    try:
+        return [float(value) for value in ast.literal_eval(parameters[-1].split(":", 1)[1].strip())]
+    except (ValueError, SyntaxError, TypeError) as error:
+        raise ValueError(f"{logbook}: its Parameters line is not a list of numbers ({error})") from None
+
+
+def tuned_individuals(system: str, ranges) -> dict:
+    """
+    Maps each range to the individual tuned for it in the ga_logs of the system. Raises
+    ValueError, naming every range at fault, when one has no logbook or no individual
+    in it. No range falls back to another individual, it would be tested untuned.
+    """
+    logbooks = tuned_ranges(system)
+    individuals, errors = {}, []
+    for transmission_range in ranges:
+        if transmission_range not in logbooks:
+            errors.append(f"{transmission_range:g} m: no ga_logbook_{transmission_range:g}.txt "
+                          f"in {ga_logs_dir(system)}")
+            continue
+        try:
+            individuals[transmission_range] = best_individual(logbooks[transmission_range])
+        except ValueError as error:
+            errors.append(f"{transmission_range:g} m: {error}")
+    if errors:
+        raise ValueError("\n".join(errors))
+    return individuals
 
 
 def recorded_since(logs_directory: str, start: float) -> bool:
@@ -155,26 +184,21 @@ def main() -> int:
                         help="also run the ones whose recording already exists")
     args = parser.parse_args()
 
-    logbooks = tuned_ranges(args.system)
-    logs_dir = ga_logs_dir(args.system)
-    ranges = args.ranges if args.ranges is not None else list(logbooks)
+    ranges = args.ranges if args.ranges is not None else list(tuned_ranges(args.system))
+    if not ranges:
+        parser.error(f"no ga_logbook_<range>.txt in {ga_logs_dir(args.system)}, nothing to test")
+    ##### Every individual is read before the first run, so a range without one stops #####
+    ##### the sweep here and not after hours of the others.                             #####
+    try:
+        individuals = tuned_individuals(args.system, ranges)
+    except ValueError as error:
+        parser.error(f"no tuned individual, nothing was run:\n{error}")
     base = "the map centre" if args.base_position is None else tuple(args.base_position)
 
     summary = []
     interrupted = False
     for transmission_range in ranges:
-        if transmission_range not in logbooks:
-            print(f"##### {transmission_range:g} m: no ga_logbook_{transmission_range:g}.txt "
-                  f"in {logs_dir}, skipped #####")
-            summary.append((transmission_range, None, "no logbook", 0.0, logs_dir))
-            continue
-        try:
-            individual = best_individual(logbooks[transmission_range])
-        except (ValueError, SyntaxError) as error:
-            print(f"##### {transmission_range:g} m: {error}, skipped #####")
-            summary.append((transmission_range, None, "no individual", 0.0, logbooks[transmission_range]))
-            continue
-
+        individual = individuals[transmission_range]
         for number_of_drones in args.drones:
             logs_directory = os.path.join(args.test_logs, f"{transmission_range:g}", str(number_of_drones))
             absolute_logs_directory = os.path.join(system_dir(args.system), logs_directory)
@@ -206,7 +230,7 @@ def main() -> int:
 
     print(f"\n===== {args.system}: tests of the tuned individuals, base at {base} =====")
     for transmission_range, number_of_drones, result, elapsed, path in summary:
-        drones = "" if number_of_drones is None else f"{number_of_drones} drones"
+        drones = f"{number_of_drones} drones"
         print(f"{transmission_range:>7g} m  {drones:<10} {result:<14} {elapsed / 60:7.1f} min  {path}")
     return 0 if all(result in ("ok", "skipped") for _, _, result, _, _ in summary) else 1
 
