@@ -101,6 +101,7 @@ ids `0..n-1` and base `b` is node `n + b`.
 ```
 expanding_testing/
 ├── README.md
+├── plot_charging_bases.py global uncertainty and drones charging per base, several runs
 ├── swarm/
 │   ├── main.py            scenario, simulation and cost (no GA)
 │   ├── main_test.py       single simulation, with checks, log and recording
@@ -183,8 +184,35 @@ python3 plot_drones.py --directory /full/path/to/expanding_testing/swarm/logs_2b
 ```
 
 `plot_more_metrics.py` draws the drones charging on all the bases together
-against `Nc`, which is the congestion as it is counted here. None of the plots
-splits it by base yet, that is in the **Recharge bases** section of the report.
+against `Nc`, which is the congestion as it is counted here.
+
+### Charging per base, comparing runs
+
+`plot_charging_bases.py`, in this directory, compares runs on the global
+uncertainty and on the drones charging **on each base**, stacked so the top
+is the total that `Nc` limits, with the time above `Nc` shaded. Each run is a
+logs directory and its caption. A relative directory is looked up here first,
+then from the current directory, so the single-base runs of `Analytical/` are
+`../swarm/logs` or `../egocentric/logs` (all their charging drones count on
+base 0):
+
+```bash
+cd src/Analytical/expanding_testing
+python3 plot_charging_bases.py --run swarm/logs_2bases "Swarm, 2 bases" \
+    --run egocentric/logs_2bases "Egocentric, 2 bases" \
+    --run ../swarm/logs "Swarm, conventional" --per-cell
+```
+
+| Flag | Description |
+|---|---|
+| `--run DIRECTORY CAPTION` | a run to plot, repeat it for every run (up to 6) |
+| `--per-cell` | global uncertainty divided by the number of cells, needed when the maps have different sizes |
+| `--output FILE` | save the figure (png, pdf, svg ...) instead of opening a window |
+
+It also prints the same numbers as a table, and where the bases of each run
+are. The time above `Nc` comes from the recording samples (`--monitor-interval`,
+10 s by default), so it can differ a little from the report of `main_test.py`,
+which uses the 1 s samples.
 
 ## Checks
 
