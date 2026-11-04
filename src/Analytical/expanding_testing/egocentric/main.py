@@ -1,17 +1,19 @@
 """
 Scenario of the multi-base tests: the egocentric system of Analytical/egocentric with
-several recharge bases. It builds and scores one simulation, main_test.py is
-the entry point. There is no GA here, the individuals come from the tuning of
-Analytical/egocentric/main.py.
+several recharge bases. It builds and runs one simulation, main_test.py is
+the entry point. There is no GA and no cost here: the individuals come from the
+tuning of Analytical/egocentric/main.py, and a run is looked at through the series of
+GlobalMapMonitor, the global uncertainty and the drones charging and dead over time.
 
 Differences with Analytical/egocentric/main.py:
 - CHARGING_BASE_POSITIONS is a list, every base is a node of the simulation
   (recharge_base.py), added after the drones.
 - The drones take off from the bases in turn, see protocol.take_off_base.
 - The congestion is counted over all the bases together: Nc is the most drones
-  charging at once, on any base, before the protocol and the cost react to it.
-  The occupancy of each base is recorded too, for the report.
-- The GA (training, objective function, base sampling) is not here.
+  charging at once, on any base, before the protocol reacts to it. The
+  occupancy of each base is recorded too, for the report.
+- The GA (training, objective function, base sampling) and the cost it
+  minimizes are not here.
 """
 
 import random
@@ -31,8 +33,6 @@ from gradysim.simulator.handler.mobility import (
 
 import numpy as np
 
-how_many_simulations = 0
-
 ##### Scenario. main_test.py overrides MAP_WIDTH/MAP_HEIGHT and TRANSMISSION_RANGE from its command line
 SIMULATION_DURATION = 10000
 MAP_WIDTH = 100   # cells, 20 m apart: 2000 m x 2000 m centred on (0, 0). The protocol needs a square map
@@ -49,34 +49,25 @@ DISCHARGE_RATE = 0.00073  # measured: 0.000725-0.000733 per second, flying at 15
 CHARGING_BASE_POSITIONS = [(0.0, 0.0)]  # [(x, y), ...] in metres, one per base
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
-INITIAL_UNCERTAINTY = 0.5  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
+INITIAL_UNCERTAINTY = 0.5  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the accumulated uncertainty
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
 ##### The egocentric bases send nothing, they are placed exactly as in the swarm system so both run the same nodes. #####
 ##### There the range of gradysim is 3D, and the antenna is at the drones' DRONE_ALTITUDE so the base heartbeats    #####
 ##### reach as far as the drone-to-drone messages.                                                                  #####
 BASE_ANTENNA_ALTITUDE = 50.0
 
-##### Cost weights, every term is integrated over time.
-##### UNCERTAINTY_WEIGHT was 0.01 on the 50x50 map at 10 m/s. On 100x100 at 15 m/s the accumulated #####
-##### uncertainty of BEST_INDIVIDUAL is 13.9x larger (GA aggregate, 3 seeds x sizes 3/5/7/10), so the  #####
-##### weight is divided by it: the uncertainty term keeps its old size next to the penalties.         #####
-UNCERTAINTY_WEIGHT = 0.00072          # cost per unit of global uncertainty per simulated second
-DEAD_DRONE_PENALTY = 1000.0           # cost per dead drone per simulated second
-CHARGING_CONGESTION_PENALTY = 30.0    # K of congestion_penalty_rate, cost per simulated second
-CHARGING_CONGESTION_STEEPNESS = 5.0   # beta of congestion_penalty_rate, how fast the cost grows with the share of the swarm above Nc
-COST_TERMS = ("uncertainty", "dead", "charging")  # the terms summed into the cost, see simulation_cost_terms
-
 ##### How often the global map is assembled and sampled, in simulated seconds.
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
 
-##### Genome layout of Analytical/egocentric/main.py: (name, low, high), in the order the individual stores them.
-GENE_BOUNDS = [
-    ("base_variance",            0.25,  100.0),   # sigma_0^2 of Eq. (11), in cells^2
-    ("alpha_variance_modifier",  0.0,   100.0),   # alpha of Eq. (11)
-    ("energy_gamma",             0.10,  100.0),   # gamma of Eqs. (14)/(15)
-    ("charging_base_multiplier", 0.0,  100.0),   # kappa of Eq. (15)
-    ("distance_between_drone_norm", 10.0, 1000.0),
-    ("charge_margin", MIN_CHARGE_MARGIN, 0.5),
+##### Genome layout of Analytical/egocentric/main.py: the names of its GENE_BOUNDS, in the order the individual #####
+##### stores them. The bounds are only there for the GA, the individuals arrive here already tuned.      #####
+GENE_NAMES = [
+    "base_variance",               # sigma_0^2 of Eq. (11), in cells^2
+    "alpha_variance_modifier",     # alpha of Eq. (11)
+    "energy_gamma",                # gamma of Eqs. (14)/(15)
+    "charging_base_multiplier",    # kappa of Eq. (15)
+    "distance_between_drone_norm",
+    "charge_margin",
 ]
 
 ##### No individual is kept here. main_test.py and multiple_runs.py take the one the GA tuned for the range, #####
@@ -86,7 +77,7 @@ GENE_BOUNDS = [
 def unpack_individual(individual):
     """
     Maps the flat GA genome onto the protocol's tunable parameters, in the
-    order declared by GENE_BOUNDS.
+    order declared by GENE_NAMES.
     """
     base_variance, alpha, gamma, kappa, drone_norm, charge_margin = individual
     return dict(
@@ -120,17 +111,6 @@ def default_charging_capacity(number_of_drones: int) -> int:
     return int(number_of_drones/3)
 
 
-def congestion_penalty_rate(excess: int, number_of_drones: int) -> float:
-    """
-    Cost per simulated second of having excess drones CHARGING above the
-    capacity: K * (exp(beta * excess / number_of_drones) - 1). It is zero with
-    no excess, grows faster than linearly with every extra drone, and the same
-    excess costs more in a smaller swarm, where it is a bigger share of it.
-    """
-    return CHARGING_CONGESTION_PENALTY * (
-        np.exp(CHARGING_CONGESTION_STEEPNESS * excess / number_of_drones) - 1.0)
-
-
 class GlobalMapMonitor:
     """
     Assembles and samples the global map of the swarm while the simulation runs.
@@ -144,20 +124,18 @@ class GlobalMapMonitor:
     running.
 
     accomulated_uncertainty is the integral of the global uncertainty over time,
-    in uncertainty*second. That is the real cost of the simulation, the value the
-    GA minimizes.
+    in uncertainty*second.
 
-    The status of the swarm is sampled at the same instants, for the penalties:
-    accomulated_dead_time is the integral of the number of DEAD drones, in
-    drone*second, and accomulated_charging_excess the integral of the number of
-    drones CHARGING above nc_charging_base, over all the bases together, also in
-    drone*second. accomulated_charging_penalty is the integral of
-    congestion_penalty_rate of that number, the congestion term of the cost. It
-    is not linear, so it has to be accumulated sample by sample.
+    The status of the swarm is sampled at the same instants: dead_drones and
+    charging_drones are the number of DEAD and of CHARGING drones on every
+    sample. accomulated_dead_time is the integral of the number of DEAD drones,
+    in drone*second, and accomulated_charging_excess the integral of the number
+    of drones CHARGING above nc_charging_base, over all the bases together, also
+    in drone*second.
 
     charging_drones_per_base keeps how many drones charge on each base at every
-    sample. It does not enter the cost, it is there to know where the drones
-    charge.
+    sample, to know where the drones charge. Nc is still checked against the
+    total over all the bases.
     """
 
     def __init__(self, simulation, number_of_drones: int, sample_interval: float,
@@ -181,7 +159,6 @@ class GlobalMapMonitor:
         self.charging_drones_per_base = []  # one array of number_of_bases counts per sample
         self.accomulated_dead_time = 0.0
         self.accomulated_charging_excess = 0.0
-        self.accomulated_charging_penalty = 0.0
 
     def sample(self, time: float) -> None:
         if self._protocols is None:
@@ -201,8 +178,8 @@ class GlobalMapMonitor:
         self.uncertainty.append(uncertainty)
         self.unvisited.append(int(self.visited.size - self.visited.sum()))
 
-        ##### Penalties. A dead drone counts for every sample until the end of #####
-        ##### the run, so the earlier it dies the more it costs.                #####
+        ##### Status of the swarm. A dead drone stays DEAD, so it counts on #####
+        ##### every sample until the end of the run.                       #####
         dead = sum(p.status == DroneStatus.DEAD for p in self._protocols)
         charging_per_base = np.bincount([p.recharge_base_index for p in self._protocols
                                          if p.status == DroneStatus.CHARGING],
@@ -211,8 +188,6 @@ class GlobalMapMonitor:
         self.accomulated_dead_time += dead * self.sample_interval
         excess = max(0, charging - self.nc_charging_base)
         self.accomulated_charging_excess += excess * self.sample_interval
-        self.accomulated_charging_penalty += (congestion_penalty_rate(excess, self.number_of_drones)
-                                              * self.sample_interval)
 
         self.dead_drones.append(dead)
         self.charging_drones.append(charging)
@@ -298,13 +273,9 @@ def create_and_run_simulation(individual, mode: str = "train",
     from them in turn. When None, CHARGING_BASE_POSITIONS is used.
 
     charging_capacity is Nc, the most drones charging at once, over all the
-    bases together, before the congestion terms start, in the protocol and in
-    the cost. When None, default_charging_capacity.
+    bases together, before the congestion term of the protocol starts. When
+    None, default_charging_capacity.
     """
-    ##### Configuring global parameter
-    global how_many_simulations
-    how_many_simulations += 1
-
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -396,49 +367,18 @@ def create_and_run_simulation(individual, mode: str = "train",
     return results_aggregator, global_map
 
 
-def simulation_cost_terms(global_map: GlobalMapMonitor) -> dict:
+def log_simulation_summary(results_aggregator, global_map: GlobalMapMonitor) -> None:
     """
-    The weighted terms of the cost of one simulation, keyed by COST_TERMS. Their
-    sum is the value minimized, they are kept apart so it can be seen which one
-    drives it.
+    Writes the swarm level results of the run to the log, at the end of a test run.
     """
-    return dict(
-        uncertainty=UNCERTAINTY_WEIGHT * global_map.accomulated_uncertainty,
-        dead=DEAD_DRONE_PENALTY * global_map.accomulated_dead_time,
-        charging=global_map.accomulated_charging_penalty,
-    )
-
-
-def format_cost_terms(terms: dict) -> str:
-    return ", ".join(f"{term}: {terms[term]:.6g}" for term in COST_TERMS)
-
-
-def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
-                             mode: str = "train"):
-    """
-    Turns the result of the simulation into the single value to be minimized.
-    """
-    ##### Getting the results of the simulation #####
     number_of_drones = global_map.number_of_drones
     medium_uncertainty = 0
     for i in range(number_of_drones):
         medium_uncertainty += results_aggregator[i]['accomulated_uncertainty']/number_of_drones
 
-    ##### Penalties, accumulated by the monitor on every sample #####
-    terms = simulation_cost_terms(global_map)
-    dead_penalty = terms["dead"]
-    charging_penalty = terms["charging"]
-
-    ##### Cost for optimization #####
-    total_cost = sum(terms.values())
-
-    if mode == "test":
-        logging.info(f"Global accomulated uncertainty: {global_map.accomulated_uncertainty}, cost: {terms['uncertainty']}")
-        logging.info(f"Global final uncertainty: {global_map.final_uncertainty}")
-        logging.info(f"Global unvisited cells: {global_map.unvisited_cells}")
-        logging.info(f"Medium accomulated uncertainty per drone: {medium_uncertainty}")
-        logging.info(f"Dead drone time: {global_map.accomulated_dead_time} drone*s, penalty: {dead_penalty}")
-        logging.info(f"Charging above Nc, over all the bases: {global_map.accomulated_charging_excess} drone*s, penalty: {charging_penalty}")
-        logging.info(f"Cost: {total_cost}")
-
-    return total_cost
+    logging.info(f"Global accomulated uncertainty: {global_map.accomulated_uncertainty}")
+    logging.info(f"Global final uncertainty: {global_map.final_uncertainty}")
+    logging.info(f"Global unvisited cells: {global_map.unvisited_cells}")
+    logging.info(f"Medium accomulated uncertainty per drone: {medium_uncertainty}")
+    logging.info(f"Dead drone time: {global_map.accomulated_dead_time} drone*s")
+    logging.info(f"Charging above Nc, over all the bases: {global_map.accomulated_charging_excess} drone*s")

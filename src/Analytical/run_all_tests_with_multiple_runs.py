@@ -40,7 +40,8 @@ import numpy as np
 from all_tests_distance import tuned_ranges, tuned_individuals, ga_logs_dir
 from multiple_runs import (SYSTEMS, NUMBER_OF_RUNS, NUMBER_OF_DRONES, SIMULATION_DURATION,
                            GLOBAL_MAP_SAMPLE_INTERVAL, DEFAULT_LOGS_DIRECTORY, CONFIG_FILE,
-                           system_dir, is_expanding, tuned_system, load_runs, time_grid, run_statistics)
+                           system_dir, is_expanding, tuned_system, has_cost, load_runs, time_grid,
+                           run_statistics)
 
 ANALYTICAL_DIR = os.path.dirname(os.path.abspath(__file__))
 MULTIPLE_RUNS = os.path.join(ANALYTICAL_DIR, "multiple_runs.py")
@@ -75,7 +76,9 @@ def directory_statistics(directory: str):
         return None
     grid = time_grid(config)
     statistics = [run_statistics(record, grid) for record in runs]
-    return len(runs), {name: [stats[name] for stats in statistics] for name in statistics[0]}
+    ##### Only the statistics every run has: the cost is missing from the runs of expanding_testing #####
+    names = [name for name in statistics[0] if all(name in stats for stats in statistics)]
+    return len(runs), {name: [stats[name] for stats in statistics] for name in names}
 
 
 def main() -> int:
@@ -174,13 +177,14 @@ def main() -> int:
                         time.time() - start))
 
     logs_root = os.path.join(system_dir(args.system), args.logs_root)
+    with_cost = has_cost(args.system)
     lines = [
         f"===== {args.system}: multiple_runs.py on every range, logs in {logs_root}/<range>/<drones> =====",
         f"{args.duration} s, {args.bases} base(s) drawn again on every run, seeds from {args.seed}",
         "Mean +- std deviation over the runs of each range and swarm size",
         "",
         f"{'range':>7} {'drones':>6}  {'result':<12} {'time':>9}  {'runs':>4}  {'mean uncertainty':>18}  "
-        f"{'above Nc (%)':>14}  {'dead at the end':>15}  {'cost':>18}",
+        f"{'above Nc (%)':>14}  {'dead at the end':>15}" + (f"  {'cost':>18}" if with_cost else ""),
     ]
     for transmission_range, number_of_drones, result, elapsed in summary:
         row = f"{transmission_range:>5g} m {number_of_drones:>6}  {result:<12} {elapsed / 60:>5.1f} min  "
@@ -190,7 +194,7 @@ def main() -> int:
         else:
             runs, values = statistics
             row += (f"{runs:>4}  {mean_std(values['mean_uncertainty']):>18}  {mean_std(values['above_nc']):>14}  "
-                    f"{mean_std(values['dead'], 2):>15}  {mean_std(values['cost']):>18}")
+                    f"{mean_std(values['dead'], 2):>15}" + (f"  {mean_std(values['cost']):>18}" if with_cost else ""))
         lines.append(row)
     lines.append("")
     lines.append(f"Total: {(time.time() - sweep_start) / 60:.1f} min")

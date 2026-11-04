@@ -38,7 +38,7 @@ import argparse
 import numpy as np
 
 from . import main
-from .main import GENE_BOUNDS
+from .main import GENE_NAMES
 from .recorder import SimulationRecorder
 from .protocol import DroneStatus, Drone, drone_protocol_factory
 ##### The individuals tuned for each range, found the same way as the tests do #####
@@ -185,7 +185,8 @@ def run_simulation(duration: int, number_of_drones: int, individual: list,
             charging_base_positions=charging_base_positions,
             charging_capacity=charging_capacity,
         )
-        cost = main.evaluate_simulation_cost(results, global_map, mode=mode)
+        if mode == "test":
+            main.log_simulation_summary(results, global_map)
     finally:
         main.drone_protocol_factory = original_factory
         main.SIMULATION_DURATION = original_duration
@@ -198,7 +199,7 @@ def run_simulation(duration: int, number_of_drones: int, individual: list,
     if last_observed[0] is not None and last_observed[0] != last_recorded[0]:
         recorder.snapshot(last_observed[0])
 
-    return results, recorder, global_map, cost
+    return results, recorder, global_map
 
 
 def status_episodes(times, statuses) -> list:
@@ -249,7 +250,7 @@ def format_position(position) -> str:
 
 
 def report(results: dict, recorder: SimulationRecorder,
-           global_map: main.GlobalMapMonitor, cost: float,
+           global_map: main.GlobalMapMonitor,
            duration: int, number_of_drones: int, individual: list,
            monitor_interval: float = MONITOR_INTERVAL,
            charging_base_positions: list = main.CHARGING_BASE_POSITIONS) -> bool:
@@ -270,7 +271,7 @@ def report(results: dict, recorder: SimulationRecorder,
           f"at once over all of them: "
           + ", ".join(f"{b}: {format_position(position)}" for b, position in enumerate(charging_base_positions)))
     print("Individual: " + ", ".join(
-        f"{name}={value:g}" for (name, _, _), value in zip(GENE_BOUNDS, individual)))
+        f"{name}={value:g}" for name, value in zip(GENE_NAMES, individual)))
     print()
 
     print("=== Per drone ===")
@@ -335,7 +336,7 @@ def report(results: dict, recorder: SimulationRecorder,
     print()
 
     ##### The global map is the element-wise minimum of the maps of every drone: #####
-    ##### what the system knows as a whole, which is what the GA minimizes.      #####
+    ##### what the system knows as a whole.                                       #####
     print("=== Swarm (global map) ===")
     swarm_visited = total_cells - global_map.unvisited_cells
     print(f"Cells seen by at least one drone: {swarm_visited}/{total_cells} "
@@ -347,7 +348,6 @@ def report(results: dict, recorder: SimulationRecorder,
           f"(integrated every {global_map.sample_interval:g} s, {len(global_map.times)} samples)")
     print(f"Mean per-drone accumulated uncertainty: "
           f"{np.mean([r['accomulated_uncertainty'] for r in results.values()]):.1f}")
-    print(f"Cost: {cost:.4f} ({main.format_cost_terms(main.simulation_cost_terms(global_map))})")
     print()
 
     ##### Checks. Each one is a claim that has to hold for the run to be #####
@@ -420,10 +420,10 @@ def main_test() -> int:
     parser.add_argument("--sample-interval", type=float,
                         default=main.GLOBAL_MAP_SAMPLE_INTERVAL,
                         help="simulated seconds between two samples of the global map, "
-                             "the integration step of the cost (default: %(default)s)")
-    parser.add_argument("--individual", type=float, nargs=len(GENE_BOUNDS),
-                        metavar=tuple(name.upper() for name, _, _ in GENE_BOUNDS),
-                        help="genes of the individual to run, in the GENE_BOUNDS order (default: the one "
+                             "the integration step of the accumulated uncertainty (default: %(default)s)")
+    parser.add_argument("--individual", type=float, nargs=len(GENE_NAMES),
+                        metavar=tuple(name.upper() for name in GENE_NAMES),
+                        help="genes of the individual to run, in the GENE_NAMES order (default: the one "
                              f"tuned for --transmission-range in Analytical/{EXTENDED_SYSTEM}/ga_logs, "
                              "an error when there is none)")
     parser.add_argument("--transmission-range", type=float, default=main.TRANSMISSION_RANGE,
@@ -439,7 +439,7 @@ def main_test() -> int:
                              f"(default: one base at {main.CHARGING_BASE_POSITIONS[0]})")
     parser.add_argument("--charging-capacity", type=int, default=None, metavar="NC",
                         help="most drones charging at once, over all the bases together, before the "
-                             "congestion terms start, so drones - NC are meant to keep mapping "
+                             "protocol's congestion term starts, so drones - NC are meant to keep mapping "
                              "(default: int(drones / 3), the capacity of the single base of Analytical/egocentric)")
     parser.add_argument("--quiet", action="store_true",
                         help="run the protocol in train mode, without the per-routine log")
@@ -468,9 +468,9 @@ def main_test() -> int:
             parser.error(f"no tuned individual, nothing was run:\n{error}\n"
                          f"Tune the range first, or give the individual with --individual")
         origin = tuned_ranges(EXTENDED_SYSTEM)[args.transmission_range]
-        if len(individual) != len(GENE_BOUNDS):
+        if len(individual) != len(GENE_NAMES):
             parser.error(f"{origin} has {len(individual)} genes, {EXTENDED_SYSTEM} takes "
-                         f"{len(GENE_BOUNDS)}: {[name for name, _, _ in GENE_BOUNDS]}")
+                         f"{len(GENE_NAMES)}: {GENE_NAMES}")
 
     map_half_extent = main.MAP_WIDTH * DISTANCE_BETWEEN_CELLS / 2
     charging_base_positions = []
@@ -504,7 +504,7 @@ def main_test() -> int:
     print(f"Individual ({origin}): {individual}")
     print(f"Running {args.drones} drones with {len(charging_base_positions)} base(s) "
           f"for {args.duration} simulated seconds ...")
-    results, recorder, global_map, cost = run_simulation(
+    results, recorder, global_map = run_simulation(
         duration=args.duration,
         number_of_drones=args.drones,
         mode=mode,
@@ -524,7 +524,7 @@ def main_test() -> int:
           f"plot_states.py and plot_decisions.py)")
     print()
 
-    passed = report(results, recorder, global_map, cost, args.duration, args.drones,
+    passed = report(results, recorder, global_map, args.duration, args.drones,
                     monitor_interval=args.monitor_interval,
                     individual=individual,
                     charging_base_positions=charging_base_positions)

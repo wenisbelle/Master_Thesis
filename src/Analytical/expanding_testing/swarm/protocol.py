@@ -877,7 +877,6 @@ class Drone(IProtocol):
             if is_new_charging and (self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE):
                 self.internal_mobility_command()
 
-            # Handled here for every status, it must not reach the status gate below
             return
 
         if self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE:        

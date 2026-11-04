@@ -126,7 +126,7 @@ def load_run(path: str, caption: str) -> dict:
 
 
 def time_mean(t, values):
-    """Mean over the run, trapezoidal like the cost."""
+    """Mean over the run, trapezoidal."""
     if len(t) < 2 or t[-1] == t[0]:
         return float(np.mean(values))
     return float(np.sum((values[1:] + values[:-1]) / 2 * np.diff(t)) / (t[-1] - t[0]))

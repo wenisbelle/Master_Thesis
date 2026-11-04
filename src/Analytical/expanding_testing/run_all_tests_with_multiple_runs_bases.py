@@ -139,7 +139,7 @@ def main() -> int:
             "over every system and scenario",
             "",
             f"{'range':>7}  {'scenario':<24}  {'result':<12} {'time':>9}  {'runs':>4}  {'mean uncertainty':>18}  "
-            f"{'above Nc (%)':>14}  {'dead at the end':>15}  {'cost':>20}",
+            f"{'above Nc (%)':>14}  {'dead at the end':>15}",
         ]
         for transmission_range, result, elapsed in summary:
             for scenario in scenarios:
@@ -151,8 +151,7 @@ def main() -> int:
                 else:
                     runs, values = statistics
                     row += (f"{runs:>4}  {mean_std(values['mean_uncertainty']):>18}  "
-                            f"{mean_std(values['above_nc']):>14}  {mean_std(values['dead'], 2):>15}  "
-                            f"{mean_std(values['cost']):>20}")
+                            f"{mean_std(values['above_nc']):>14}  {mean_std(values['dead'], 2):>15}")
                 lines.append(row)
         lines.append("")
         lines.append(f"Total: {total:.1f} min")

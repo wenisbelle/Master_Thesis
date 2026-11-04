@@ -9,9 +9,10 @@ It holds the two systems of `Analytical/`, each in its own directory:
 Each one is a copy of the test setup of the system with the same name in
 `Analytical/`, extended to **any number of recharge bases**. The map size, the
 communication range, the bases, the charging capacity and the individual are
-set on the command line. There is no GA here: the individuals come from the
-tuning in `Analytical/<system>/main.py` (the `Parameters:` line of a logbook
-in `Analytical/<system>/ga_logs/`).
+set on the command line. There is no GA and no cost here: the individuals come
+from the tuning in `Analytical/<system>/main.py` (the `Parameters:` line of a
+logbook in `Analytical/<system>/ga_logs/`), and a run is looked at through the
+global uncertainty and the drones charging and dead over time.
 
 With a single base, the decisions of both systems are the same as in
 `Analytical/`. Given the same inputs, the fitness and the battery estimate
@@ -38,20 +39,18 @@ The point of the capacity is to keep a minimum number of drones mapping, so
 congestion is the number of drones charging **at once over all the bases**,
 whatever base they are on. `Nc` (`--charging-capacity`, default `int(drones / 3)`,
 the capacity of the single base of `Analytical/`) is the most drones charging
-at once before the protocol and the cost react. Future base limitations will be explored
-in the next works. The rule is the same as in
-`Analytical/`; only the drones are now spread over several bases:
+at once before the protocol reacts. Future base limitations will be explored
+in the next works. The rule is the same as in `Analytical/`, only the drones
+are now spread over several bases: the swarm drone's estimate of how many
+others are charging (`aproximate_battery_consumption_model`) is exactly the
+original one.
 
-- the swarm drone's estimate of how many others are charging
-  (`aproximate_battery_consumption_model`) is exactly the original one;
-- the congestion cost is `congestion_penalty_rate` of the total excess over `Nc`.
-
-Both are soft: they push the drones to stay out longer when the swarm is
-congested, they do not forbid more than `Nc` drones charging at once. The
+It is soft: it pushes the drones to stay out longer when the swarm is
+congested, it does not forbid more than `Nc` drones charging at once. The
 report says how much of the time `Nc` was respected.
 
 The occupancy of **each** base is still recorded and reported, to see where
-the drones charge, but it enters neither the decisions nor the cost.
+the drones charge, but it does not enter the decisions.
 
 ### The recharge base is a node
 
@@ -106,7 +105,7 @@ expanding_testing/
 ├── run_all_tests_with_multiple_runs_bases.py the same for every tuned range
 ├── plot_multiple_runs_bases.py               plots of those runs, per scenario and range
 ├── swarm/
-│   ├── main.py            scenario, simulation and cost (no GA)
+│   ├── main.py            scenario and simulation (no GA, no cost)
 │   ├── main_test.py       single simulation, with checks, log and recording
 │   ├── protocol.py        drone
 │   ├── recharge_base.py   base node and ChargingRegistry
@@ -152,26 +151,25 @@ python3 -m Analytical.expanding_testing.egocentric.main_test --base -500 -500 --
 | Flag | Default | Description |
 |---|---|---|
 | `--base X Y` | one base at `(0, 0)` | position of a recharge base, in m, map centre at `(0, 0)`. Repeat it for every base |
-| `--charging-capacity NC` | `int(drones / 3)` | most drones charging at once, over all the bases together, before the congestion terms start |
+| `--charging-capacity NC` | `int(drones / 3)` | most drones charging at once, over all the bases together, before the protocol's congestion term starts |
 | `--map-size N` | `100` | side of the square map in cells, 20 m apart (100 → ±1000 m) |
 | `--transmission-range M` | `200` | communication range of the drones and of the bases, in m. Also picks the tuned individual |
-| `--individual G1 G2 ...` | the one tuned for `--transmission-range` | genes in the `GENE_BOUNDS` order: 9 for swarm, 6 for egocentric |
+| `--individual G1 G2 ...` | the one tuned for `--transmission-range` | genes in the `GENE_NAMES` order of `main.py`: 9 for swarm, 6 for egocentric |
 | `--drones N` | `10` | number of drones |
 | `--duration SECONDS` | `10000` | simulated seconds |
 | `--logs_directory NAME` | `logs` | directory, relative to `<system>/` (or absolute), for the log and the recording |
 | `--monitor-interval SECONDS` | `10.0` | simulated seconds between two samples of the drone state in the recording |
-| `--sample-interval SECONDS` | `1.0` | simulated seconds between two samples of the global map, the integration step of the cost |
+| `--sample-interval SECONDS` | `1.0` | simulated seconds between two samples of the global map, the integration step of the accumulated uncertainty |
 | `--quiet` | off | train mode, without the per-routine log (and without the distance flown) |
 | `--map-plot` | off | live per-drone map (very slow) |
 | `--simulation-plot` | off | gradysim 3D view (slow), shows the bases as nodes |
 
-The report is that of `Analytical/<system>/main_test.py`, plus:
+The report is that of `Analytical/<system>/main_test.py` without the cost, plus:
 
 - a **per base** column in the drone table: recharges at each base, e.g. `3/1`;
 - a **Recharge bases** section: recharges, most drones charging at once and
   mean occupancy, for each base and for all of them, plus the time with more
-  than `Nc` drones charging and the share of the run `Nc` was respected;
-- the split of the cost into its terms (uncertainty, dead, charging).
+  than `Nc` drones charging and the share of the run `Nc` was respected.
 
 The exit status is 0 when every check passes and 1 otherwise.
 

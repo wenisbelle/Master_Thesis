@@ -74,7 +74,7 @@ if ANALYTICAL_DIR not in sys.path:
 from all_tests_distance import tuned_ranges, tuned_individuals, ga_logs_dir
 from multiple_runs import (SIMULATION_DURATION, TRANSMISSION_RANGE, GLOBAL_MAP_SAMPLE_INTERVAL,
                            DISTANCE_BETWEEN_CELLS, CONFIG_FILE, SUMMARY_FILE, RUN_PATTERN,
-                           system_dir, system_module, tuned_system, run_file, run_simulation,
+                           system_dir, system_module, tuned_system, gene_names, run_file, run_simulation,
                            load_runs, summary, time_grid, run_statistics, format_position)
 from run_all_tests_with_multiple_runs import mean_std
 
@@ -189,7 +189,7 @@ def run_jobs(jobs: list, workers: int, configs: dict) -> int:
                              for quadrant, position in zip(record["base_quadrants"], record["base_positions"]))
             print(f"[{done}/{len(jobs)}] {name}, bases {bases}): mean global uncertainty "
                   f"{stats['mean_uncertainty']:.1f}, more than Nc = {record['nc_charging_base']} charging "
-                  f"{stats['above_nc']:.1f}% of the time, {stats['dead']} dead, cost {stats['cost']:.1f}, "
+                  f"{stats['above_nc']:.1f}% of the time, {stats['dead']} dead, "
                   f"{record['elapsed'] / 60:.1f} min -> {path}", flush=True)
     return failed
 
@@ -228,7 +228,7 @@ def main() -> int:
                         help="simulated seconds of each run (default: %(default)s)")
     parser.add_argument("--sample-interval", type=float, default=GLOBAL_MAP_SAMPLE_INTERVAL,
                         help="simulated seconds between two samples of the global map, the "
-                             "integration step of the cost (default: %(default)s)")
+                             "step of the series of every run (default: %(default)s)")
     parser.add_argument("--seed", type=int, default=0,
                         help="run k is seeded with SEED + k, which also draws its bases (default: %(default)s)")
     parser.add_argument("--logs-root", default=DEFAULT_LOGS_ROOT,
@@ -256,7 +256,7 @@ def main() -> int:
         except ValueError as error:
             errors.append(f"{tuned_system(system)} ({ga_logs_dir(tuned_system(system))}): {error}")
             continue
-        genes = len(system_module(system).GENE_BOUNDS)
+        genes = len(gene_names(system))
         if len(individuals[system]) != genes:
             errors.append(f"{origins[system]}: the individual has {len(individuals[system])} genes, "
                           f"{system} takes {genes}")
@@ -335,7 +335,7 @@ def main() -> int:
         failed = run_jobs(jobs, workers, configs)
 
     lines = [f"{'system':<28} {'scenario':<24} {'runs':>4}  {'mean uncertainty':>18}  {'above Nc (%)':>14}  "
-             f"{'dead at the end':>15}  {'cost':>20}"]
+             f"{'dead at the end':>15}"]
     for directory, config in configs.items():
         config, runs = load_runs(directory)
         if not runs:
@@ -350,7 +350,7 @@ def main() -> int:
 
         lines.append(f"{config['system']:<28} {config['scenario']:<24} {len(runs):>4}  "
                      f"{mean_std(values('mean_uncertainty')):>18}  {mean_std(values('above_nc')):>14}  "
-                     f"{mean_std(values('dead'), 2):>15}  {mean_std(values('cost')):>20}")
+                     f"{mean_std(values('dead'), 2):>15}")
     print(f"\nMean +- std deviation over the runs, {args.transmission_range:g} m "
           f"(every run in {SUMMARY_FILE} of its directory):")
     print("\n".join(lines))

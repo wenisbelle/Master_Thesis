@@ -13,8 +13,8 @@ It can be started from any directory, with gradysim on the PYTHONPATH (it is in 
 container). The runs are written to <system>/multiple_runs/<range>/<drones>, the same
 layout as the test_logs of all_tests_distance.py:
     run_<k>.pkl    the global uncertainty, the drones charging and the dead drones at every
-                   --sample-interval, plus the base(s), the seed, the cost and the final
-                   state of every drone
+                   --sample-interval, plus the base(s), the seed, the cost (not for
+                   expanding_testing, which has none) and the final state of every drone
     config.json    the scenario shared by every run of the directory
     summary.txt    one line per run and the mean and std deviation over them, also printed
 
@@ -97,6 +97,19 @@ def tuned_system(system: str) -> str:
     return system.split("/")[-1]
 
 
+def has_cost(system: str) -> bool:
+    """expanding_testing has no GA and no cost, its runs are only looked at through the series."""
+    return not is_expanding(system)
+
+
+def gene_names(system: str) -> list:
+    """Names of the genes of an individual of the system, in the order it stores them."""
+    main = system_module(system)
+    if is_expanding(system):
+        return list(main.GENE_NAMES)
+    return [name for name, _, _ in main.GENE_BOUNDS]
+
+
 def default_logs_directory(transmission_range: float, number_of_drones: int) -> str:
     return os.path.join(DEFAULT_LOGS_DIRECTORY, f"{transmission_range:g}", str(number_of_drones))
 
@@ -151,11 +164,12 @@ def run_simulation(job: dict) -> dict:
             "nc_charging_base": global_map.nc_charging_base,
             "times": np.array(global_map.times),
             **{name: np.array(getattr(global_map, attribute)) for name, attribute in SERIES.items()},
-            "cost": float(main.evaluate_simulation_cost(results, global_map)),
-            "cost_terms": main.simulation_cost_terms(global_map),
             "drones": results,
             "elapsed": time.time() - start,
         }
+        if has_cost(job["system"]):
+            record["cost"] = float(main.evaluate_simulation_cost(results, global_map))
+            record["cost_terms"] = main.simulation_cost_terms(global_map)
         ##### Only expanding_testing splits the drones charging by base #####
         if hasattr(global_map, "charging_drones_per_base"):
             record["charging_per_base"] = np.array(global_map.charging_drones_per_base)
@@ -181,14 +195,17 @@ def aligned(record: dict, grid: np.ndarray) -> dict:
 
 def run_statistics(record: dict, grid: np.ndarray) -> dict:
     series = aligned(record, grid)
-    return {
+    statistics = {
         "mean_uncertainty": float(series["global_uncertainty"].mean()),
         ##### Share of the run with more than Nc drones charging at once, in % #####
         "above_nc": 100.0 * float(np.mean(series["charging"] > record["nc_charging_base"])),
         "max_charging": int(series["charging"].max()),
         "dead": int(series["dead"][-1]),
-        "cost": record["cost"],
     }
+    ##### The runs of expanding_testing have no cost, see has_cost #####
+    if "cost" in record:
+        statistics["cost"] = record["cost"]
+    return statistics
 
 
 def load_runs(directory: str):
@@ -210,6 +227,7 @@ def format_position(position) -> str:
 def summary(config: dict, runs: list) -> str:
     grid = time_grid(config)
     statistics = [run_statistics(record, grid) for record in runs]
+    with_cost = has_cost(config["system"])
     nc = sorted({record["nc_charging_base"] for record in runs})
     lines = [
         f"{config['system']}: {len(runs)} runs, {config['drones']} drones, {config['transmission_range']:g} m, "
@@ -218,12 +236,12 @@ def summary(config: dict, runs: list) -> str:
         f"Individual: {config['individual']}",
         "",
         f"{'run':>4} {'seed':>6} {'mean unc':>10} {'above Nc':>9} {'max charging':>13} {'dead':>5} "
-        f"{'cost':>10}  base(s)",
+        + (f"{'cost':>10}  " if with_cost else " ") + "base(s)",
     ]
     for record, stats in zip(runs, statistics):
         lines.append(f"{record['run']:>4} {record['seed']:>6} {stats['mean_uncertainty']:>10.1f} "
                      f"{stats['above_nc']:>8.1f}% {stats['max_charging']:>13} {stats['dead']:>5} "
-                     f"{stats['cost']:>10.1f}  "
+                     + (f"{stats['cost']:>10.1f}  " if with_cost else " ")
                      + " ".join(format_position(position) for position in record["base_positions"]))
 
     ##### Over the runs, a single run has no spread #####
@@ -237,7 +255,8 @@ def summary(config: dict, runs: list) -> str:
     lines.append("  time with more than Nc drones charging: {:.1f} +- {:.1f} %".format(*spread("above_nc")))
     lines.append("  most drones charging at once: {:.2f} +- {:.2f}".format(*spread("max_charging")))
     lines.append("  dead drones at the end: {:.2f} +- {:.2f}".format(*spread("dead")))
-    lines.append("  cost: {:.1f} +- {:.1f}".format(*spread("cost")))
+    if with_cost:
+        lines.append("  cost: {:.1f} +- {:.1f}".format(*spread("cost")))
     return "\n".join(lines)
 
 
@@ -259,11 +278,12 @@ def run_jobs(jobs: list, workers: int, logs_directory: str, config: dict) -> int
             with open(path, "wb") as f:
                 pickle.dump(record, f)
             stats = run_statistics(record, grid)
+            cost = f"cost {stats['cost']:.1f}, " if has_cost(config["system"]) else ""
             print(f"[{done}/{len(jobs)}] run {record['run']} (seed {record['seed']}, base(s) "
                   + " ".join(format_position(p) for p in record["base_positions"])
                   + f"): mean global uncertainty {stats['mean_uncertainty']:.1f}, "
                   f"more than Nc = {record['nc_charging_base']} charging {stats['above_nc']:.1f}% of the time, "
-                  f"{stats['dead']} dead, cost {stats['cost']:.1f}, {record['elapsed'] / 60:.1f} min -> {path}",
+                  f"{stats['dead']} dead, {cost}{record['elapsed'] / 60:.1f} min -> {path}",
                   flush=True)
     return failed
 
@@ -341,9 +361,10 @@ def main() -> int:
             parser.error(f"no tuned individual, nothing was run:\n{error}\n"
                          f"Tune the range first, or give the individual with --individual")
         origin = tuned_ranges(tuned_system(args.system))[args.transmission_range]
-    if len(individual) != len(main_module.GENE_BOUNDS):
+    genes = gene_names(args.system)
+    if len(individual) != len(genes):
         parser.error(f"the individual has {len(individual)} genes, {args.system} takes "
-                     f"{len(main_module.GENE_BOUNDS)}: {[name for name, _, _ in main_module.GENE_BOUNDS]}")
+                     f"{len(genes)}: {genes}")
 
     logs_directory = os.path.join(system_dir(args.system), args.logs_directory or
                                   default_logs_directory(args.transmission_range, args.drones))
