@@ -1,0 +1,11 @@
+===== expanding_testing/swarm: multiple_runs_bases.py on every range, logs in /Thesis/src/Analytical/expanding_testing/swarm/multiple_runs/<range>/<scenario> =====
+10000 s, bases in random quadrants, seeds from 0
+Mean +- std deviation over the runs of each range and scenario. The time is the one of the range, over every system and scenario
+
+  range  scenario                  result            time  runs    mean uncertainty    above Nc (%)  dead at the end                  cost
+  100 m  100x100_10drones_2bases   interrupted   24.6 min  no runs
+  100 m  100x100_10drones_3bases   interrupted   24.6 min  no runs
+  100 m  200x200_20drones_2bases   interrupted   24.6 min  no runs
+  100 m  200x200_20drones_3bases   interrupted   24.6 min  no runs
+
+Total: 24.6 min

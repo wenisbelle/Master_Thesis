@@ -102,6 +102,9 @@ ids `0..n-1` and base `b` is node `n + b`.
 expanding_testing/
 ├── README.md
 ├── plot_charging_bases.py global uncertainty and drones charging per base, several runs
+├── multiple_runs_bases.py                    many runs of the multi-base scenarios, one range
+├── run_all_tests_with_multiple_runs_bases.py the same for every tuned range
+├── plot_multiple_runs_bases.py               plots of those runs, per scenario and range
 ├── swarm/
 │   ├── main.py            scenario, simulation and cost (no GA)
 │   ├── main_test.py       single simulation, with checks, log and recording
@@ -110,7 +113,8 @@ expanding_testing/
 │   ├── fitness.py
 │   ├── recorder.py        writes the recording the plots read
 │   ├── visualization.py
-│   └── logs/              default output of main_test.py
+│   ├── logs/              default output of main_test.py
+│   └── multiple_runs/     output of multiple_runs_bases.py, <range>/<scenario>
 └── egocentric/            same files
 ```
 
@@ -213,6 +217,71 @@ It also prints the same numbers as a table, and where the bases of each run
 are. The time above `Nc` comes from the recording samples (`--monitor-interval`,
 10 s by default), so it can differ a little from the report of `main_test.py`,
 which uses the 1 s samples.
+
+## Multiple runs on the multi-base scenarios
+
+`multiple_runs_bases.py` is `Analytical/multiple_runs.py` for the multi-base
+tests: it runs the systems many times (20 by default) with the individual the
+GA tuned for the range, each run with its bases placed again, and keeps the
+swarm level series of every run. `run_all_tests_with_multiple_runs_bases.py`
+runs it for every tuned range, one after the other, and
+`plot_multiple_runs_bases.py` draws the figures of
+`Analytical/plot_multiple_runs.py`, one pair per scenario and range, with
+swarm and egocentric on the same figures.
+
+| Scenario | Map | Drones | Bases | `Nc` |
+|---|---|---|---|---|
+| `100x100_10drones_2bases` | 100x100 cells (2000 m) | 10 | 2 | 3 |
+| `100x100_10drones_3bases` | 100x100 cells (2000 m) | 10 | 3 | 3 |
+| `200x200_20drones_2bases` | 200x200 cells (4000 m) | 20 | 2 | 6 |
+| `200x200_20drones_3bases` | 200x200 cells (4000 m) | 20 | 3 | 6 |
+
+**Base placement.** The map is split into its 4 quadrants. Each base takes a
+quadrant of its own, drawn at random among the free ones, and its position is
+drawn from a Gaussian centred on the centre of that quadrant, sigma a third of
+half the side of the quadrant (3 sigma reaches its border: 167 m on the 100
+cell map, 333 m on the 200 cell one), snapped to the nearest cell centre and
+drawn again when it falls outside the quadrant.
+
+Run k is seeded with `--seed + k`, and the bases are drawn from that seed too.
+Run k therefore has the same bases and wind on swarm and egocentric, and on
+every range, and the 3-base scenario of run k is its 2-base scenario plus one
+base.
+
+The individual is the `Parameters:` line of
+`Analytical/<system>/ga_logs/ga_logbook_<range>.txt`. A range without one, for
+any of the systems given, is an error and nothing is run.
+
+```bash
+cd src
+export PYTHONPATH=$PWD:$PWD/gradys-sim-nextgen
+
+# every scenario, both systems, 200 m, 20 runs each
+python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm egocentric
+
+# every tuned range (100 ... 2000 m), one after the other
+python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm egocentric
+
+# only some ranges and scenarios
+python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm \
+    --ranges 100 200 --scenario 100x100_10drones_2bases 100x100_10drones_3bases
+
+# figures: 200 m, every scenario, on screen
+python3 Analytical/expanding_testing/plot_multiple_runs_bases.py
+# every range, saved as figures/bases_<range>_<scenario>_{uncertainty,charging}.pdf
+python3 Analytical/expanding_testing/plot_multiple_runs_bases.py --range 100 200 500 750 1000 2000 \
+    --save figures/bases.pdf --no-show
+```
+
+The runs are written to `<system>/multiple_runs/<range>/<scenario>`
+(`--logs-root` changes `multiple_runs`) with the files of
+`Analytical/multiple_runs.py`: `run_<k>.pkl`, `config.json` and `summary.txt`.
+Each run also keeps the drones charging on each base (`charging_per_base`) and
+the quadrant of each base. The sweep writes `ranges_summary.txt` to
+`<system>/multiple_runs`. Every run of every system and scenario of a range
+goes into one pool of processes, the longest first. Runs already on disk are
+skipped, `--overwrite` runs them again, and a directory holding runs of
+another scenario (another duration, seed, individual ...) is refused.
 
 ## Checks
 
