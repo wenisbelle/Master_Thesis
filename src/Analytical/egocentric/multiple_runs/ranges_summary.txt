@@ -1,0 +1,10 @@
+===== egocentric: multiple_runs.py on every range, logs in /Thesis/src/Analytical/egocentric/multiple_runs/<range>/<drones> =====
+10000 s, 1 base(s) drawn again on every run, seeds from 0
+Mean +- std deviation over the runs of each range and swarm size
+
+  range drones  result            time  runs    mean uncertainty    above Nc (%)  dead at the end                cost
+  100 m      3  ok             1.3 min    20   43908.9 +- 3376.6      0.6 +- 0.5     3.00 +- 0.00  23145072.9 +- 1757316.2
+  100 m      5  ok             2.9 min    20   35110.7 +- 5514.4      2.0 +- 1.3     5.00 +- 0.00  34479878.8 +- 5111804.3
+  100 m      7  interrupted    1.5 min  no runs
+
+Total: 5.8 min

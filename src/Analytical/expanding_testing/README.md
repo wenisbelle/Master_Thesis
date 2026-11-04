@@ -38,7 +38,8 @@ The point of the capacity is to keep a minimum number of drones mapping, so
 congestion is the number of drones charging **at once over all the bases**,
 whatever base they are on. `Nc` (`--charging-capacity`, default `int(drones / 3)`,
 the capacity of the single base of `Analytical/`) is the most drones charging
-at once before the protocol and the cost react. The rule is the same as in
+at once before the protocol and the cost react. Future base limitations will be explored
+in the next works. The rule is the same as in
 `Analytical/`; only the drones are now spread over several bases:
 
 - the swarm drone's estimate of how many others are charging
@@ -132,10 +133,12 @@ python3 -m Analytical.expanding_testing.swarm.main_test
 python3 -m Analytical.expanding_testing.swarm.main_test --drones 5 --duration 4000 \
     --base -500 -500 --base 500 500 --logs_directory logs_2bases
 
-# three bases, at most 2 drones charging at once, bigger map, 500 m range, tuned individual
+# three bases, at most 2 drones charging at once, bigger map, 500 m range (and its tuned individual)
 python3 -m Analytical.expanding_testing.swarm.main_test --map-size 150 --transmission-range 500 \
-    --base -800 -800 --base 800 -800 --base 0 800 --charging-capacity 2 \
-    --individual 90.6 95.4 ...
+    --base -800 -800 --base 800 -800 --base 0 800 --charging-capacity 2
+
+# any other individual
+python3 -m Analytical.expanding_testing.swarm.main_test --individual 90.6 95.4 ...
 
 # the same for egocentric (6 genes instead of 9)
 python3 -m Analytical.expanding_testing.egocentric.main_test --base -500 -500 --base 500 500
@@ -146,8 +149,8 @@ python3 -m Analytical.expanding_testing.egocentric.main_test --base -500 -500 --
 | `--base X Y` | one base at `(0, 0)` | position of a recharge base, in m, map centre at `(0, 0)`. Repeat it for every base |
 | `--charging-capacity NC` | `int(drones / 3)` | most drones charging at once, over all the bases together, before the congestion terms start |
 | `--map-size N` | `100` | side of the square map in cells, 20 m apart (100 → ±1000 m) |
-| `--transmission-range M` | `200` | communication range of the drones and of the bases, in m |
-| `--individual G1 G2 ...` | `BEST_INDIVIDUAL` of `main.py` | genes in the `GENE_BOUNDS` order: 9 for swarm, 6 for egocentric |
+| `--transmission-range M` | `200` | communication range of the drones and of the bases, in m. Also picks the tuned individual |
+| `--individual G1 G2 ...` | the one tuned for `--transmission-range` | genes in the `GENE_BOUNDS` order: 9 for swarm, 6 for egocentric |
 | `--drones N` | `10` | number of drones |
 | `--duration SECONDS` | `10000` | simulated seconds |
 | `--logs_directory NAME` | `logs` | directory, relative to `<system>/` (or absolute), for the log and the recording |
@@ -195,7 +198,7 @@ These are the checks run when this was written (2026-11-02):
   mentioned above.
 - **Several bases.** `energy_effect` matches a brute-force minimum over three
   bases.
-- **Swarm, 2 bases, 5 drones, 4000 s, default individual.** Every check passed;
+- **Swarm, 2 bases, 5 drones, 4000 s, the hardcoded `BEST_INDIVIDUAL` of `Analytical/swarm/main.py`.** Every check passed;
   17 recharges, 12 on one base and 5 on the other, and `Nc` = 1 was respected
   97.5% of the time.
 - **Swarm, base heartbeats.** In an instrumented run, the drones learned 14

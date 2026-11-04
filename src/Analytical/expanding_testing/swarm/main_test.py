@@ -10,11 +10,17 @@ Run it from the src directory, with gradysim on the PYTHONPATH:
     python3 -m Analytical.expanding_testing.swarm.main_test --base -500 -500 --base 500 500   # two bases
     python3 -m Analytical.expanding_testing.swarm.main_test --base 0 0 --base 600 0 --charging-capacity 2
     python3 -m Analytical.expanding_testing.swarm.main_test --map-size 150   # 150x150 cells, 3000 m x 3000 m
-    python3 -m Analytical.expanding_testing.swarm.main_test --transmission-range 500 --individual 90.6 95.4 ...  # a tuned individual
+    python3 -m Analytical.expanding_testing.swarm.main_test --transmission-range 500   # the individual tuned for 500 m
+    python3 -m Analytical.expanding_testing.swarm.main_test --individual 90.6 95.4 ...  # any other individual
     python3 -m Analytical.expanding_testing.swarm.main_test --sample-interval 0.5   # finer global map sampling
     python3 -m Analytical.expanding_testing.swarm.main_test --map-plot        # live per-drone map (very slow)
     python3 -m Analytical.expanding_testing.swarm.main_test --simulation-plot # gradysim 3D view
     python3 -m Analytical.expanding_testing.swarm.main_test --logs_directory logs_3   # keep this run apart
+
+The individual is the one the GA tuned for --transmission-range, the "Parameters:"
+line of Analytical/swarm/ga_logs/ga_logbook_<range>.txt, as in all_tests_distance.py
+(there is no GA here). Without a logbook for the range, or without the Parameters
+line in it, it is an error and nothing is run. --individual overrides it.
 
 The protocol log and the recording go to the logs directory, next to this file
 (logs by default). The recording has the format of Analytical/swarm, so the
@@ -32,9 +38,11 @@ import argparse
 import numpy as np
 
 from . import main
-from .main import BEST_INDIVIDUAL, GENE_BOUNDS
+from .main import GENE_BOUNDS
 from .recorder import SimulationRecorder
 from .protocol import DroneStatus, Drone, drone_protocol_factory
+##### The individuals tuned for each range, found the same way as the tests do #####
+from ...all_tests_distance import tuned_ranges, tuned_individuals
 
 
 SIMULATION_DURATION = 10000
@@ -52,8 +60,10 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_LOGS_DIRECTORY = "logs"
 LOG_FILE = "main_test.log"
 RECORDING_FILE = "test_recording.pkl"
-##### The plot scripts of the system this one extends #####
-PLOTS_DIRECTORY = os.path.join(os.path.dirname(os.path.dirname(ROOT_DIR)), "swarm", "plots")
+##### The system this one extends: its plot scripts plot the recording, and its GA #####
+##### logbooks hold the individuals, there is no GA here.                            #####
+EXTENDED_SYSTEM = "swarm"
+PLOTS_DIRECTORY = os.path.join(os.path.dirname(os.path.dirname(ROOT_DIR)), EXTENDED_SYSTEM, "plots")
 
 
 def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
@@ -101,13 +111,12 @@ def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
     return RecordedDrone
 
 
-def run_simulation(duration: int, number_of_drones: int,
+def run_simulation(duration: int, number_of_drones: int, individual: list,
                    mode: str = "test",
                    monitor_interval: float = MONITOR_INTERVAL,
                    sample_interval: float = main.GLOBAL_MAP_SAMPLE_INTERVAL,
                    enable_map_plot: bool = False,
                    enable_simulation_plot: bool = False,
-                   individual=BEST_INDIVIDUAL,
                    charging_base_positions: list = main.CHARGING_BASE_POSITIONS,
                    charging_capacity: int = None):
     """
@@ -241,9 +250,8 @@ def format_position(position) -> str:
 
 def report(results: dict, recorder: SimulationRecorder,
            global_map: main.GlobalMapMonitor, cost: float,
-           duration: int, number_of_drones: int,
+           duration: int, number_of_drones: int, individual: list,
            monitor_interval: float = MONITOR_INTERVAL,
-           individual=BEST_INDIVIDUAL,
            charging_base_positions: list = main.CHARGING_BASE_POSITIONS) -> bool:
     """
     Prints the summary of the run and returns whether every check passed.
@@ -413,12 +421,14 @@ def main_test() -> int:
                         default=main.GLOBAL_MAP_SAMPLE_INTERVAL,
                         help="simulated seconds between two samples of the global map, "
                              "the integration step of the cost (default: %(default)s)")
-    parser.add_argument("--individual", type=float, nargs=len(GENE_BOUNDS), default=BEST_INDIVIDUAL,
+    parser.add_argument("--individual", type=float, nargs=len(GENE_BOUNDS),
                         metavar=tuple(name.upper() for name, _, _ in GENE_BOUNDS),
-                        help="genes of the individual to run, in the GENE_BOUNDS order "
-                             "(default: BEST_INDIVIDUAL of main.py, %(default)s)")
+                        help="genes of the individual to run, in the GENE_BOUNDS order (default: the one "
+                             f"tuned for --transmission-range in Analytical/{EXTENDED_SYSTEM}/ga_logs, "
+                             "an error when there is none)")
     parser.add_argument("--transmission-range", type=float, default=main.TRANSMISSION_RANGE,
-                        help="communication range of the drones and the bases, in m (default: %(default)s)")
+                        help="communication range of the drones and the bases, in m. Also picks the "
+                             "tuned individual (default: %(default)s)")
     parser.add_argument("--map-size", type=int, default=main.MAP_WIDTH, metavar="CELLS",
                         help=f"side of the square map, in cells {DISTANCE_BETWEEN_CELLS} m apart, "
                              "centred on (0, 0) (default: %(default)s)")
@@ -446,6 +456,21 @@ def main_test() -> int:
     ##### one centre offset between both axes, so the map has to be square.       #####
     main.TRANSMISSION_RANGE = args.transmission_range
     main.MAP_WIDTH = main.MAP_HEIGHT = args.map_size
+
+    if args.individual is not None:
+        individual, origin = args.individual, "--individual"
+    else:
+        ##### No fallback to a hardcoded individual, the range would run untuned #####
+        try:
+            individual = tuned_individuals(EXTENDED_SYSTEM, [args.transmission_range])[
+                args.transmission_range]
+        except ValueError as error:
+            parser.error(f"no tuned individual, nothing was run:\n{error}\n"
+                         f"Tune the range first, or give the individual with --individual")
+        origin = tuned_ranges(EXTENDED_SYSTEM)[args.transmission_range]
+        if len(individual) != len(GENE_BOUNDS):
+            parser.error(f"{origin} has {len(individual)} genes, {EXTENDED_SYSTEM} takes "
+                         f"{len(GENE_BOUNDS)}: {[name for name, _, _ in GENE_BOUNDS]}")
 
     map_half_extent = main.MAP_WIDTH * DISTANCE_BETWEEN_CELLS / 2
     charging_base_positions = []
@@ -476,6 +501,7 @@ def main_test() -> int:
         )
         print(f"Protocol log: {log_file}")
 
+    print(f"Individual ({origin}): {individual}")
     print(f"Running {args.drones} drones with {len(charging_base_positions)} base(s) "
           f"for {args.duration} simulated seconds ...")
     results, recorder, global_map, cost = run_simulation(
@@ -486,7 +512,7 @@ def main_test() -> int:
         sample_interval=args.sample_interval,
         enable_map_plot=args.map_plot,
         enable_simulation_plot=args.simulation_plot,
-        individual=args.individual,
+        individual=individual,
         charging_base_positions=charging_base_positions,
         charging_capacity=args.charging_capacity,
     )
@@ -500,7 +526,7 @@ def main_test() -> int:
 
     passed = report(results, recorder, global_map, cost, args.duration, args.drones,
                     monitor_interval=args.monitor_interval,
-                    individual=args.individual,
+                    individual=individual,
                     charging_base_positions=charging_base_positions)
     return 0 if passed else 1
 

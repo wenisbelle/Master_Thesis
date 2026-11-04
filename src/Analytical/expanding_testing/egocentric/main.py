@@ -79,10 +79,8 @@ GENE_BOUNDS = [
     ("charge_margin", MIN_CHARGE_MARGIN, 0.5),
 ]
 
-##### Default individual, the BEST_INDIVIDUAL of Analytical/egocentric/main.py. main_test.py takes another one #####
-##### with --individual, e.g. the "Parameters:" of a logbook in Analytical/egocentric/ga_logs.                  #####
-##### Tuned on the old scenario (50x50 map, 10 m/s, base fixed at the map centre) #####
-BEST_INDIVIDUAL = [76.31, 40.14, 7.44, 52.38, 455.63, 0.26]
+##### No individual is kept here. main_test.py and multiple_runs.py take the one the GA tuned for the range, #####
+##### the "Parameters:" of Analytical/egocentric/ga_logs/ga_logbook_<range>.txt, or --individual.          #####
 
 
 def unpack_individual(individual):

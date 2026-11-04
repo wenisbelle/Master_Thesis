@@ -83,9 +83,8 @@ GENE_BOUNDS = [
     ("charge_margin", MIN_CHARGE_MARGIN, 0.5),
 ]
 
-##### Default individual, the BEST_INDIVIDUAL of Analytical/swarm/main.py. main_test.py takes another one #####
-##### with --individual, e.g. the "Parameters:" of a logbook in Analytical/swarm/ga_logs.                  #####
-BEST_INDIVIDUAL =  [46.85, 72.90, 27.0, 0.02, 25.26, 9.23, 1.12, 6.35, 0.49]
+##### No individual is kept here. main_test.py and multiple_runs.py take the one the GA tuned for the range, #####
+##### the "Parameters:" of Analytical/swarm/ga_logs/ga_logbook_<range>.txt, or --individual.               #####
 
 
 def unpack_individual(individual):

@@ -1,0 +1,19 @@
+{
+  "system": "egocentric",
+  "drones": 7,
+  "transmission_range": 100.0,
+  "duration": 10000,
+  "sample_interval": 1.0,
+  "seed": 0,
+  "individual": [
+    49.375619247680156,
+    46.41606659404385,
+    4.052085648037203,
+    42.86712415031687,
+    254.37562051795788,
+    0.3908217042532355
+  ],
+  "map_size": 100,
+  "bases": 1,
+  "charging_capacity": null
+}
