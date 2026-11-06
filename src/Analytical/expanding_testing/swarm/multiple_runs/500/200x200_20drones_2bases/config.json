@@ -1,0 +1,25 @@
+{
+  "system": "expanding_testing/swarm",
+  "scenario": "200x200_20drones_2bases",
+  "drones": 20,
+  "transmission_range": 500.0,
+  "duration": 10000,
+  "sample_interval": 1.0,
+  "seed": 0,
+  "individual": [
+    88.23703652030156,
+    99.18087138788556,
+    15.85004837273485,
+    31.554743876949303,
+    231.74017215119864,
+    0.14539073237373912,
+    1.5622616530143478,
+    6.3140104468188705,
+    0.4998224389745685
+  ],
+  "map_size": 200,
+  "bases": 2,
+  "charging_capacity": 6,
+  "base_placement": "quadrants",
+  "base_sigma": 333.33333333333326
+}
