@@ -3,6 +3,12 @@ training_logger.py — Reusable logger for DQN/MADQN training.
 
 Tracks rolling metrics, prints one-line summaries per iteration, handles
 checkpointing, and saves all metrics to a CSV file.
+
+Two CSV files are written to checkpoint_dir:
+    training_metrics.csv  one row per iteration: loss, Q values, reward of the sampled batch
+    episode_metrics.csv   one row per episode a worker finished, MappingEnvironment.episode_metrics:
+                          swarm size, mean global uncertainty, dead drones, share of the time with
+                          more than Nc charging, cost of the analytical system, reward and its terms
 """
 
 from __future__ import annotations
@@ -87,6 +93,14 @@ class TrainingLogger:
         # Best-so-far tracking for checkpoint selection.
         self._best_avg_reward = float("-inf")
 
+        # Episodes finished by the workers, see log_episodes
+        self.episode_csv_path = os.path.join(checkpoint_dir, "episode_metrics.csv")
+        self.episode_csv_file = None
+        self.episode_csv_writer = None
+        self._episode_fields = None
+        self._episode_reward_history = deque(maxlen=reward_window)
+        self.episodes_done = 0
+
         # --- Live plot setup ---
         if self.live_plot:
             plt.ion()
@@ -137,6 +151,29 @@ class TrainingLogger:
             probs = probs / probs.sum().clamp(min=1)
             entropy = -(probs * (probs + 1e-9).log()).sum().item()
             self._action_entropies.append(entropy)
+
+    def log_episodes(self, it: int, episodes: list) -> None:
+        """
+        Writes the summary of every episode the workers finished in this iteration
+        (MappingEnvironment.episode_metrics) to episode_metrics.csv, and prints it.
+        """
+        for episode in episodes:
+            if self.episode_csv_writer is None:
+                self._episode_fields = ["iteration", "episode"] + list(episode)
+                self.episode_csv_file = open(self.episode_csv_path, mode="w", newline="")
+                self.episode_csv_writer = csv.DictWriter(self.episode_csv_file, fieldnames=self._episode_fields,
+                                                         extrasaction="ignore")
+                self.episode_csv_writer.writeheader()
+            self.episodes_done += 1
+            self.episode_csv_writer.writerow({"iteration": it, "episode": self.episodes_done, **episode})
+            self._episode_reward_history.append(episode["reward"])
+            print(f"  [episode {self.episodes_done}] {int(episode['num_agents'])} drones, "
+                  f"{episode['episode_duration']:.0f} s: mean global uncertainty "
+                  f"{episode['mean_global_uncertainty']:.0f}, {int(episode['dead_drones'])} dead, "
+                  f"above Nc {100 * episode['time_above_nc']:.1f}% of the time, cost {episode['cost']:.0f}, "
+                  f"reward {episode['reward']:+.1f}")
+        if episodes:
+            self.episode_csv_file.flush()
 
     def log_iteration(
         self,
@@ -227,6 +264,8 @@ class TrainingLogger:
         # --- NEW: Close the CSV file ---
         if hasattr(self, "csv_file") and not self.csv_file.closed:
             self.csv_file.close()
+        if self.episode_csv_file is not None and not self.episode_csv_file.closed:
+            self.episode_csv_file.close()
         # -------------------------------
 
         if self.live_plot:
@@ -252,12 +291,15 @@ class TrainingLogger:
             {
                 "iteration": it,
                 "actor_state_dict": actor.state_dict(),
+                "actor_kwargs": getattr(actor, "kwargs", None),
                 "eps": eps,
             },
             periodic_path,
         )
 
-        avg = self.avg_reward
+        ##### The episodes say how the policy does, the sampled batch is a mix of old transitions. #####
+        ##### The batch reward is only used until the first episodes have ended.                    #####
+        avg = _avg(self._episode_reward_history) if self._episode_reward_history else self.avg_reward
         if avg > self._best_avg_reward and avg == avg:
             self._best_avg_reward = avg
             best_path = os.path.join(self.checkpoint_dir, "best.pt")
@@ -265,6 +307,7 @@ class TrainingLogger:
                 {
                     "iteration": it,
                     "actor_state_dict": actor.state_dict(),
+                    "actor_kwargs": getattr(actor, "kwargs", None),
                     "target_state_dict": target_actor.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
                     "best_avg_reward": self._best_avg_reward,
@@ -272,8 +315,7 @@ class TrainingLogger:
                 },
                 best_path,
             )
-            print(f"  >>> saved new best to {best_path}  "
-                  f"(avg{len(self._reward_history)} reward={avg:+.3f})")
+            print(f"  >>> saved new best to {best_path}  (average reward={avg:+.3f})")
 
     @property
     def avg_reward(self) -> float:

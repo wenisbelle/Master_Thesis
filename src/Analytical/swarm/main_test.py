@@ -21,6 +21,7 @@ be used as a regression gate.
 
 import os
 import sys
+import json
 import logging
 import argparse
 
@@ -29,7 +30,8 @@ import numpy as np
 from . import main
 from .main import BEST_INDIVIDUAL, GENE_BOUNDS
 from .recorder import SimulationRecorder
-from .protocol import DroneStatus, Drone, drone_protocol_factory
+from .protocol import DroneStatus, Drone, MessageType, drone_protocol_factory
+from .estimation_metrics import summarize, format_summary
 
 
 SIMULATION_DURATION = 10000
@@ -48,6 +50,23 @@ DEFAULT_LOGS_DIRECTORY = "logs"
 LOG_FILE = "main_test.log"
 RECORDING_FILE = "test_recording.pkl"
 
+##### What made a drone choose the base, abort or die, from the event the protocol was #####
+##### handling when its status changed. See SimulationRecorder.record_return_event.     #####
+TIMER_TRIGGERS = {"mobility": "own", "recharge_done": "after_recharge", "battery_check": "battery"}
+MESSAGE_TRIGGERS = {"GOSSIPING_MESSAGE": "encounter",
+                    "SHARE_GOTO_POSITION_MESSAGE": "sent",
+                    "CHARGING_NOTIFICATION_MESSAGE": "charging_notification"}
+
+
+def message_trigger(message: str) -> tuple:
+    """(trigger, sender) of a packet, see MESSAGE_TRIGGERS."""
+    data = json.loads(message)
+    try:
+        name = MessageType(data.get("message_type")).name
+    except ValueError:
+        name = str(data.get("message_type"))
+    return MESSAGE_TRIGGERS.get(name, name.lower()), data.get("sender")
+
 
 def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
     """
@@ -58,7 +77,8 @@ def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
     Destinations cannot be: they are decided between two samples, by three
     different paths (the drone's own choice, an encounter, a destination sent
     by another drone), so they are caught here instead, by watching
-    goto_command after each event the protocol handles.
+    goto_command after each event the protocol handles. The same goes for the
+    changes of status that make a trip to the base, see _record_return.
     """
     ConfiguredDrone = factory(**factory_kwargs)
 
@@ -66,6 +86,39 @@ def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
         def initialize(self) -> None:
             super().initialize()
             self._last_goto_command = np.array(self.goto_command, dtype=float)
+            self._last_status = self.status
+
+        def _record_return(self, trigger_of) -> None:
+            """
+            Records the drone choosing the base, reaching it, being sent back to
+            mapping on the way, or dying, with the battery it has at that moment.
+            trigger_of returns (trigger, sender) and is only called on one of these
+            changes: it parses the packet, which costs as much as the protocol's
+            own parse for a gossip carrying the map.
+            """
+            previous, current = self._last_status, self.status
+            if previous == current:
+                return
+            self._last_status = current
+
+            if current == DroneStatus.GOING_TO_BASE:
+                event = "decision"
+            elif current == DroneStatus.DEAD:
+                event = "death"
+            elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.CHARGING:
+                event = "arrival"
+            elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.MAPPING:
+                event = "abort"
+            else:
+                ##### CHARGING -> MAPPING, the end of the recharge, is not part of a trip #####
+                return
+
+            recorder = recorder_holder.get("recorder")
+            if recorder is None:
+                return
+            trigger, sender = trigger_of()
+            recorder.record_return_event(self.provider.get_id(), event, self.provider.current_time(),
+                                         trigger, sender=sender, previous_status=previous.name)
 
         def _record_decision(self) -> None:
             goto = np.array(self.goto_command, dtype=float)
@@ -86,10 +139,12 @@ def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
         def handle_timer(self, timer: str) -> None:
             super().handle_timer(timer)
             self._record_decision()
+            self._record_return(lambda: (TIMER_TRIGGERS.get(timer, timer), None))
 
         def handle_packet(self, message: str) -> None:
             super().handle_packet(message)
             self._record_decision()
+            self._record_return(lambda: message_trigger(message))
 
     return RecordedDrone
 
@@ -101,10 +156,13 @@ def run_simulation(duration: int, number_of_drones: int,
                    enable_map_plot: bool = False,
                    enable_simulation_plot: bool = False,
                    individual=BEST_INDIVIDUAL,
-                   charging_base_position: tuple = main.CHARGING_BASE_POSITION):
+                   charging_base_position: tuple = main.CHARGING_BASE_POSITION,
+                   seed: int = None):
     """
     Runs a single simulation of main.py with the given individual and recharge
     base, recording the state of every drone every monitor_interval seconds.
+    seed fixes the wind and the initial destinations, see
+    main.create_and_run_simulation. None is a random run.
 
     main.py already steps the simulation to sample the global map every
     sample_interval seconds, so the recording rides on the same samples and only
@@ -166,6 +224,7 @@ def run_simulation(duration: int, number_of_drones: int,
             sample_interval=sample_interval,
             observer_factory=make_recorder,
             charging_base_position=charging_base_position,
+            seed=seed,
         )
         cost = main.evaluate_simulation_cost(results, global_map, mode=mode)
     finally:
@@ -289,6 +348,13 @@ def report(results: dict, recorder: SimulationRecorder,
     print(f"Cost (the value the GA minimizes): {cost:.4f}")
     print()
 
+    ##### How wrong the drones are about each other's battery, and at which battery #####
+    ##### they go back. plots/plot_estimation.py and plot_returns.py draw the same. #####
+    print("=== Battery estimation and returns to the base ===")
+    status_values = {status.name: status.value for status in DroneStatus}
+    print(format_summary(summarize(recorder.drone_arrays(), recorder.returns, status_values)))
+    print()
+
     ##### Checks. Each one is a claim that has to hold for the run to be #####
     ##### considered healthy, printed so a failure is obvious.           #####
     print("=== Checks ===")
@@ -370,6 +436,9 @@ def main_test() -> int:
                         metavar=("X", "Y"),
                         help="position of the recharge base, in m, the map centre is (0, 0). "
                              "The drones take off from it (default: %(default)s)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="fixes the wind and the initial destinations of the drones, so "
+                             "two runs can be compared (default: a random run)")
     parser.add_argument("--quiet", action="store_true",
                         help="run the protocol in train mode, without the per-routine log")
     parser.add_argument("--map-plot", action="store_true",
@@ -415,13 +484,14 @@ def main_test() -> int:
         enable_simulation_plot=args.simulation_plot,
         individual=args.individual,
         charging_base_position=charging_base_position,
+        seed=args.seed,
     )
 
     recorder.save(recording_file, results)
     print(f"Recording: {recording_file} ({len(recorder.times)} samples)")
     print(f"Plot it from the plots directory with: python3 plot_drones.py "
           f"--directory {args.logs_directory}  (same for plot_metrics.py, plot_more_metrics.py, "
-          f"plot_states.py and plot_decisions.py)")
+          f"plot_states.py, plot_decisions.py, plot_estimation.py and plot_returns.py)")
     print()
 
     passed = report(results, recorder, global_map, cost, args.duration, args.drones,

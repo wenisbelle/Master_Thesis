@@ -1,39 +1,40 @@
 """
-actor.py — Per-agent Actor network for the cooperative drone-mapping MARL setup.
+actor.py — Per-agent Q network for the cooperative drone-mapping MARL setup.
 
-
-
- INTEGRATION 
+ INTEGRATION
 
 The orchestrator / worker calls the policy as:
 
-        policy(per_agent_obs_td) -> action_tensor of shape (action_dim,)
+        policy(per_agent_obs_td) -> action_tensor of shape (1,)
 
 See `simulation_orchestrator.AsyncMARLOrchestrator._handle_flags` and the
-`policy_callable` defined inside `worker._worker_loop`. So our `Actor.forward`
-must accept a per-agent TensorDict and return just an action tensor.
+`policy_callable` defined inside `worker._worker_loop`. The policy (policy.py)
+calls `Actor.forward`, which returns the Q value of every action.
 
 
- OBSERVATION FIELDS CONSUMED (taken directly from MappingEnvironment specs)
+ OBSERVATION FIELDS CONSUMED (built by protocol.observe, see env/gradysim_environment/protocol.py)
 
 For a single agent (the orchestrator slices these out per-agent):
 
-  - map_patch                   : float32, shape (M, M)            in [0, 2.0]
-  - individual_map_uncertainty  : float32, shape (1,)               in [0, 1]
-  - position                    : float32, shape (2,)               in [0, 1]
-  - estimated_positions         : float32, shape (max_num_agents, 2) in [0, 1]
+  - large_map_patch  : float32, (3, L, L)  the whole map, averaged in blocks (L = 50 for the 100x100 map)
+  - small_map_patch  : float32, (3, A, A)  the action window around the drone (A = 21)
+                       channels: uncertainty (normalized), distance to the drone, energy margin
+  - agent_state      : float32, (15,)      own position, battery, base, and the swarm estimate
+                                           (mean battery of the others, how many charging, Nc)
+  - encounter_state  : float32, (9,)       the other drone of an encounter, zeros otherwise
+  - valid_actions    : bool,    (A*A + 1,)
 
 For BATCHED inputs (during training), each tensor has an extra leading dim.
 We detect this automatically below.
 
  ACTION SPACE
 
-Continuous, shape (action_dim,) — default categorical M^2 (target cell)
+Discrete, A*A + 1: the cells of the A x A window centred on the drone (index
+row * A + col, the same layout as small_map_patch) and the base (index A*A).
 """
 
 from __future__ import annotations
 
-import math
 from typing import Tuple
 
 import torch
@@ -47,14 +48,18 @@ from tensordict import TensorDict
 class DualMapEncoder(nn.Module):
     """
     Two-resolution map encoder.
-        large : (B, in_channels, N, N)  — wide FOV
-        small : (B, in_channels, M, M)  — narrow FOV
-        The small should have the same size as the action 
+        large : (B, in_channels, N, N)  — the whole map, downsampled
+        small : (B, in_channels, M, M)  — the action window, full resolution
+        The small should have the same size as the action window.
     The large branch is convolved and downsampled to M×M, concatenated on the
     channel axis with the small branch, jointly convolved, flattened, projected.
+
+    Change from the version without energy: the joint head ends with a stride 2
+    convolution. The action window grew from 11 to 21 cells, and without it the
+    flattened features (128 * 21 * 21) would make the projection 7M parameters.
     """
-    def __init__(self, in_channels: int = 2, large_size: int = 50,
-                 small_size: int = 11, feature_dim: int = 128):
+    def __init__(self, in_channels: int = 3, large_size: int = 50,
+                 small_size: int = 21, feature_dim: int = 128):
         super().__init__()
         self.large_size = large_size
         self.small_size = small_size
@@ -63,7 +68,7 @@ class DualMapEncoder(nn.Module):
         self.large_stem = nn.Sequential(
             nn.Conv2d(in_channels, 32, 3, stride=1, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),         
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 64, 3, stride=1, padding=1),
             nn.ReLU(inplace=True),
@@ -76,11 +81,11 @@ class DualMapEncoder(nn.Module):
             nn.Conv2d(32, 64, 3, stride=1, padding=1),
             nn.ReLU(inplace=True),
         )                                                       # -> (B, 64, M, M)
-        # joint head: concat on channels, convolve at M×M
+        # joint head: concat on channels, convolve at M×M, then downsample
         self.joint_conv = nn.Sequential(
             nn.Conv2d(64 + 64, 128, 3, stride=1, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, 3, stride=1, padding=1),
+            nn.Conv2d(128, 64, 3, stride=2, padding=1),         # -> (B, 64, ceil(M/2), ceil(M/2))
             nn.ReLU(inplace=True),
         )
         self.proj = nn.Linear(self._infer_flat_dim(in_channels), feature_dim)
@@ -95,17 +100,16 @@ class DualMapEncoder(nn.Module):
         l = self.large_stem(large)        # (B, 64, M, M)
         s = self.small_stem(small)        # (B, 64, M, M)
         x = torch.cat([l, s], dim=1)      # (B, 128, M, M)
-        return self.joint_conv(x)         # (B, 128, M, M)
+        return self.joint_conv(x)         # (B, 64, M/2, M/2)
 
     def forward(self, large, small):
-        x = self._fuse(large, small).flatten(1)   # (B, 128*M*M)
+        x = self._fuse(large, small).flatten(1)
         return F.relu(self.proj(x))               # (B, feature_dim)
 
 
 class VectorEncoder(nn.Module):
     """
-    MLP that encodes the non-spatial fields (`position`,
-    `individual_map_uncertainty`, `estimated_positions`).
+    MLP that encodes the non-spatial fields (`agent_state`, `encounter_state`).
 
     We concatenate everything into a single vector
     """
@@ -126,70 +130,53 @@ class VectorEncoder(nn.Module):
 
 class Actor(nn.Module):
     """
-    Maps a per-agent observation TensorDict to an action in action_dim.
-
-    Two ways to use it
-    ------------------
-    1. Decentralized rollout (what `worker.py` does):
-
-           actor = Actor(max_num_agents=3)
-           action = actor(per_agent_obs_td)
-           # action has shape (action_dim,)
-
-       By default `forward(...)` returns the DETERMINISTIC mean action
-       (squashed). This is exactly what `policy_callable` in the worker wants:
-       a single tensor, no log-prob. If you want exploration during rollouts
-       (e.g. SAC/PPO), call `forward(obs, deterministic=False)` or just
-       `actor.sample(obs)` and discard the log-prob.
-
-    2. Training (SAC / PPO / MAPPO):
-
-           action, log_prob = actor.sample(batched_obs_td)
-           # both have a leading batch dim matching the batch of obs_td
-
+    Maps a per-agent observation TensorDict to the Q value of every action.
 
     Batched vs unbatched
     --------------------
     During rollouts the orchestrator slices a single agent's obs (no batch
     dim). During training you'll batch many transitions together (batch dim
-    present). `_features` detects which is which by inspecting `position`,
+    present). `_features` detects which is which by inspecting `agent_state`,
     so callers don't have to worry about it.
     """
 
     def __init__(
         self,
         *,
-        max_num_agents: int = 3,        # affects estimated_positions size
-        action_dim: int = 121,          # size of the action space 
-        map_channels: int = 2,          # map_patch is channel uncertainty and channel distance
+        action_dim: int = 21 * 21 + 1,  # size of the action space: the window and the base
+        map_channels: int = 3,          # uncertainty, distance, energy margin
         large_map_size: int = 50,
-        small_map_size: int = 11,
+        small_map_size: int = 21,
+        agent_state_dim: int = 15,
+        encounter_state_dim: int = 9,
         map_feature_dim: int = 128,
         vector_feature_dim: int = 64,
         hidden_dim: int = 256,
         # Keys inside per_agent_obs_td — change here if you rename them in the env.
         large_map_key: str = "large_map_patch",
         small_map_key: str = "small_map_patch",
-        position_key: str = "position",
-        uncertainty_key: str = "individual_map_uncertainty",
-        estimated_positions_key: str = "estimated_positions_and_time",
-        valid_actions_key: str = "valid_actions", 
+        agent_state_key: str = "agent_state",
+        encounter_state_key: str = "encounter_state",
+        valid_actions_key: str = "valid_actions",
     ):
         super().__init__()
+        ##### Saved in the checkpoints, so a test rebuilds the same network (policy.load_greedy_policy) #####
+        self.kwargs = dict(action_dim=action_dim, map_channels=map_channels, large_map_size=large_map_size,
+                           small_map_size=small_map_size, agent_state_dim=agent_state_dim,
+                           encounter_state_dim=encounter_state_dim, map_feature_dim=map_feature_dim,
+                           vector_feature_dim=vector_feature_dim, hidden_dim=hidden_dim)
         self.action_dim = action_dim
-        self.max_num_agents = max_num_agents
 
         self.large_map_key = large_map_key
         self.small_map_key = small_map_key
-        self.position_key = position_key
-        self.uncertainty_key = uncertainty_key
-        self.estimated_positions_key = estimated_positions_key
+        self.agent_state_key = agent_state_key
+        self.encounter_state_key = encounter_state_key
         self.valid_actions_key = valid_actions_key
 
-        # Vector input dim = position(2) + uncertainty(2) [mean, std] + estimated((N-1)*3). -> For each of the other agents (x, y, time_of_last_observation)
-        # If you later add or remove obs fields, update this number and the
-        # corresponding concatenation inside `_features`.
-        self.vector_in_dim = 2 + 2 + ((max_num_agents - 1) * 3)
+        # Vector input dim = agent_state + encounter_state.
+        # If you later add or remove obs fields, update the dims (they come from the
+        # protocol, AGENT_STATE_DIM and ENCOUNTER_STATE_DIM) and the concatenation in `_features`.
+        self.vector_in_dim = agent_state_dim + encounter_state_dim
 
         ##### Inputs
         self.map_encoder = DualMapEncoder(
@@ -223,45 +210,23 @@ class Actor(nn.Module):
             is_unbatched: True if caller passed a single sample, so we know
                           to squeeze the leading dim out of the output later.
         """
-        pos = obs_td[self.position_key]            # unbatched (2,)     | batched (B, 2)
-        unc = obs_td[self.uncertainty_key]         # unbatched (1,)     | batched (B, 1)
-        ep = obs_td[self.estimated_positions_key]  # unbatched (N-1, 3) | batched (B, N-1, 3)
-        large_map = obs_td[self.large_map_key].float()
-        small_map = obs_td[self.small_map_key].float()                  
+        agent_state = obs_td[self.agent_state_key].float()          # unbatched (S,) | batched (B, S)
+        encounter_state = obs_td[self.encounter_state_key].float()  # unbatched (E,) | batched (B, E)
+        large_map = obs_td[self.large_map_key].float()              # unbatched (C, L, L) | batched (B, C, L, L)
+        small_map = obs_td[self.small_map_key].float()              # unbatched (C, A, A) | batched (B, C, A, A)
 
-        # Detect batching from `position` (1-D = single sample, 2-D = batched).
-        is_unbatched = pos.dim() == 1
+        # Detect batching from `agent_state` (1-D = single sample, 2-D = batched).
+        is_unbatched = agent_state.dim() == 1
         if is_unbatched:
-            pos = pos.unsqueeze(0)
-            unc = unc.unsqueeze(0)
-            ep = ep.unsqueeze(0)
+            agent_state = agent_state.unsqueeze(0)
+            encounter_state = encounter_state.unsqueeze(0)
             large_map = large_map.unsqueeze(0)
             small_map = small_map.unsqueeze(0)
 
-        # The env may emit map_patch as (B, H, W) — no channel dim. The CNN
-        # expects (B, C, H, W), so insert a singleton channel.
-        if large_map.dim() == 3:
-            large_map = large_map.unsqueeze(1)                   # (B, 1, H, W)
-        
-        if small_map.dim() == 3:
-            small_map = small_map.unsqueeze(1)                   # (B, 1, H, W)
-
-        # Cast everything else to float too, just in case the env returns
-        # something different (e.g. on GPU with mixed dtypes).
-        pos = pos.float()
-        unc = unc.float()
-        ep = ep.float()
-        large_map = large_map.float()
-        small_map = small_map.float()
-
-        # Flatten `estimated_positions` from (B, N, 2) to (B, N*2) so it can
-        # be concatenated with the other 1-D vectors.
-        ep_flat = ep.flatten(start_dim=1)          # (B, N*2)
-
-        # Encode each modality and concatenate 
-        map_feat = self.map_encoder(large_map, small_map)                  # (B, map_feature_dim)
-        vec_in = torch.cat([pos, unc, ep_flat], dim=-1)  # (B, vector_in_dim)
-        vec_feat = self.vec_encoder(vec_in)              # (B, vector_feature_dim)
+        # Encode each modality and concatenate
+        map_feat = self.map_encoder(large_map, small_map)               # (B, map_feature_dim)
+        vec_in = torch.cat([agent_state, encounter_state], dim=-1)      # (B, vector_in_dim)
+        vec_feat = self.vec_encoder(vec_in)                             # (B, vector_feature_dim)
 
         fused = torch.cat([map_feat, vec_feat], dim=-1)
         return self.trunk(fused), is_unbatched     # (B, hidden_dim), bool
@@ -271,13 +236,12 @@ class Actor(nn.Module):
         obs_td: TensorDict
         ) -> torch.Tensor:
         """
-        Run the actor forward and return ONLY the action tensor.
+        Run the network and return the Q values, -inf on the invalid actions.
         Returns:
-            action tensor in Shape (action_dim,) when the
-            input was unbatched, or (B, action_dim) when batched.
+            Shape (action_dim,) when the input was unbatched, or (B, action_dim) when batched.
         """
         h, is_unbatched = self._features(obs_td)
-        q_values = self.q_head(h)                  # (B, action_dim) — pre-squash mean
+        q_values = self.q_head(h)                  # (B, action_dim)
 
         try:
             valid = obs_td[self.valid_actions_key]
@@ -286,20 +250,5 @@ class Actor(nn.Module):
             q_values = q_values.masked_fill(~valid.bool(), float("-inf"))
         except KeyError:
             pass
-        
-        return q_values.squeeze(0) if is_unbatched else q_values
 
-"""
-if __name__ == "__main__":
-    N, M, C = 50, 20, 2
-    a = Actor(max_num_agents=3, action_dim=100, large_map_size=N, small_map_size=M)
-    ub = TensorDict({"map_patch_large": torch.rand(C, N, N),
-                     "map_patch_small": torch.rand(C, M, M),
-                     "individual_map_uncertainty": torch.rand(1),
-                     "position": torch.rand(2),
-                     "estimated_positions_and_time": torch.rand(2, 3),
-                     "valid_actions": torch.ones(100)}, batch_size=[])
-    print(a(ub).shape)                                  # (100,)
-    b = ub.expand(8).clone(); b.batch_size = [8]
-    print(a(b).shape)                                   # (8, 100)
-"""
+        return q_values.squeeze(0) if is_unbatched else q_values

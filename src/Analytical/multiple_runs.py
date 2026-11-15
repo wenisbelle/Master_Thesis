@@ -52,6 +52,9 @@ import numpy as np
 from all_tests_distance import tuned_ranges, tuned_individuals
 
 SYSTEMS = ("swarm", "egocentric", "expanding_testing/swarm", "expanding_testing/egocentric")
+##### The MARL systems write the same run files with src/MARL/<system>/multiple_runs.py. They are #####
+##### only read here, by plot_multiple_runs.py, so they can be plotted next to the analytical ones. #####
+MARL_SYSTEMS = ("MARL/CTDE_MADQN", "MARL/Independent_MADQN")
 
 ANALYTICAL_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(ANALYTICAL_DIR)
@@ -81,6 +84,8 @@ SERIES = {"global_uncertainty": "uncertainty", "charging": "charging_drones", "d
 
 
 def system_dir(system: str) -> str:
+    if system in MARL_SYSTEMS:
+        return os.path.join(SRC_DIR, *system.split("/"))
     return os.path.join(ANALYTICAL_DIR, *system.split("/"))
 
 

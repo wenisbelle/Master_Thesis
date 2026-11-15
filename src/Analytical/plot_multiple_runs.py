@@ -21,6 +21,8 @@ Plots the runs multiple_runs.py wrote, for one or more systems, in two figures:
         --logs-directory multiple_runs/3_bases_150
     python3 Analytical/plot_multiple_runs.py --system swarm egocentric --save multiple_runs_200_10.pdf
     python3 Analytical/plot_multiple_runs.py --system swarm egocentric --window 100
+    python3 Analytical/plot_multiple_runs.py --system swarm MARL/CTDE_MADQN --range 200 --drones 5   # RL runs
+                                             # of src/MARL/CTDE_MADQN/multiple_runs.py
 
 It reads <system>/multiple_runs/<range>/<drones>, the directory multiple_runs.py writes
 with the same --range and --drones, or <system>/<logs-directory>. Several systems are
@@ -36,7 +38,7 @@ from matplotlib.ticker import FuncFormatter
 from scipy.stats import wilcoxon
 
 ##### Same layout of the runs, and the same statistics, as the script that writes them #####
-from multiple_runs import (SYSTEMS, NUMBER_OF_DRONES, TRANSMISSION_RANGE, CONFIG_FILE, system_dir,
+from multiple_runs import (SYSTEMS, MARL_SYSTEMS, NUMBER_OF_DRONES, TRANSMISSION_RANGE, CONFIG_FILE, system_dir,
                            default_logs_directory, load_runs, time_grid, aligned, run_statistics)
 
 ##### Okabe-Ito, swarm and egocentric keep their colours of comparing_swarm_egocentric.py. #####
@@ -47,6 +49,8 @@ SYSTEM_STYLES = {
     "egocentric":                   {"color": "#D55E00", "ls": "--", "marker": "s"},
     "expanding_testing/swarm":      {"color": "#009E73", "ls": "-.", "marker": "^"},
     "expanding_testing/egocentric": {"color": "#CC79A7", "ls": ":",  "marker": "D"},
+    "MARL/CTDE_MADQN":              {"color": "#E69F00", "ls": (0, (6, 2)),          "marker": "v"},
+    "MARL/Independent_MADQN":       {"color": "#56B4E9", "ls": (0, (4, 1, 1, 1, 1, 1)), "marker": "P"},
 }
 BAND_ALPHA = 0.25
 GRID = {"color": "0.92", "lw": 0.5}
@@ -291,7 +295,7 @@ def plot_charging_at_once(ax, loaded):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Global uncertainty (mean and std deviation) and drones charging above Nc over many runs")
-    parser.add_argument("--system", choices=SYSTEMS, nargs="+", required=True,
+    parser.add_argument("--system", choices=SYSTEMS + MARL_SYSTEMS, nargs="+", required=True,
                         help="system(s) to plot, several are drawn on the same figures")
     parser.add_argument("--range", type=float, default=TRANSMISSION_RANGE, dest="transmission_range",
                         help="communication range of the runs, in m (default: %(default)s)")

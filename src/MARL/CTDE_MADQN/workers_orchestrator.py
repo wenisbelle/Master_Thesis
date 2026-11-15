@@ -34,8 +34,7 @@ class WorkersOrchestrator:
         steps_per_batch: int = 200,
         base_seed: int = 0,
         sync: bool = False,
-        reward_scale: int = 100,
-        reward_decay: float = 0.99,
+        discount_per_second: float = 0.999,
         local_global_reward_ratio: float = 0.5,
         new_batch_new_simulation: bool = True,
     ):
@@ -53,9 +52,10 @@ class WorkersOrchestrator:
 
         self.replay_buffer = replay_buffer
         self.num_workers = num_workers
-        self.reward_scale = reward_scale
-        self.reward_decay = reward_decay
         self.new_batch_new_simulation = new_batch_new_simulation
+        # Summaries of the episodes the workers finished, see MappingEnvironment.episode_metrics.
+        # The trainer reads and clears it.
+        self.episode_stats = []
 
         self.workers = []
         for i in range(num_workers):
@@ -70,8 +70,7 @@ class WorkersOrchestrator:
                     self.transition_queue,
                     self.weight_queues[i],
                     self.control_queues[i],
-                    self.reward_scale,
-                    self.reward_decay,
+                    discount_per_second,
                     local_global_reward_ratio,
                     self.new_batch_new_simulation,
                 ),
@@ -128,10 +127,11 @@ class WorkersOrchestrator:
         deadline = time.time() + timeout
         while new_count < min_new_transitions and time.time() < deadline:
             try:
-                agent_td = self.transition_queue.get(timeout=0.5)
+                agent_td, episode_stats = self.transition_queue.get(timeout=0.5)
             except Empty:
                 continue
-            
+
+            self.episode_stats.extend(episode_stats)
             if agent_td is not None:
                 self.replay_buffer.load_transitions(agent_td)
                 new_count += agent_td.batch_size[0]

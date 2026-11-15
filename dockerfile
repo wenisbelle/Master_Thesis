@@ -20,7 +20,12 @@ RUN apt-get update
 RUN apt-get install -y python3-pip 
 RUN pip install pytest
 RUN pip install numpy && pip install matplotlib && pip install scipy
-RUN pip install torch
+# The host driver is 550 (CUDA 12.4). The default PyPI torch is built for
+# CUDA 13 and needs driver >= 580, so it silently falls back to the CPU.
+# The cu126 build runs on any 12.x driver (>= 525).
+RUN pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
+# The MARL systems (src/MARL) are built on TorchRL
+RUN pip install torchrl tensordict
 RUN pip install pettingzoo
 RUN pip install deap
 RUN pip install websockets

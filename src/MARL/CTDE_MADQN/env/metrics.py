@@ -64,13 +64,21 @@ class EnvironmentMetricsSpec:
 
 
 def make_data_collection_metrics_spec() -> EnvironmentMetricsSpec:
+    """Episode summary written into the "info" of the step that ends it, see MappingEnvironment.episode_metrics."""
     return EnvironmentMetricsSpec(
         metrics=(
-            EnvironmentMetricSpec("max_reward", MetricKind.SCALAR, MetricReducer.MEAN),
             EnvironmentMetricSpec("reward", MetricKind.SCALAR, MetricReducer.MEAN),
-            EnvironmentMetricSpec("sum_reward", MetricKind.SCALAR, MetricReducer.MEAN),
             EnvironmentMetricSpec("episode_duration", MetricKind.SCALAR, MetricReducer.MEAN),
             EnvironmentMetricSpec("num_agents", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("mean_global_uncertainty", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("dead_drones", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("time_above_nc", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("cost", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("decisions", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("reward_local_uncertainty", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("reward_global_uncertainty", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("reward_congestion", MetricKind.SCALAR, MetricReducer.MEAN),
+            EnvironmentMetricSpec("reward_deaths", MetricKind.SCALAR, MetricReducer.MEAN),
             EnvironmentMetricSpec(
                 "cause",
                 MetricKind.CATEGORICAL,

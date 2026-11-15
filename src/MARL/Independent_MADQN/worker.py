@@ -39,8 +39,7 @@ def _worker_loop(
     transition_queue: mp.Queue,
     weight_queue: mp.Queue,
     control_queue: mp.Queue,
-    reward_scale: int, 
-    reward_decay: float,
+    discount_per_second: float,
     local_global_reward_ratio: float,
     new_batch_new_simulation: bool = True, # whether to reset the simulation at the start of each batch
 ):
@@ -60,7 +59,7 @@ def _worker_loop(
         with torch.no_grad(): 
             return policy(per_agent_obs_td)
 
-    orch = AsyncMARLOrchestrator(env, policy_callable, reward_scale, reward_decay, local_global_reward_ratio)
+    orch = AsyncMARLOrchestrator(env, policy_callable, discount_per_second, local_global_reward_ratio)
     td = orch.reset()
 
 
@@ -83,6 +82,7 @@ def _worker_loop(
             # Discard old-policy work + reset, so next chunk starts a clean episode.
             #print(f"worker  >>> entering PAUSE block")
             orch.transitions.clear()
+            orch.episode_stats.clear()
             if new_batch_new_simulation:
                 td = orch.reset()
 
@@ -124,5 +124,7 @@ def _worker_loop(
             torch.stack(orch.transitions).contiguous()
             if orch.transitions else None
         )
-        transition_queue.put((agent_td))
+        # The transitions and the summary of the episodes that ended (MappingEnvironment.episode_metrics)
+        transition_queue.put((agent_td, list(orch.episode_stats)))
         orch.transitions.clear()
+        orch.episode_stats.clear()
