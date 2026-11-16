@@ -37,6 +37,22 @@ from .estimation_metrics import summarize, format_summary
 SIMULATION_DURATION = 10000
 NUMBER_OF_DRONES = 10
 
+##### The individual filled in by hand, one gene per line in the GENE_BOUNDS order of main.py.  #####
+##### --hand-tuned runs it instead of the GA logbooks, here and in all_tests_distance.py,        #####
+##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
+##### runs back with --hand-tuned too). It starts as BEST_INDIVIDUAL of main.py.                 #####
+HAND_TUNED_INDIVIDUAL = [
+    94.15,   # base_variance, between 0.25 and 100
+    93.66,   # alpha_variance_modifier, between 0 and 100
+    30.95,   # energy_gamma, between 0.1 and 100
+    0.02,    # charging_base_multiplier, between 0 and 100
+    292.09,  # distance_between_drone_norm, between 10 and 1000
+    3.42,    # a_battery_modifier, between 0 and 10
+    8.16,    # b_battery_modifier, between 0 and 10
+    4.82,    # c_battery_modifier, between 0 and 10
+    0.49,    # charge_margin, between 0.2 and 0.5
+]
+
 ##### How often the drone state is sampled.
 MONITOR_INTERVAL = 10.0
 
@@ -426,10 +442,12 @@ def main_test() -> int:
                         default=main.GLOBAL_MAP_SAMPLE_INTERVAL,
                         help="simulated seconds between two samples of the global map, "
                              "the integration step of the cost (default: %(default)s)")
-    parser.add_argument("--individual", type=float, nargs=len(GENE_BOUNDS), default=BEST_INDIVIDUAL,
+    parser.add_argument("--individual", type=float, nargs=len(GENE_BOUNDS),
                         metavar=tuple(name.upper() for name, _, _ in GENE_BOUNDS),
                         help="genes of the individual to run, in the GENE_BOUNDS order "
-                             "(default: BEST_INDIVIDUAL of main.py, %(default)s)")
+                             f"(default: BEST_INDIVIDUAL of main.py, {BEST_INDIVIDUAL})")
+    parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
+                        help="run HAND_TUNED_INDIVIDUAL of this file, filled in by hand")
     parser.add_argument("--transmission-range", type=float, default=main.TRANSMISSION_RANGE,
                         help="communication range of the drones, in m (default: %(default)s)")
     parser.add_argument("--base-position", type=float, nargs=2, default=main.CHARGING_BASE_POSITION,
@@ -446,6 +464,13 @@ def main_test() -> int:
     parser.add_argument("--simulation-plot", action="store_true",
                         help="open the gradysim visualization (slow)")
     args = parser.parse_args()
+    if args.hand_tuned and args.individual is not None:
+        parser.error("--hand-tuned and --individual both give the individual, use one")
+    if len(HAND_TUNED_INDIVIDUAL) != len(GENE_BOUNDS):
+        parser.error(f"HAND_TUNED_INDIVIDUAL has {len(HAND_TUNED_INDIVIDUAL)} genes, GENE_BOUNDS "
+                     f"{len(GENE_BOUNDS)}: {[name for name, _, _ in GENE_BOUNDS]}")
+    individual = (list(HAND_TUNED_INDIVIDUAL) if args.hand_tuned
+                  else args.individual if args.individual is not None else list(BEST_INDIVIDUAL))
 
     charging_base_position = tuple(args.base_position)
     map_half_extents = (main.MAP_WIDTH * DISTANCE_BETWEEN_CELLS / 2,
@@ -482,7 +507,7 @@ def main_test() -> int:
         sample_interval=args.sample_interval,
         enable_map_plot=args.map_plot,
         enable_simulation_plot=args.simulation_plot,
-        individual=args.individual,
+        individual=individual,
         charging_base_position=charging_base_position,
         seed=args.seed,
     )
@@ -496,7 +521,7 @@ def main_test() -> int:
 
     passed = report(results, recorder, global_map, cost, args.duration, args.drones,
                     monitor_interval=args.monitor_interval,
-                    individual=args.individual,
+                    individual=individual,
                     charging_base_position=charging_base_position)
     return 0 if passed else 1
 

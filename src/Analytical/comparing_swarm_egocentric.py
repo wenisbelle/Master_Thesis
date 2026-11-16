@@ -26,6 +26,8 @@ from all_tests_distance import SYSTEMS, RECORDING_FILE, system_dir
 SYSTEM_STYLES = {
     "swarm":      {"color": "#0072B2", "ls": "-",  "marker": "o"},
     "egocentric": {"color": "#D55E00", "ls": "--", "marker": "s"},
+    "centralized": {"color": "#000000", "ls": (0, (1, 1)), "marker": "X"},
+    "naive":      {"color": "#CC79A7", "ls": (0, (5, 2, 1, 2)), "marker": "h"},
 }
 ##### Markers along each line, sparse so they do not hide the curve, shifted #####
 ##### per system so the two lines do not put theirs on the same samples.     #####

@@ -21,6 +21,15 @@ Each range and swarm size writes, in <system>/test_logs/<range>/<drones>:
                          from <system>/plots
     test_output.txt      the report main_test.py printed, also shown here
 
+centralized and naive have no logbooks of their own yet: their ranges are those of the
+system they are compared with (swarm and egocentric), and their individual of a range
+comes from default_individual in their main.py.
+
+--hand-tuned runs every range with HAND_TUNED_INDIVIDUAL of <system>/main_test.py, the
+individual filled in by hand, instead of the logbooks, into test_logs_hand_tuned/ by
+default. Edit it there, then:
+    python3 Analytical/all_tests_distance.py --system swarm --hand-tuned --ranges 200 --drones 5
+
 The recharge base is the one of main_test.py, the map centre, unless --base-position
 is given. Runs with another base should go to their own --test-logs directory,
 otherwise the runs already done at the centre are found there and skipped.
@@ -36,15 +45,23 @@ import ast
 import sys
 import time
 import argparse
+import importlib
 import threading
 import subprocess
 from collections import deque
 
 DRONE_COUNTS = (3, 5, 7, 10)
-SYSTEMS = ("swarm", "egocentric")
+SYSTEMS = ("swarm", "egocentric", "centralized", "naive")
+##### Systems with no GA logbooks per range of their own: their ranges are those of this system #####
+RANGES_OF = {"centralized": "swarm", "naive": "egocentric"}
+##### Without a radio, its main_test.py takes no --transmission-range #####
+NO_RADIO = ("centralized",)
 
 ANALYTICAL_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(ANALYTICAL_DIR)
+##### The systems are imported as packages, Analytical.<system>, so src has to be on the path #####
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
 LOGBOOK_PATTERN = re.compile(r"ga_logbook_(\d+(?:\.\d+)?)\.txt$")
 
 ##### Names main_test.py gives its files inside the logs directory #####
@@ -113,6 +130,50 @@ def tuned_individuals(system: str, ranges) -> dict:
     return individuals
 
 
+def ranges_system(system: str) -> str:
+    """The system whose ga_logs give the ranges of system, see RANGES_OF."""
+    return RANGES_OF.get(system, system)
+
+
+def hand_tuned_individual(system: str) -> tuple:
+    """
+    (individual, where it comes from) of --hand-tuned: HAND_TUNED_INDIVIDUAL of
+    <system>/main_test.py, filled in by hand. expanding_testing/<s> uses the one of <s>,
+    as it uses its logbooks.
+    """
+    source = system.split("/")[-1]
+    module = importlib.import_module(f"Analytical.{source}.main_test")
+    return ([float(value) for value in module.HAND_TUNED_INDIVIDUAL],
+            f"HAND_TUNED_INDIVIDUAL of {source}/main_test.py (--hand-tuned)")
+
+
+def system_individuals(system: str, ranges, hand_tuned: bool = False) -> dict:
+    """
+    Maps each range to (individual, where it comes from):
+    - with hand_tuned, HAND_TUNED_INDIVIDUAL of <system>/main_test.py for every range;
+    - for a system whose main.py has default_individual (centralized, naive), that;
+    - otherwise the individual tuned for the range in <system>/ga_logs (tuned_individuals).
+    Raises ValueError, naming every range at fault, when a range has none.
+    """
+    if hand_tuned:
+        individual = hand_tuned_individual(system)
+        return {transmission_range: individual for transmission_range in ranges}
+    main = importlib.import_module(f"Analytical.{system.replace('/', '.')}.main")
+    if hasattr(main, "default_individual"):
+        individuals, errors = {}, []
+        for transmission_range in ranges:
+            try:
+                individuals[transmission_range] = main.default_individual(transmission_range)
+            except ValueError as error:
+                errors.append(f"{transmission_range:g} m: {error}")
+        if errors:
+            raise ValueError("\n".join(errors))
+        return individuals
+    logbooks = tuned_ranges(system)
+    return {transmission_range: (individual, logbooks[transmission_range])
+            for transmission_range, individual in tuned_individuals(system, ranges).items()}
+
+
 def recorded_since(logs_directory: str, start: float) -> bool:
     recording = os.path.join(logs_directory, RECORDING_FILE)
     return os.path.exists(recording) and os.path.getmtime(recording) >= start
@@ -128,9 +189,10 @@ def run_test(system: str, transmission_range: float, number_of_drones: int, indi
     os.makedirs(absolute_logs_directory, exist_ok=True)
     command = [sys.executable, "-u", "-m", f"Analytical.{system}.main_test",
                "--drones", str(number_of_drones),
-               "--transmission-range", f"{transmission_range:g}",
                "--logs_directory", logs_directory,
                "--individual", *[repr(value) for value in individual]]
+    if system not in NO_RADIO:
+        command += ["--transmission-range", f"{transmission_range:g}"]
     if base_position is not None:
         command += ["--base-position", *[f"{c:g}" for c in base_position]]
 
@@ -171,26 +233,33 @@ def main() -> int:
                         help="which system to test (default: %(default)s)")
     parser.add_argument("--ranges", type=float, nargs="+",
                         help="transmission ranges to test, in m (default: every range in "
-                             "<system>/ga_logs)")
+                             "<system>/ga_logs, swarm's for centralized and egocentric's for naive)")
+    parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
+                        help="test HAND_TUNED_INDIVIDUAL of <system>/main_test.py on every range, "
+                             "instead of the GA logbooks")
     parser.add_argument("--drones", type=int, nargs="+", default=DRONE_COUNTS,
                         help="swarm sizes to test (default: %(default)s)")
     parser.add_argument("--base-position", type=float, nargs=2, metavar=("X", "Y"),
                         help="position of the recharge base, in m, the map centre is (0, 0) "
                              "(default: the one of main_test.py, the map centre)")
-    parser.add_argument("--test-logs", default="test_logs",
+    parser.add_argument("--test-logs",
                         help="directory, relative to the system directory, the runs are written to, "
-                             "as <range>/<drones> (default: %(default)s)")
+                             "as <range>/<drones> (default: test_logs, test_logs_hand_tuned with --hand-tuned)")
     parser.add_argument("--overwrite", action="store_true",
                         help="also run the ones whose recording already exists")
     args = parser.parse_args()
 
-    ranges = args.ranges if args.ranges is not None else list(tuned_ranges(args.system))
+    if args.test_logs is None:
+        args.test_logs = "test_logs_hand_tuned" if args.hand_tuned else "test_logs"
+    ranges = args.ranges if args.ranges is not None else list(tuned_ranges(ranges_system(args.system)))
     if not ranges:
-        parser.error(f"no ga_logbook_<range>.txt in {ga_logs_dir(args.system)}, nothing to test")
+        parser.error(f"no ga_logbook_<range>.txt in {ga_logs_dir(ranges_system(args.system))}, "
+                     f"nothing to test. Give the ranges with --ranges")
     ##### Every individual is read before the first run, so a range without one stops #####
     ##### the sweep here and not after hours of the others.                             #####
     try:
-        individuals = tuned_individuals(args.system, ranges)
+        individuals = {transmission_range: individual for transmission_range, (individual, _) in
+                       system_individuals(args.system, ranges, args.hand_tuned).items()}
     except ValueError as error:
         parser.error(f"no tuned individual, nothing was run:\n{error}")
     base = "the map centre" if args.base_position is None else tuple(args.base_position)

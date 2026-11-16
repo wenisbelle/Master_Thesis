@@ -14,6 +14,13 @@ Plots the runs multiple_runs.py wrote, for one or more systems, in two figures:
       everything right of Nc is the congestion, and how deep it goes.
   The intervals are 95% percentile bootstraps of the mean over the runs: they narrow
   as runs are added, the spread between runs (b) does not.
+- Time between two visits of a cell, by the distance from the cell to its nearest base,
+  in bins of --distance-bin metres (see multiple_runs.RevisitMonitor for what a visit is):
+  the mean (line) and one standard deviation around it (band), over every revisit of the
+  cells at that distance in every run. The bases move from run to run, so a distance is
+  only drawn where at least half of the runs revisited a cell there. Cells seen at most
+  once have no time between two visits and are left out, their share is printed. Runs
+  written before the revisits were recorded, and the MARL ones, do not have them.
 
     python3 Analytical/plot_multiple_runs.py --system egocentric
     python3 Analytical/plot_multiple_runs.py --system swarm egocentric --range 500 --drones 5   # compared
@@ -21,6 +28,7 @@ Plots the runs multiple_runs.py wrote, for one or more systems, in two figures:
         --logs-directory multiple_runs/3_bases_150
     python3 Analytical/plot_multiple_runs.py --system swarm egocentric --save multiple_runs_200_10.pdf
     python3 Analytical/plot_multiple_runs.py --system swarm egocentric --window 100
+    python3 Analytical/plot_multiple_runs.py --system swarm egocentric --distance-bin 200
     python3 Analytical/plot_multiple_runs.py --system swarm MARL/CTDE_MADQN --range 200 --drones 5   # RL runs
                                              # of src/MARL/CTDE_MADQN/multiple_runs.py
 
@@ -39,7 +47,8 @@ from scipy.stats import wilcoxon
 
 ##### Same layout of the runs, and the same statistics, as the script that writes them #####
 from multiple_runs import (SYSTEMS, MARL_SYSTEMS, NUMBER_OF_DRONES, TRANSMISSION_RANGE, CONFIG_FILE, system_dir,
-                           default_logs_directory, load_runs, time_grid, aligned, run_statistics)
+                           default_logs_directory, load_runs, time_grid, aligned, run_statistics,
+                           cell_distance_to_base)
 
 ##### Okabe-Ito, swarm and egocentric keep their colours of comparing_swarm_egocentric.py. #####
 ##### The lines also differ in dash pattern and the points in marker, so they do not rely #####
@@ -47,6 +56,8 @@ from multiple_runs import (SYSTEMS, MARL_SYSTEMS, NUMBER_OF_DRONES, TRANSMISSION
 SYSTEM_STYLES = {
     "swarm":                        {"color": "#0072B2", "ls": "-",  "marker": "o"},
     "egocentric":                   {"color": "#D55E00", "ls": "--", "marker": "s"},
+    "centralized":                  {"color": "#000000", "ls": (0, (1, 1)), "marker": "X"},
+    "naive":                        {"color": "#CC79A7", "ls": (0, (5, 2, 1, 2)), "marker": "h"},
     "expanding_testing/swarm":      {"color": "#009E73", "ls": "-.", "marker": "^"},
     "expanding_testing/egocentric": {"color": "#CC79A7", "ls": ":",  "marker": "D"},
     "MARL/CTDE_MADQN":              {"color": "#E69F00", "ls": (0, (6, 2)),          "marker": "v"},
@@ -63,6 +74,12 @@ BOOTSTRAP_RESAMPLES = 5000
 BOOTSTRAP_SEED = 0
 JITTER_SEED = 0
 OVER_CAPACITY_COLOR = "0.95"
+
+##### Distance bins of the revisit figure, in m: 5 cells #####
+DISTANCE_BIN = 100.0
+##### A distance is drawn where at least this share of the runs revisited a cell there. The far #####
+##### ones only exist in the runs with a base near a corner, a few runs would decide them.       #####
+MIN_RUN_SHARE = 0.5
 
 
 def spread(values):
@@ -121,11 +138,11 @@ def paired_test(loaded):
     return float(wilcoxon(x, y).pvalue), len(runs)
 
 
-def load_systems(systems, logs_directory, transmission_range, number_of_drones):
+def load_systems(systems, logs_directory, transmission_range, number_of_drones, hand_tuned=False):
     loaded = {}
     for system in systems:
         directory = os.path.join(system_dir(system), logs_directory or
-                                 default_logs_directory(transmission_range, number_of_drones))
+                                 default_logs_directory(transmission_range, number_of_drones, hand_tuned))
         if not os.path.exists(os.path.join(directory, CONFIG_FILE)):
             print(f"{directory}: no runs, {system} left out")
             continue
@@ -292,9 +309,94 @@ def plot_charging_at_once(ax, loaded):
     ax.legend(loc="upper right", fontsize=8, frameon=False, handlelength=3.5)
 
 
+def revisit_by_distance(runs, distances, distance_bin, bins):
+    """
+    Per distance bin, over every revisit of every run: the mean and the std deviation of
+    the time between two visits of the cells at that distance from their nearest base, and
+    how many runs revisited a cell there. distances holds the distance of every cell of each
+    run, cell_distance_to_base. NaN where there are too few revisits: one for the mean, two
+    for the std deviation.
+    """
+    count, total, squares = np.zeros(bins), np.zeros(bins), np.zeros(bins)
+    runs_there = np.zeros(bins, dtype=int)
+    for record, distance in zip(runs, distances):
+        index = (np.ravel(distance) // distance_bin).astype(int)
+
+        def per_bin(values):
+            return np.bincount(index, weights=np.ravel(values).astype(float), minlength=bins)
+
+        run_count = per_bin(record["revisit"]["count"])
+        count += run_count
+        total += per_bin(record["revisit"]["total"])
+        squares += per_bin(record["revisit"]["total_squares"])
+        runs_there += run_count > 0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(count > 0, total / count, np.nan)
+        variance = np.where(count > 1, (squares - count * mean ** 2) / (count - 1), np.nan)
+    ##### Rounding can leave a variance a hair below 0 when every revisit took the same time #####
+    return mean, np.sqrt(np.clip(variance, 0.0, None)), runs_there
+
+
+def plot_revisit(loaded, distance_bin):
+    """
+    Time between two visits of a cell by the distance from the cell to its nearest base:
+    the mean (line) and one std deviation around it (band), over every revisit of every
+    run. None when no system has the revisits.
+    """
+    with_revisit = {}
+    for system, data in loaded.items():
+        runs = [record for record in data["runs"] if "revisit" in record]
+        if len(runs) < len(data["runs"]):
+            print(f"{system}: {len(data['runs']) - len(runs)} of {len(data['runs'])} runs have no time between "
+                  f"visits (written before it was recorded, or MARL), left out of the revisit figure"
+                  + ("" if runs else ", and so is the system"))
+        if runs:
+            with_revisit[system] = runs
+    if not with_revisit:
+        return None
+
+    distances = {system: [cell_distance_to_base(record["revisit"]["count"].shape, record["base_positions"])
+                          for record in runs] for system, runs in with_revisit.items()}
+    bins = int(max(d.max() for ds in distances.values() for d in ds) // distance_bin) + 1
+    centres = (np.arange(bins) + 0.5) * distance_bin
+
+    fig, ax = plt.subplots(figsize=(10, 4.2), constrained_layout=True)
+    drawn = 0.0
+    for system, runs in with_revisit.items():
+        style = SYSTEM_STYLES[system]
+        mean, std, runs_there = revisit_by_distance(runs, distances[system], distance_bin, bins)
+        ##### The far distances that only a few runs reach are not drawn, see MIN_RUN_SHARE #####
+        mean[runs_there < MIN_RUN_SHARE * len(runs)] = np.nan
+        shown = np.isfinite(mean)
+        if shown.any():
+            drawn = max(drawn, centres[shown].max() + distance_bin / 2)
+        ##### The whole map: every bin together #####
+        whole_mean, whole_std, _ = revisit_by_distance(runs, [np.zeros_like(d) for d in distances[system]],
+                                                       distance_bin, 1)
+        ax.fill_between(centres, mean - std, mean + std, where=shown, color=style["color"], alpha=BAND_ALPHA, lw=0)
+        ax.plot(centres, mean, color=style["color"], ls=style["ls"], marker=style["marker"], ms=3.5, lw=1.8,
+                label=f"{system}, {len(runs)} runs (whole map {whole_mean[0]:.0f} ± {whole_std[0]:.0f} s)")
+        ##### Cells seen at most once have no time between two visits, the mean leaves them out #####
+        at_most_once = 100.0 * np.mean([np.mean(record["revisit"]["count"] == 0) for record in runs])
+        print(f"{system}: time between two visits of a cell {whole_mean[0]:.1f} +- {whole_std[0]:.1f} s over "
+              f"every revisit of {len(runs)} runs, {at_most_once:.1f}% of the cells seen at most once (left out)")
+
+    ax.set_xlabel(f"distance from the cell to the nearest base (m), in {distance_bin:g} m bins, "
+                  f"where at least {MIN_RUN_SHARE:.0%} of the runs revisited a cell")
+    ax.set_ylabel("time between two\nvisits of a cell (s)")
+    ax.set_title("Time between two visits: mean over every revisit of the runs, band of ±1 standard deviation",
+                 loc="left", fontsize=9)
+    ax.set_xlim(0, drawn or bins * distance_bin)
+    ax.set_ylim(bottom=0)
+    ax.grid(True, **GRID)
+    ax.legend(loc="upper left", fontsize=8, frameon=False, handlelength=3.5)
+    fig.suptitle(f"Time between two visits of a cell by distance to the base, {scenario(loaded)}")
+    return fig
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Global uncertainty (mean and std deviation) and drones charging above Nc over many runs")
+        description="Global uncertainty (mean and std deviation), drones charging above Nc and time between "
+                    "two visits of a cell by distance to the base, over many runs")
     parser.add_argument("--system", choices=SYSTEMS + MARL_SYSTEMS, nargs="+", required=True,
                         help="system(s) to plot, several are drawn on the same figures")
     parser.add_argument("--range", type=float, default=TRANSMISSION_RANGE, dest="transmission_range",
@@ -307,13 +409,24 @@ if __name__ == "__main__":
     parser.add_argument("--window", type=float, default=WINDOW,
                         help="width of the windows the probability of more than Nc charging is "
                              "estimated in, in s (default: %(default)s)")
+    parser.add_argument("--distance-bin", type=float, default=DISTANCE_BIN,
+                        help="width of the bins of distance to the base the time between two visits "
+                             "is grouped in, in m (default: %(default)s)")
+    parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
+                        help="read the runs of multiple_runs.py --hand-tuned, in multiple_runs_hand_tuned/ "
+                             "(ignored with --logs-directory)")
     parser.add_argument("--save",
-                        help="also save the figures, as <name>_uncertainty<ext> and <name>_charging<ext>, "
-                             "the extension sets the format (pdf, png, ...)")
+                        help="also save the figures, as <name>_uncertainty<ext>, <name>_charging<ext> and "
+                             "<name>_revisit<ext>, the extension sets the format (pdf, png, ...)")
     args = parser.parse_args()
+    if args.distance_bin <= 0:
+        parser.error("--distance-bin has to be positive")
 
-    loaded = load_systems(args.system, args.logs_directory, args.transmission_range, args.drones)
-    figures = {"uncertainty": plot_uncertainty(loaded), "charging": plot_charging(loaded, args.window)}
+    loaded = load_systems(args.system, args.logs_directory, args.transmission_range, args.drones,
+                          args.hand_tuned)
+    figures = {"uncertainty": plot_uncertainty(loaded), "charging": plot_charging(loaded, args.window),
+               "revisit": plot_revisit(loaded, args.distance_bin)}
+    figures = {name: fig for name, fig in figures.items() if fig is not None}
     if args.save:
         stem, extension = os.path.splitext(args.save)
         for name, fig in figures.items():

@@ -37,9 +37,10 @@ import subprocess
 
 import numpy as np
 
-from all_tests_distance import tuned_ranges, tuned_individuals, ga_logs_dir
+from all_tests_distance import tuned_ranges, system_individuals, ga_logs_dir
 from multiple_runs import (SYSTEMS, NUMBER_OF_RUNS, NUMBER_OF_DRONES, SIMULATION_DURATION,
-                           GLOBAL_MAP_SAMPLE_INTERVAL, DEFAULT_LOGS_DIRECTORY, CONFIG_FILE,
+                           GLOBAL_MAP_SAMPLE_INTERVAL, DEFAULT_LOGS_DIRECTORY, HAND_TUNED_LOGS_DIRECTORY,
+                           CONFIG_FILE,
                            system_dir, is_expanding, tuned_system, has_cost, load_runs, time_grid,
                            run_statistics)
 
@@ -91,9 +92,13 @@ def main() -> int:
                              "the one of the system it extends for expanding_testing)")
     parser.add_argument("--drones", type=int, nargs="+", default=[NUMBER_OF_DRONES],
                         help="swarm sizes to run, each one on every range (default: %(default)s)")
-    parser.add_argument("--logs-root", default=DEFAULT_LOGS_DIRECTORY,
+    parser.add_argument("--logs-root",
                         help="directory, relative to the system directory, the runs are written to, "
-                             "as <range>/<drones> (default: %(default)s)")
+                             f"as <range>/<drones> (default: {DEFAULT_LOGS_DIRECTORY}, "
+                             f"{HAND_TUNED_LOGS_DIRECTORY} with --hand-tuned)")
+    parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
+                        help="run HAND_TUNED_INDIVIDUAL of <system>/main_test.py on every range, "
+                             "instead of the GA logbooks")
 
     ##### Passed on to every multiple_runs.py, see its help #####
     parser.add_argument("--runs", type=int, default=NUMBER_OF_RUNS,
@@ -130,13 +135,18 @@ def main() -> int:
     if args.bases < 1:
         parser.error("--bases has to be at least 1")
 
+    if args.logs_root is None:
+        args.logs_root = HAND_TUNED_LOGS_DIRECTORY if args.hand_tuned else DEFAULT_LOGS_DIRECTORY
     ranges = args.ranges if args.ranges is not None else list(tuned_ranges(tuned_system(args.system)))
     if not ranges:
-        parser.error(f"no ga_logbook_<range>.txt in {ga_logs_dir(tuned_system(args.system))}, nothing to run")
+        parser.error(f"no ga_logbook_<range>.txt in {ga_logs_dir(tuned_system(args.system))}, nothing to run. "
+                     f"Give the ranges with --ranges")
     ##### multiple_runs.py refuses a range without one too, checked here for every range so the #####
-    ##### sweep stops before the first one and not after hours of the others.                   #####
+    ##### sweep stops before the first one and not after hours of the others. expanding_testing #####
+    ##### uses the individuals of the system it extends.                                         #####
     try:
-        tuned_individuals(tuned_system(args.system), ranges)
+        system_individuals(args.system if args.hand_tuned or not is_expanding(args.system)
+                           else tuned_system(args.system), ranges, args.hand_tuned)
     except ValueError as error:
         parser.error(f"no tuned individual, nothing was run:\n{error}")
 
@@ -162,6 +172,8 @@ def main() -> int:
                 command += [flag, str(value)]
         if args.overwrite:
             command.append("--overwrite")
+        if args.hand_tuned:
+            command.append("--hand-tuned")
 
         print(f"\n##### [{done}/{len(sweep)}] {args.system}: {transmission_range:g} m, "
               f"{number_of_drones} drones, {args.runs} runs #####", flush=True)

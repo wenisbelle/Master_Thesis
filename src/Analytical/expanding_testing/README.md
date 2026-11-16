@@ -224,8 +224,10 @@ GA tuned for the range, each run with its bases placed again, and keeps the
 swarm level series of every run. `run_all_tests_with_multiple_runs_bases.py`
 runs it for every tuned range, one after the other, and
 `plot_multiple_runs_bases.py` draws the figures of
-`Analytical/plot_multiple_runs.py`, one pair per scenario and range, with
-swarm and egocentric on the same figures.
+`Analytical/plot_multiple_runs.py`, one set per scenario and range, with
+swarm and egocentric on the same figures: the global uncertainty, the drones
+charging above `Nc`, and the time between two visits of a cell by the distance
+from the cell to its nearest base.
 
 | Scenario | Map | Drones | Bases | `Nc` |
 |---|---|---|---|---|

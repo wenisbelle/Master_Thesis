@@ -1,0 +1,17 @@
+{
+  "system": "centralized",
+  "drones": 5,
+  "transmission_range": 200.0,
+  "duration": 10000,
+  "sample_interval": 1.0,
+  "seed": 0,
+  "individual": [
+    94.15558594625281,
+    93.66581511438385,
+    30.95779975852564,
+    292.09101151530143
+  ],
+  "map_size": 100,
+  "bases": 1,
+  "charging_capacity": null
+}

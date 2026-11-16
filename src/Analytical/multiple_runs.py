@@ -14,7 +14,8 @@ container). The runs are written to <system>/multiple_runs/<range>/<drones>, the
 layout as the test_logs of all_tests_distance.py:
     run_<k>.pkl    the global uncertainty, the drones charging and the dead drones at every
                    --sample-interval, plus the base(s), the seed, the cost (not for
-                   expanding_testing, which has none) and the final state of every drone
+                   expanding_testing, which has none), the final state of every drone and,
+                   per cell, the times between two visits (see RevisitMonitor)
     config.json    the scenario shared by every run of the directory
     summary.txt    one line per run and the mean and std deviation over them, also printed
 
@@ -27,7 +28,17 @@ The individual is the one the GA tuned for --range, the "Parameters:" line of
 <system>/ga_logs/ga_logbook_<range>.txt, as in all_tests_distance.py (expanding_testing
 uses the logbooks of the system it extends). Without a logbook for the range, or
 without the Parameters line in it, it is an error and nothing is run. --individual
-overrides it.
+overrides it. centralized and naive have no logbooks per range yet, their main.py picks the
+individual (default_individual): their own logbook once they are tuned, until then the
+coverage genes of the swarm (centralized) or egocentric (naive) individual of the range.
+Centralized has no radio, the range only files its runs and picks its individual.
+
+--hand-tuned runs HAND_TUNED_INDIVIDUAL of <system>/main_test.py, the individual filled in
+by hand, into multiple_runs_hand_tuned/<range>/<drones>, so the hand-tuned runs never mix
+with the tuned ones. plot_multiple_runs.py --hand-tuned reads them back. After editing the
+individual, add --overwrite: a directory refuses runs of another individual.
+
+    python3 Analytical/multiple_runs.py --system swarm --hand-tuned --runs 10 --drones 5 --overwrite
 
 The runs go in parallel, a fresh process for each one, in train mode: the per-routine
 protocol log of a test run is tens of MB and would be written by every process at once.
@@ -49,9 +60,10 @@ import multiprocessing
 import numpy as np
 
 ##### The individuals tuned for each range, found the same way as the tests do #####
-from all_tests_distance import tuned_ranges, tuned_individuals
+from all_tests_distance import tuned_ranges, tuned_individuals, hand_tuned_individual, RANGES_OF
 
-SYSTEMS = ("swarm", "egocentric", "expanding_testing/swarm", "expanding_testing/egocentric")
+SYSTEMS = ("swarm", "egocentric", "centralized", "naive",
+           "expanding_testing/swarm", "expanding_testing/egocentric")
 ##### The MARL systems write the same run files with src/MARL/<system>/multiple_runs.py. They are #####
 ##### only read here, by plot_multiple_runs.py, so they can be plotted next to the analytical ones. #####
 MARL_SYSTEMS = ("MARL/CTDE_MADQN", "MARL/Independent_MADQN")
@@ -76,11 +88,17 @@ BASE_POSITION_SIGMA = 333.0
 BASE_POSITION_SIGMA_MAP_SIZE = 100
 
 DEFAULT_LOGS_DIRECTORY = "multiple_runs"
+##### The runs of --hand-tuned, apart from the ones of the tuned individuals #####
+HAND_TUNED_LOGS_DIRECTORY = "multiple_runs_hand_tuned"
 CONFIG_FILE = "config.json"
 SUMMARY_FILE = "summary.txt"
 RUN_PATTERN = re.compile(r"run_(\d+)\.pkl$")
 ##### Series of GlobalMapMonitor kept on every sample, under the names the runs store them #####
 SERIES = {"global_uncertainty": "uncertainty", "charging": "charging_drones", "dead": "dead_drones"}
+
+##### Period of the camera timer of every protocol, in s: a drone passing over a cell sees it once #####
+##### per period, so observations this close belong to the same visit.                            #####
+CAMERA_PERIOD = 1.0
 
 
 def system_dir(system: str) -> str:
@@ -98,8 +116,13 @@ def is_expanding(system: str) -> bool:
 
 
 def tuned_system(system: str) -> str:
-    """System whose GA logbooks hold the individuals, expanding_testing has no GA of its own."""
-    return system.split("/")[-1]
+    """
+    System whose GA logbooks give the ranges and the individuals: expanding_testing has no GA
+    of its own. centralized and naive pick their individual themselves (default_individual of
+    their main.py), their ranges are those of swarm and egocentric (all_tests_distance.RANGES_OF).
+    """
+    system = system.split("/")[-1]
+    return RANGES_OF.get(system, system)
 
 
 def has_cost(system: str) -> bool:
@@ -115,8 +138,9 @@ def gene_names(system: str) -> list:
     return [name for name, _, _ in main.GENE_BOUNDS]
 
 
-def default_logs_directory(transmission_range: float, number_of_drones: int) -> str:
-    return os.path.join(DEFAULT_LOGS_DIRECTORY, f"{transmission_range:g}", str(number_of_drones))
+def default_logs_directory(transmission_range: float, number_of_drones: int, hand_tuned: bool = False) -> str:
+    root = HAND_TUNED_LOGS_DIRECTORY if hand_tuned else DEFAULT_LOGS_DIRECTORY
+    return os.path.join(root, f"{transmission_range:g}", str(number_of_drones))
 
 
 def run_file(run: int) -> str:
@@ -142,6 +166,93 @@ def sample_base_positions(seed: int, number_of_bases: int, map_size: int) -> lis
     return [tuple(float(c) * DISTANCE_BETWEEN_CELLS - map_center_offset for c in cell) for cell in cells]
 
 
+class RevisitMonitor:
+    """
+    Per cell, the times between two visits over the run, sampled next to GlobalMapMonitor.
+
+    Every protocol keeps in map[:, :, 1] the last time the cell was seen, 0 before it ever
+    was. Only the camera of the drone over the cell writes it, the encounters only copy the
+    newer time of the other drone, so the maximum over the drones is the last time any
+    drone saw the cell. Every system marks a visit this way, swarm and egocentric, with
+    one base or several, so the same monitor reads all of them without touching them.
+
+    A visit lasts while the cell keeps being seen: a drone passing over it sees it on a few
+    camera ticks in a row, a drone hovering over it on every one. The cell is visited again
+    when it is seen after more than same_visit_gap without being seen, and the time between
+    the two visits is that time without being seen, from the last time the first visit saw
+    the cell to the first time the second one does: the time its uncertainty grew. It is
+    read once per sample, so it can be over by up to a sample interval (when two drones see
+    the cell between two samples, only the later one is read), and same_visit_gap leaves a
+    sample interval of slack above the camera period.
+
+    The intervals are not kept one by one, only their number, sum and sum of squares per
+    cell, enough for the mean and the std deviation of any group of cells. The time from
+    the start to the first visit, and from the last visit to the end, are not intervals
+    between two visits and are left out: a cell seen at most once has none.
+    """
+
+    def __init__(self, simulation, number_of_drones: int, sample_interval: float):
+        self.sim = simulation
+        self.number_of_drones = number_of_drones
+        self.same_visit_gap = sample_interval + CAMERA_PERIOD
+        self._protocols = None
+        self.last_seen = None
+
+    def sample(self, time: float) -> None:
+        if self._protocols is None:
+            ##### Same nodes as GlobalMapMonitor: the drones are the first number_of_drones nodes #####
+            self._protocols = [self.sim.get_node(i).protocol_encapsulator.protocol
+                               for i in range(self.number_of_drones)]
+        ##### Read from every protocol on every sample: an encounter replaces the map array #####
+        seen = self._protocols[0].map[:, :, 1].copy()
+        for protocol in self._protocols[1:]:
+            np.maximum(seen, protocol.map[:, :, 1], out=seen)
+
+        if self.last_seen is None:
+            self.last_seen = np.zeros_like(seen)
+            self.count = np.zeros(seen.shape, dtype=np.int32)
+            self.total = np.zeros_like(seen)
+            self.total_squares = np.zeros_like(seen)
+
+        ##### Seen since the last sample. last_seen > 0: it had been seen before, so it is not its first visit #####
+        new = seen > self.last_seen
+        gap = seen - self.last_seen
+        revisited = new & (self.last_seen > 0) & (gap > self.same_visit_gap)
+        self.count[revisited] += 1
+        self.total[revisited] += gap[revisited]
+        self.total_squares[revisited] += gap[revisited] ** 2
+        self.last_seen[new] = seen[new]
+
+    def result(self) -> dict:
+        """What the run file keeps, per cell, indexed [x, y] as the maps of the protocols."""
+        return {
+            "same_visit_gap": self.same_visit_gap,
+            "count": self.count,
+            "total": self.total,
+            "total_squares": self.total_squares,
+            "last_seen": self.last_seen,
+        }
+
+
+def cell_distance_to_base(shape: tuple, base_positions) -> np.ndarray:
+    """
+    Distance from the centre of every cell to the nearest base, in m, indexed [x, y]. The
+    cells are placed as in the protocols: cell x is at x * DISTANCE_BETWEEN_CELLS minus half
+    the side of the map, the map is centred on (0, 0). With several bases it is the base
+    nearest to the cell, the one the energy term of expanding_testing uses.
+    """
+    width, height = shape
+    x = np.arange(width) * DISTANCE_BETWEEN_CELLS - width * DISTANCE_BETWEEN_CELLS / 2
+    y = np.arange(height) * DISTANCE_BETWEEN_CELLS - height * DISTANCE_BETWEEN_CELLS / 2
+    return np.min([np.hypot(x[:, None] - bx, y[None, :] - by) for bx, by, *_ in base_positions], axis=0)
+
+
+def mean_revisit(record: dict) -> float:
+    """Mean time between two visits of a cell over every revisit of the run, NaN when there is none."""
+    count = record["revisit"]["count"].sum()
+    return float(record["revisit"]["total"].sum() / count) if count else float("nan")
+
+
 def run_simulation(job: dict) -> dict:
     """
     One run, in a process of its own (see run_jobs). It returns what is written to
@@ -150,17 +261,26 @@ def run_simulation(job: dict) -> dict:
     try:
         main = system_module(job["system"])
         start = time.time()
+        ##### Built with the simulation, sampled with the global map #####
+        monitors = []
+
+        def revisit_observer(simulation):
+            monitors.append(RevisitMonitor(simulation, job["drones"], job["sample_interval"]))
+            return monitors[-1].sample
+
         if is_expanding(job["system"]):
             results, global_map = main.create_and_run_simulation(
                 job["individual"], mode="train", sample_interval=job["sample_interval"],
                 number_of_drones=job["drones"], seed=job["seed"],
                 charging_base_positions=job["base_positions"],
-                charging_capacity=job["charging_capacity"])
+                charging_capacity=job["charging_capacity"],
+                observer_factory=revisit_observer)
         else:
             results, global_map = main.create_and_run_simulation(
                 job["individual"], mode="train", sample_interval=job["sample_interval"],
                 number_of_drones=job["drones"], seed=job["seed"],
-                charging_base_position=job["base_positions"][0])
+                charging_base_position=job["base_positions"][0],
+                observer_factory=revisit_observer)
 
         record = {
             "run": job["run"],
@@ -170,6 +290,7 @@ def run_simulation(job: dict) -> dict:
             "times": np.array(global_map.times),
             **{name: np.array(getattr(global_map, attribute)) for name, attribute in SERIES.items()},
             "drones": results,
+            "revisit": monitors[0].result(),
             "elapsed": time.time() - start,
         }
         if has_cost(job["system"]):
@@ -210,6 +331,9 @@ def run_statistics(record: dict, grid: np.ndarray) -> dict:
     ##### The runs of expanding_testing have no cost, see has_cost #####
     if "cost" in record:
         statistics["cost"] = record["cost"]
+    ##### Runs written before RevisitMonitor, and the MARL ones, do not have it #####
+    if "revisit" in record:
+        statistics["mean_revisit"] = mean_revisit(record)
     return statistics
 
 
@@ -260,6 +384,8 @@ def summary(config: dict, runs: list) -> str:
     lines.append("  time with more than Nc drones charging: {:.1f} +- {:.1f} %".format(*spread("above_nc")))
     lines.append("  most drones charging at once: {:.2f} +- {:.2f}".format(*spread("max_charging")))
     lines.append("  dead drones at the end: {:.2f} +- {:.2f}".format(*spread("dead")))
+    if all("mean_revisit" in stats for stats in statistics):
+        lines.append("  time between two visits of a cell: {:.1f} +- {:.1f} s".format(*spread("mean_revisit")))
     if with_cost:
         lines.append("  cost: {:.1f} +- {:.1f}".format(*spread("cost")))
     return "\n".join(lines)
@@ -315,6 +441,9 @@ def main() -> int:
     parser.add_argument("--individual", type=float, nargs="+",
                         help="genes of the individual, in the GENE_BOUNDS order of the system's main.py "
                              "(default: the one tuned for --range, an error when there is none)")
+    parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
+                        help="run HAND_TUNED_INDIVIDUAL of <system>/main_test.py instead of the tuned one, "
+                             f"into {HAND_TUNED_LOGS_DIRECTORY}/<range>/<drones> by default")
     parser.add_argument("--bases", type=int, default=1,
                         help="expanding_testing only: recharge bases of each run, all drawn again on "
                              "every run (default: %(default)s)")
@@ -355,8 +484,19 @@ def main() -> int:
         main_module.MAP_WIDTH = main_module.MAP_HEIGHT = args.map_size
     map_size = main_module.MAP_WIDTH
 
+    if args.individual is not None and args.hand_tuned:
+        parser.error("--individual and --hand-tuned both give the individual, use one")
     if args.individual is not None:
         individual, origin = list(args.individual), "--individual"
+    elif args.hand_tuned:
+        individual, origin = hand_tuned_individual(args.system)
+    elif hasattr(main_module, "default_individual"):
+        ##### centralized and naive: their own logbook, or the coverage genes of the system they extend #####
+        try:
+            individual, origin = main_module.default_individual(args.transmission_range)
+        except ValueError as error:
+            parser.error(f"no individual for {args.system}, nothing was run:\n{error}\n"
+                         f"Give the individual with --individual or --hand-tuned")
     else:
         ##### No fallback to BEST_INDIVIDUAL of main.py, the range would run untuned #####
         try:
@@ -372,7 +512,7 @@ def main() -> int:
                      f"{len(genes)}: {genes}")
 
     logs_directory = os.path.join(system_dir(args.system), args.logs_directory or
-                                  default_logs_directory(args.transmission_range, args.drones))
+                                  default_logs_directory(args.transmission_range, args.drones, args.hand_tuned))
     config = {
         "system": args.system,
         "drones": args.drones,
@@ -385,6 +525,9 @@ def main() -> int:
         "bases": args.bases,
         "charging_capacity": args.charging_capacity,
     }
+    ##### Only when set, so the directories written before the flag keep the same config #####
+    if args.hand_tuned:
+        config["hand_tuned"] = True
 
     ##### The runs of a directory are aggregated together, so they all have to come from #####
     ##### the same scenario. Another scenario goes to another directory, or replaces them. #####
@@ -442,7 +585,8 @@ def main() -> int:
         print(text)
         print(f"\nPlot them with: python3 Analytical/plot_multiple_runs.py --system {args.system} "
               + (f"--logs-directory {args.logs_directory}" if args.logs_directory else
-                 f"--range {args.transmission_range:g} --drones {args.drones}"))
+                 f"--range {args.transmission_range:g} --drones {args.drones}"
+                 + (" --hand-tuned" if args.hand_tuned else "")))
     return 1 if failed else 0
 
 

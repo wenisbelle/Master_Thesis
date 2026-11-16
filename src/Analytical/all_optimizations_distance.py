@@ -26,7 +26,8 @@ import argparse
 import subprocess
 
 TRANSMISSION_RANGES = (100, 200, 500, 750, 1000, 2000)  # m
-SYSTEMS = ("swarm", "egocentric")
+##### centralized has no radio, its GA does not depend on the range: python3 -m Analytical.centralized.main #####
+SYSTEMS = ("swarm", "egocentric", "naive")
 
 ANALYTICAL_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(ANALYTICAL_DIR)

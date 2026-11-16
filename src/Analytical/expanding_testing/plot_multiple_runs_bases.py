@@ -1,6 +1,6 @@
 """
-Plots the runs multiple_runs_bases.py wrote, with the two figures of
-Analytical/plot_multiple_runs.py, one pair for every scenario and range, the systems
+Plots the runs multiple_runs_bases.py wrote, with the three figures of
+Analytical/plot_multiple_runs.py, one set for every scenario and range, the systems
 on the same figures:
 
 - Global uncertainty: at every time, the mean over the runs (line) and one standard
@@ -9,12 +9,16 @@ on the same figures:
   in windows of --window seconds, (b) how much, the share of every run, with the paired
   Wilcoxon signed-rank test of swarm against egocentric (run k has the same bases and
   wind on both), (c) how many at once, the occupancy of the bases.
+- Time between two visits of a cell by the distance from the cell to its nearest base,
+  in bins of --distance-bin metres: the mean (line) and one std deviation around it
+  (band), over every revisit of every run.
 See Analytical/plot_multiple_runs.py for how each panel is computed.
 
     cd src
     python3 Analytical/expanding_testing/plot_multiple_runs_bases.py                     # 200 m, every scenario
     python3 Analytical/expanding_testing/plot_multiple_runs_bases.py --range 500 --scenario 200x200_20drones_3bases
     python3 Analytical/expanding_testing/plot_multiple_runs_bases.py --system swarm --window 100
+    python3 Analytical/expanding_testing/plot_multiple_runs_bases.py --distance-bin 200
     python3 Analytical/expanding_testing/plot_multiple_runs_bases.py --range 100 200 500 750 1000 2000 \
         --save figures/bases.pdf --no-show
 
@@ -24,8 +28,9 @@ scenario and range without runs of any system is skipped. The scenarios are not 
 together: the 200 cell map has four times the cells of the 100 cell one, so its global
 uncertainty, a sum over the cells, is not on the same scale.
 
-With --save NAME.EXT the figures are saved as NAME_<range>_<scenario>_uncertainty.EXT
-and NAME_<range>_<scenario>_charging.EXT, the extension sets the format (pdf, png, ...).
+With --save NAME.EXT the figures are saved as NAME_<range>_<scenario>_uncertainty.EXT,
+NAME_<range>_<scenario>_charging.EXT and NAME_<range>_<scenario>_revisit.EXT, the
+extension sets the format (pdf, png, ...).
 """
 
 import os
@@ -40,13 +45,14 @@ if ANALYTICAL_DIR not in sys.path:
     sys.path.insert(0, ANALYTICAL_DIR)
 
 from multiple_runs import TRANSMISSION_RANGE
-from plot_multiple_runs import WINDOW, load_systems, plot_uncertainty, plot_charging
+from plot_multiple_runs import WINDOW, DISTANCE_BIN, load_systems, plot_uncertainty, plot_charging, plot_revisit
 from multiple_runs_bases import SYSTEMS, SCENARIOS, DEFAULT_LOGS_ROOT, scenario_label
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Global uncertainty and drones charging above Nc over the runs of multiple_runs_bases.py")
+        description="Global uncertainty, drones charging above Nc and time between two visits of a cell "
+                    "over the runs of multiple_runs_bases.py")
     parser.add_argument("--system", choices=SYSTEMS, nargs="+", default=list(SYSTEMS),
                         help="system(s) to plot, drawn on the same figures (default: all of them)")
     parser.add_argument("--scenario", choices=SCENARIOS, nargs="+", default=list(SCENARIOS),
@@ -60,15 +66,21 @@ def main() -> int:
     parser.add_argument("--window", type=float, default=WINDOW,
                         help="width of the windows the probability of more than Nc charging is "
                              "estimated in, in s (default: %(default)s)")
+    parser.add_argument("--distance-bin", type=float, default=DISTANCE_BIN,
+                        help="width of the bins of distance to the nearest base the time between two "
+                             "visits is grouped in, in m (default: %(default)s)")
     parser.add_argument("--save",
-                        help="also save the figures, as <name>_<range>_<scenario>_uncertainty<ext> and "
-                             "<name>_<range>_<scenario>_charging<ext>, the extension sets the format")
+                        help="also save the figures, as <name>_<range>_<scenario>_uncertainty<ext>, "
+                             "<name>_<range>_<scenario>_charging<ext> and <name>_<range>_<scenario>_revisit<ext>, "
+                             "the extension sets the format")
     parser.add_argument("--no-show", action="store_true",
                         help="do not open the figures, only save them (needs --save)")
     args = parser.parse_args()
 
     if args.no_show and not args.save:
         parser.error("--no-show without --save would draw nothing")
+    if args.distance_bin <= 0:
+        parser.error("--distance-bin has to be positive")
     systems = [SYSTEMS[name] for name in dict.fromkeys(args.system)]
 
     plotted = 0
@@ -85,10 +97,17 @@ def main() -> int:
 
             durations = "/".join(str(d) for d in sorted({data["config"]["duration"] for data in loaded.values()}))
             label = f"{scenario_label(scenario)}, {transmission_range:g} m, {durations} s"
-            figures = {"uncertainty": plot_uncertainty(loaded), "charging": plot_charging(loaded, args.window)}
+            figures = {"uncertainty": plot_uncertainty(loaded), "charging": plot_charging(loaded, args.window),
+                       "revisit": plot_revisit(loaded, args.distance_bin)}
             ##### The titles of plot_multiple_runs.py do not know the scenario #####
             figures["uncertainty"].suptitle(f"Global uncertainty over the runs, {label}")
             figures["charging"].suptitle(f"Drones charging above Nc over the runs, {label}")
+            ##### None when no run of the scenario recorded the revisits #####
+            if figures["revisit"] is None:
+                del figures["revisit"]
+            else:
+                figures["revisit"].suptitle(f"Time between two visits of a cell by distance to the nearest base, "
+                                            f"{label}")
 
             if args.save:
                 stem, extension = os.path.splitext(args.save)
