@@ -20,10 +20,6 @@ class FitnessEvaluator:
                  alpha_variance_modifier: float, # tunable
                  distance_between_drone_norm: float, # tunable - couples the two targets at an encounter
                  kernel_n_sigma: int, # tunable
-                 charge_margin: float = 0.30, # tunable
-                 min_charge_margin: float = 0.20, # fixed
-                 discharge_rate: float = 0.001, # fixed, percentage per second. 1000 SECONDS the whole charge is depleted, reaching charge 1.
-                 Nc_charging_base: int = 2, # fixed, number of drone that can charge at the same time in the base. A bigger number will start receiving penalty
                  information_decay_rate: float = 0.001,
                  number_of_cells_x_y: int = 10):
 
@@ -38,10 +34,6 @@ class FitnessEvaluator:
         self.alpha_variance_modifier = alpha_variance_modifier
         self.NUMBER_OF_CELLS_X_Y = number_of_cells_x_y
         self.INFORMATION_DECAY_RATE = information_decay_rate
-        self.CHARGE_MARGIN = charge_margin
-        self.MIN_CHARGE_MARGIN = min_charge_margin
-        self.DISCHARGE_RATE = discharge_rate
-        self.Nc_CHARGING_BASE = Nc_charging_base    
 
         # Cache of cell centre coordinates, keyed by (rows, cols, map_center_offset)
         self._cell_coords_cache = {}
@@ -246,17 +238,10 @@ class FitnessEvaluator:
         valid.flat[np.argmin(dist)] = False
         return valid
 
-    def energy_effect(self, map_data:np.array, drone_position: Tuple[float, float, float],
-                      recharge_base_position: Tuple[float, float], map_center_offset: float,
-                      current_charge: float, drone_speed: float) -> float:
-        """
-        Naive: no energy model. Every cell keeps its value whatever the battery and the
-        distance to the base (the factor of Eq. 14 is 1), so the drone chooses where to map
-        by the uncertainty alone. It goes back to the base on a fixed battery threshold, see
-        RETURN_BATTERY_THRESHOLD in protocol.py.
-        """
-        return 1.0
-        
+    ##### Naive: there is no energy_effect. The energy factor of Eq. (14) is 1 whatever the  #####
+    ##### battery and the distance to the base, so the weights are phi alone and the drone  #####
+    ##### chooses where to map by the uncertainty alone. It goes back to the base on a fixed #####
+    ##### battery threshold, see RETURN_BATTERY_THRESHOLD in protocol.py.                    #####
 
     ##### OLD VERSION, kept commented for comparison. Replaced by the version below: same result #####
     ##### (up to floating point rounding, ~1e-13 relative), without the loop over every offset    #####
@@ -487,7 +472,6 @@ class FitnessEvaluator:
     #     return fitness_scores
 
     def cells_priority(self, map_data: np.array, drone_position: Tuple[float, float, float],
-                       recharge_base_position: Tuple[float, float], current_charge: float,
                        drone_speed: float, map_center_offset: float) -> list:
         """
         Fitness of every cell of the NUMBER_OF_CELLS_X_Y window around the drone, except its own
@@ -504,11 +488,8 @@ class FitnessEvaluator:
         I_at_arrival, phi = self.uncertainty_modified_time_to_travel(map_data, drone_position,
                                                                     map_center_offset, drone_speed)
 
-        # Map modified by the energy
-        energy_modified_values = self.energy_effect(map_data, drone_position, recharge_base_position,
-                                                    map_center_offset, current_charge, drone_speed)
-
-        weights = phi * energy_modified_values
+        # Naive: no energy factor, the weights are phi alone
+        weights = phi
 
         # Remove the drone's own cell as a source
         valid = self.drone_exclusion_mask(map_data.shape, drone_position, map_center_offset)
@@ -597,9 +578,7 @@ class FitnessEvaluator:
         return [(averages[k], (int(candidates_i[k]), int(candidates_j[k]))) for k in np.flatnonzero(in_window)]
 
     def both_cells_priority(self, map_data: np.array, first_drone_pos: Tuple[float, float], second_drone_pos: Tuple[float, float],
-                            recharge_base_position: Tuple[float, float], first_drone_current_charge: float, 
-                            second_drone_current_charge: float, drone_speed: float,
-                            map_center_offset: float) -> Optional[Tuple[float, Tuple[int, int], Tuple[int, int], float, float]]:
+                            drone_speed: float, map_center_offset: float) -> Optional[Tuple[float, Tuple[int, int], Tuple[int, int], float, float]]:
         """
         Fully vectorized fuzzy inference for two drones.
 
@@ -608,8 +587,8 @@ class FitnessEvaluator:
         or None if either drone has no candidate cell.
         """
         # Get individual priorities (using the fast method above)
-        list1 = self.cells_priority(map_data, first_drone_pos, recharge_base_position, first_drone_current_charge, drone_speed, map_center_offset)
-        list2 = self.cells_priority(map_data, second_drone_pos, recharge_base_position, second_drone_current_charge, drone_speed, map_center_offset)
+        list1 = self.cells_priority(map_data, first_drone_pos, drone_speed, map_center_offset)
+        list2 = self.cells_priority(map_data, second_drone_pos, drone_speed, map_center_offset)
 
         if not list1 or not list2:
             return None
@@ -658,23 +637,19 @@ class FitnessEvaluator:
     ##### the best cell. The two functions below only choose where to map.                      #####
 
     def choose_one_cell(self, map_data: np.array, drone_location: Tuple[float, float, float],
-                        recharge_base_position: Tuple[float, float], current_drone_charge: float,
-                        drone_speed: float, map_center_offset: float) -> Optional[Tuple[Tuple[int, int], float, str]]:
+                        drone_speed: float, map_center_offset: float) -> Optional[Tuple[Tuple[int, int], float]]:
         """The best cell of the window around the drone, as in egocentric, without the comparison with the base."""
-        fitness_scores = self.cells_priority(map_data, drone_location,
-                                             recharge_base_position, current_drone_charge,
-                                             drone_speed, map_center_offset)
+        fitness_scores = self.cells_priority(map_data, drone_location, drone_speed, map_center_offset)
         if not fitness_scores:
             return None
 
         best_cell = max(fitness_scores, key=lambda x: x[0])
-        return best_cell[1], best_cell[0], "mapping"
+        return best_cell[1], best_cell[0]
 
     def choose_two_cells(self, map_data: np.array, first_drone_location: Tuple[float, float, float],
-                         second_drone_location: Tuple[float, float, float], recharge_base_position: Tuple[float, float],
-                         first_current_drone_charge: float, second_current_drone_charge: float,
+                         second_drone_location: Tuple[float, float, float],
                          drone_speed: float, map_center_offset: float,
-                         ) -> Optional[Tuple[list, float, list]]:
+                         ) -> Optional[Tuple[list, float]]:
         """
         The best pair of cells for two drones that met, with the separation term, as in
         egocentric (both_cells_priority), without the comparison of each drone with the base.
@@ -683,9 +658,6 @@ class FitnessEvaluator:
             map_data=map_data,
             first_drone_pos=first_drone_location,
             second_drone_pos=second_drone_location,
-            recharge_base_position=recharge_base_position,
-            first_drone_current_charge=first_current_drone_charge,
-            second_drone_current_charge=second_current_drone_charge,
             drone_speed=drone_speed,
             map_center_offset=map_center_offset
         )
@@ -695,4 +667,4 @@ class FitnessEvaluator:
 
         # (best_fitness, cell_1, cell_2, fitness_1, fitness_2)
         best_fitness, best_1, best_2, _, _ = best_pair
-        return [[best_1, best_2], best_fitness, ["mapping", "mapping"]]
+        return [best_1, best_2], best_fitness

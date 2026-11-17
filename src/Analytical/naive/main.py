@@ -43,14 +43,15 @@ TRANSMISSION_RANGE = 100
 DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility handler
 DRONE_MAX_ACCELERATION = 3.0  # horizontal acceleration limit of the mobility handler, m/s^2
 
-##### Fixed protocol parameters, not tuned 
+##### Measured, not used by the naive drone. Only the reference line of plots/plot_returns.py #####
 DISCHARGE_RATE = 0.00073  # measured: 0.000725-0.000733 per second, flying at 15 m/s with the random air speed (0.00077 at 10 m/s)
+
+##### Fixed protocol parameters, not tuned
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 ##### 1.0 as swarm and centralized. egocentric still has 0.5 (Analytical/README.md, known issues) #####
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
-MIN_CHARGE_MARGIN = 0.20  # not used by the naive decisions, kept for the battery table of egocentric
 ##### The naive return rule (A1.md): a MAPPING drone goes to the base below this battery #####
 RETURN_BATTERY_THRESHOLD = 0.30
 
@@ -176,6 +177,11 @@ def sample_base_position(seed: int) -> tuple:
             return tuple(float(c) for c in cell * DISTANCE_BETWEEN_CELLS - map_center_offset)
 
 
+def charging_base_capacity(number_of_drones: int) -> int:
+    """Nc, the drones that can charge at once before the cost adds the congestion penalty."""
+    return int(number_of_drones/3)
+
+
 def congestion_penalty_rate(excess: int, number_of_drones: int) -> float:
     """
     Cost per simulated second of having excess drones CHARGING above the base
@@ -216,7 +222,7 @@ class GlobalMapMonitor:
         self.sim = simulation
         self.number_of_drones = number_of_drones
         self.sample_interval = sample_interval
-        self.nc_charging_base = int(number_of_drones/3)
+        self.nc_charging_base = charging_base_capacity(number_of_drones)
         self._protocols = None
 
         self.times = []
@@ -393,11 +399,8 @@ def create_and_run_simulation(individual, mode: str = "train",
         drone_speed=DRONE_SPEED,
         drone_max_acceleration=DRONE_MAX_ACCELERATION,
         **unpack_individual(individual),
-        discharge_rate=DISCHARGE_RATE,
         charging_base_position=charging_base_position,
         return_battery_threshold=RETURN_BATTERY_THRESHOLD,
-        min_charge_margin=MIN_CHARGE_MARGIN,  
-        Nc_charging_base=int(number_of_drones/3),  
         results_aggregator=results_aggregator,
         mode=mode,
         enable_map_plot=enable_map_plot,

@@ -22,15 +22,19 @@ the code is right.
 
 | | egocentric | naive |
 |---|---|---|
-| Energy factor of the cells (Eq. 14) | `exp(γ · min(R, 0))`: cells it cannot fly to and back from are damped | **1**: `fitness.energy_effect` returns 1 |
+| Energy factor of the cells (Eq. 14) | `exp(γ · min(R, 0))`: cells it cannot fly to and back from are damped | **1**: there is no `energy_effect`, the weights of `fitness.cells_priority` are φ alone |
+| Battery of the others | a table per drone (battery, time, status), merged in the gossip, plus a DEAD notification broadcast by dead drones | none: nothing would read it. The gossip carries the map, position and status only, and a dead drone stays silent |
 | Going to the base | when the base attraction `κ·exp(−γ·R_safe)` beats the best cell | when **battery < 0.30**, checked every second (`protocol.go_to_base`) |
 | Reserve for the trip home | tuned `charge_margin` plus the energy to reach the base | none. It only works because 30% is enough to cross the map: about 190 s of flight corner to corner, 0.14 of battery |
 | Pair decision | `choose_two_cells` can send a drone to the base | the same `choose_two_cells`, but both drones always map. The drone below 30% goes on its next tick |
 | Genes | 6 | **3**: `base_variance`, `alpha_variance_modifier`, `distance_between_drone_norm` |
 | `INITIAL_UNCERTAINTY` | 0.5 | **1.0**, as swarm and centralized (A1.md asks for the same value in every system; egocentric is the one left at 0.5) |
 
-`fitness.py` has no `recharge_base_fitness`. Its `choose_one_cell` and `choose_two_cells`
-only return cells to map. `main_test.py` labels a trip to the base as `threshold` in the
+`fitness.py` has no `recharge_base_fitness` and no battery inputs. Its `choose_one_cell`
+and `choose_two_cells` only take the map, the positions and the speed, and only return
+cells to map. `Nc` and the measured `DISCHARGE_RATE` are not protocol parameters either:
+`main.py` keeps them for the cost and the plots (`charging_base_capacity`, the reference
+line of `plot_returns.py`). `main_test.py` labels a trip to the base as `threshold` in the
 returns, where swarm's says `own`.
 
 ## The individual

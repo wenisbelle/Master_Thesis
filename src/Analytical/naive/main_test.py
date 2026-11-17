@@ -31,7 +31,7 @@ from . import main
 from .main import BEST_INDIVIDUAL, GENE_BOUNDS
 from .recorder import SimulationRecorder
 from .protocol import DroneStatus, Drone, MessageType, drone_protocol_factory
-from .estimation_metrics import summarize, format_summary
+from .returns_metrics import summarize, format_summary
 
 
 SIMULATION_DURATION = 10000
@@ -200,6 +200,8 @@ def run_simulation(duration: int, number_of_drones: int,
             main.MAP_HEIGHT,
             distance_between_cells=DISTANCE_BETWEEN_CELLS,
             status_labels={status.value: status.name for status in DroneStatus},
+            parameters={"Nc_charging_base": main.charging_base_capacity(number_of_drones),
+                        "discharge_rate": main.DISCHARGE_RATE},
         )
         recorder_holder["recorder"] = recorder
 
@@ -359,11 +361,11 @@ def report(results: dict, recorder: SimulationRecorder,
     print(f"Cost (the value the GA minimizes): {cost:.4f}")
     print()
 
-    ##### How wrong the drones are about each other's battery, and at which battery #####
-    ##### they go back. plots/plot_estimation.py and plot_returns.py draw the same. #####
-    print("=== Battery estimation and returns to the base ===")
-    status_values = {status.name: status.value for status in DroneStatus}
-    print(format_summary(summarize(recorder.drone_arrays(), recorder.returns, status_values)))
+    ##### At which battery the drones go back, and what happens on the way. The naive #####
+    ##### drone has no estimate of the others, so only the trips are reported.        #####
+    ##### plots/plot_returns.py draws the same.                                        #####
+    print("=== Returns to the base ===")
+    print(format_summary(summarize(recorder.returns)))
     print()
 
     ##### Checks. Each one is a claim that has to hold for the run to be #####
@@ -511,7 +513,7 @@ def main_test() -> int:
     print(f"Recording: {recording_file} ({len(recorder.times)} samples)")
     print(f"Plot it from the plots directory with: python3 plot_drones.py "
           f"--directory {args.logs_directory}  (same for plot_metrics.py, plot_more_metrics.py, "
-          f"plot_states.py, plot_decisions.py, plot_estimation.py and plot_returns.py)")
+          f"plot_states.py, plot_decisions.py and plot_returns.py)")
     print()
 
     passed = report(results, recorder, global_map, cost, args.duration, args.drones,

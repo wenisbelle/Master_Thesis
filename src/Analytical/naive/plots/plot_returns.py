@@ -7,11 +7,14 @@ the way: they reach it, are sent back to mapping (abort), or die.
     python3 plot_returns.py --output returns       # saves returns.png
 
 The events are recorded by main_test.py when they happen (not on the snapshot
-grid), see SimulationRecorder.record_return_event. Panels:
+grid), see SimulationRecorder.record_return_event. The naive drone goes back
+when its battery drops below RETURN_BATTERY_THRESHOLD, whatever the distance,
+and nothing turns it around on the way. Panels:
 - A: the battery of every decision, per drone, and the battery it reached the
   base with (the energy the trip took is the line between them).
-- B: the battery of every decision against the distance to the base then, with
-  the battery the tuned margin and MIN_CHARGE_MARGIN would leave on arrival.
+- B: the same two batteries against the distance to the base at the decision,
+  with the battery the threshold leaves on arrival flying straight back. Where
+  that line meets the death threshold, 30% is no longer enough.
 - One row per drone: its battery over time, with the decisions marked on it.
 """
 
@@ -27,7 +30,7 @@ from plot_drones import (ROOT_DIR, DRONE_COLORS, STATUS_COLORS, status_runs,
 
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
-from estimation_metrics import trips, summarize, format_summary
+from returns_metrics import trips, summarize, format_summary
 
 ##### Marker of the decision by what came of it. The colour is the drone's. #####
 OUTCOME_STYLE = {
@@ -36,13 +39,6 @@ OUTCOME_STYLE = {
     "death":   dict(marker="X", filled=True, label="died on the way"),
     "open":    dict(marker="d", filled=False, label="still flying at the end"),
 }
-##### Marker of the decision by what triggered it #####
-TRIGGER_MARKERS = {"own": "o", "encounter": "D", "sent": "s",
-                   "charging_notification": "^", "after_recharge": "P"}
-TRIGGER_LABELS = {"own": "own choice (mobility timer)", "encounter": "encounter, decided by it",
-                  "sent": "encounter, decided by the other drone",
-                  "charging_notification": "heard a drone start charging",
-                  "after_recharge": "right after a recharge"}
 BATTERY_COLOR = "0.45"
 BAND_ALPHA = 0.15
 BAND_STATUSES = ("GOING_TO_BASE", "CHARGING", "DEAD")
@@ -59,10 +55,9 @@ def _marker_kwargs(style, color, size=55):
 
 
 def _reference_lines(ax, parameters, horizontal=True):
-    """The tuned margin, MIN_CHARGE_MARGIN and the death threshold, as battery levels."""
+    """The return threshold and the death threshold, as battery levels."""
     handles = []
-    for key, style, text in (("charge_margin", "--", "tuned CHARGE_MARGIN"),
-                             ("min_charge_margin", ":", "MIN_CHARGE_MARGIN (the others are assumed to return here)"),
+    for key, style, text in (("return_battery_threshold", "--", "RETURN_BATTERY_THRESHOLD, back to the base below"),
                              ("dead_battery_threshold", "-.", "dead below")):
         value = parameters.get(key)
         if value is None or not np.isfinite(value):
@@ -97,35 +92,40 @@ def plot_decision_strip(ax, all_trips, N, parameters, rng):
 
 def plot_decision_distance(ax, all_trips, parameters):
     for trip in all_trips:
-        marker = TRIGGER_MARKERS.get(trip["trigger"], "*")
-        filled = trip["outcome"] != "abort"
-        style = dict(marker=marker, filled=filled)
-        ax.scatter([trip["distance_to_base"]], [trip["battery"]], zorder=3,
-                   **_marker_kwargs(style, _color(trip["drone"]), size=40))
+        distance, color = trip["distance_to_base"], _color(trip["drone"])
+        if trip["outcome"] == "arrival":
+            ax.plot([distance, distance], [trip["battery"], trip["battery_end"]], color=color, lw=0.8, alpha=0.6)
+            ax.scatter([distance], [trip["battery_end"]], marker="o", s=18, facecolors="none",
+                       edgecolors=color, linewidths=1.0, zorder=3)
+        ax.scatter([distance], [trip["battery"]], zorder=4,
+                   **_marker_kwargs(OUTCOME_STYLE[trip["outcome"]], color, size=40))
+    _reference_lines(ax, parameters)
 
-    ##### Battery that leaves the margin on arrival, flying straight at the cruise speed #####
+    ##### Battery the threshold leaves on arrival, flying straight at the cruise speed.   #####
+    ##### Drawn a bit past the farthest trip. The distance where it meets the death     #####
+    ##### threshold is usually far beyond the map, so it goes in the label, not the axis. #####
+    handles = []
+    threshold = parameters.get("return_battery_threshold")
     rate, speed = parameters.get("discharge_rate"), parameters.get("drone_speed")
-    distances = [trip["distance_to_base"] for trip in all_trips if np.isfinite(trip["distance_to_base"])]
-    if rate and speed and np.isfinite(rate) and np.isfinite(speed) and distances:
-        d = np.linspace(0, 1.05 * max(distances), 50)
-        for key, style in (("charge_margin", "--"), ("min_charge_margin", ":")):
-            margin = parameters.get(key)
-            if margin is not None and np.isfinite(margin):
-                ax.plot(d, margin + d / speed * rate, color="black", lw=0.9, ls=style)
     dead = parameters.get("dead_battery_threshold")
-    if dead is not None and np.isfinite(dead):
-        ax.axhline(dead, color="black", lw=0.9, ls="-.")
+    distances = [trip["distance_to_base"] for trip in all_trips if np.isfinite(trip["distance_to_base"])]
+    if distances and all(value is not None and np.isfinite(value) and value > 0
+                         for value in (threshold, rate, speed)):
+        d = np.linspace(0, 1.05 * max(distances), 50)
+        ax.plot(d, threshold - d / speed * rate, color="black", lw=0.9, ls=":")
+        label = "threshold minus the energy to fly straight back"
+        if dead is not None and np.isfinite(dead):
+            label += f" (dead beyond {(threshold - dead) / rate * speed:.0f} m)"
+        handles.append(Line2D([], [], color="black", lw=0.9, ls=":", label=label))
 
     ax.set_ylim(0, 1.02)
     ax.set_xlim(left=0)
     ax.set_xlabel("distance to the base when choosing it (m)")
     ax.set_ylabel("battery (fraction of full)")
-    ax.set_title("B. Battery against distance (lines: margin + energy to fly back)",
+    ax.set_title("B. Battery when choosing the base and when reaching it, against the distance",
                  loc="left", fontsize=9)
     ax.grid(True, color="0.92", lw=0.5)
-    triggers = sorted({trip["trigger"] for trip in all_trips})
-    return [Line2D([], [], color="0.3", ls="", marker=TRIGGER_MARKERS.get(name, "*"), ms=6,
-                   label=TRIGGER_LABELS.get(name, name)) for name in triggers]
+    return handles
 
 
 def plot_drone_rows(axes, t, S, returns, status_names, parameters):
@@ -180,10 +180,9 @@ def plot_returns(path, output=None):
         print("The recording has no return events, run main_test.py again to record them")
         return
     status_names = {int(value): name for value, name in meta["status_labels"].items()}
-    status_values = {name: value for value, name in status_names.items()}
     parameters = meta.get("parameters", {})
     all_trips = trips(returns)
-    print(format_summary(summarize(S, returns, status_values)))
+    print(format_summary(summarize(returns)))
     print(per_drone_table(all_trips, N))
 
     ##### Sizes in inches, so the legend and the labels keep their room for any N #####
@@ -199,7 +198,7 @@ def plot_returns(path, output=None):
     rows = outer[1].subgridspec(N, 1, hspace=0.25)
     rng = np.random.default_rng(0)
     reference_handles = plot_decision_strip(fig.add_subplot(top[0, 0]), all_trips, N, parameters, rng)
-    trigger_handles = plot_decision_distance(fig.add_subplot(top[0, 1]), all_trips, parameters)
+    arrival_handles = plot_decision_distance(fig.add_subplot(top[0, 1]), all_trips, parameters)
 
     axes = [fig.add_subplot(rows[0, 0])]
     axes += [fig.add_subplot(rows[i, 0], sharex=axes[0]) for i in range(1, N)]
@@ -217,10 +216,10 @@ def plot_returns(path, output=None):
     outcome_handles.append(Line2D([], [], ls="", marker="o", ms=5, color="0.3", markerfacecolor="none",
                                   label="battery on reaching the base"))
     outcome_handles.append(Line2D([], [], color=BATTERY_COLOR, lw=1.0, label="battery"))
-    fig.legend(handles=outcome_handles + reference_handles + trigger_handles + band_handles,
+    fig.legend(handles=outcome_handles + reference_handles + arrival_handles + band_handles,
                loc="lower center", bbox_to_anchor=(0.5, 0.0), ncol=3, fontsize=8, frameon=False,
-               title="Colour = drone.  A and rows: the marker is what came of the decision.  "
-                     "B: the marker is what triggered it, hollow = aborted.",
+               title="Colour = drone.  The marker is what came of the decision, "
+                     "the circle the battery on reaching the base.",
                title_fontsize=8)
     fig.suptitle("When the drones choose to go back to the base", y=1 - 0.25 / height)
 
