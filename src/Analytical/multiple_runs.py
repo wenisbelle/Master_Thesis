@@ -75,10 +75,10 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 ##### Defaults of main_test.py and main.py, the scenario the single tests run #####
-NUMBER_OF_RUNS = 10
+NUMBER_OF_RUNS = 50
 NUMBER_OF_DRONES = 10
-SIMULATION_DURATION = 10000
-TRANSMISSION_RANGE = 200
+SIMULATION_DURATION = 30000
+TRANSMISSION_RANGE = 100
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
 DISTANCE_BETWEEN_CELLS = 20
 

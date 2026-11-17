@@ -141,7 +141,7 @@ class MappingEnvironmentConfig:
     uncertainty_rate: float = 0.001
     vanishing_update_time: float = 1.0
     initial_uncertainty: float = 1.0
-    communication_range: float = 200
+    communication_range: float = 100
     drone_speed: float = 15.0
     drone_max_acceleration: float = 3.0
     discharge_rate: float = 0.00073

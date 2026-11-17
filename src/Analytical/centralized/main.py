@@ -42,10 +42,10 @@ UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 ##### No radio in centralized: nothing reads it. Kept so the scripts shared with swarm and egocentric #####
 ##### (multiple_runs.py) can set it the same way and file the runs under multiple_runs/<range>/.     #####
-TRANSMISSION_RANGE = 200
+TRANSMISSION_RANGE = 100
 ##### Two MAPPING drones closer than this make a pair decision, the encounter of swarm (README.md). #####
 ##### Fixed, so the centralized system is the same at every range of the swarm sweep.             #####
-ENCOUNTER_RADIUS = 200.0
+ENCOUNTER_RADIUS = 100.0
 DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility handler
 DRONE_MAX_ACCELERATION = 3.0  # horizontal acceleration limit of the mobility handler, m/s^2
 

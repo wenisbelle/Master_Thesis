@@ -40,7 +40,7 @@ MAP_HEIGHT = 100
 NUMBER_OF_DRONES = 3
 UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
-TRANSMISSION_RANGE = 200
+TRANSMISSION_RANGE = 100
 DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility handler
 DRONE_MAX_ACCELERATION = 3.0  # horizontal acceleration limit of the mobility handler, m/s^2
 

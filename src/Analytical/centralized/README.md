@@ -38,7 +38,7 @@ the code is right.
 | Uncertainty growth | each drone's map, every second | the global map, once per second (`world.grow_uncertainty`) |
 | Battery of the others | estimated from gossip (`estimate_drone_battery`) | **true**, read from the world |
 | Messages | heartbeat, gossip, goto, dead and charging notifications | **none**. `main.py` builds no communication handler |
-| Encounter (pair decision) | heard heartbeat within the radio range, higher id decides both | two MAPPING drones closer than `ENCOUNTER_RADIUS` (200 m, fixed), higher id decides both, at most once per pair every 10 s. The same `choose_two_cells` with the separation term |
+| Encounter (pair decision) | heard heartbeat within the radio range, higher id decides both | two MAPPING drones closer than `ENCOUNTER_RADIUS` (100 m, fixed), higher id decides both, at most once per pair every 10 s. The same `choose_two_cells` with the separation term |
 | Who takes part in a pair decision | MAPPING or GOING_TO_BASE | MAPPING only: a drone sent to the base keeps going |
 | Going to the base | the drone compares the base attraction `κ·exp(−γ·R_safe)` with its best cell | **the scheduler** sends it, checked on every 1 s mobility tick |
 | Reserve kept for the trip home | `charge_margin` + swarm and congestion terms, at least 0.20 | fixed `MIN_CHARGE_MARGIN` = 0.20 |
@@ -228,7 +228,7 @@ All 7 plot scripts in `plots/` ran on a centralized recording.
   code has not changed since, apart from `BEST_INDIVIDUAL`, which `multiple_runs.py` does
   not use.
 - **Paired:** run `k` has the same seed, wind, first destinations and base in both systems.
-- **Same pair-decision radius:** at 200 m, `ENCOUNTER_RADIUS` equals swarm's radio range,
+- **Same pair-decision radius:** these runs used `ENCOUNTER_RADIUS` = 200 m (its value until 2026-11-16), equal to swarm's radio range,
   so the two differ only in information and in the energy decision.
 
 | Drones | Mean global uncertainty, centralized | swarm | Paired difference | Time above Nc, centralized | swarm | Most charging at once, centralized | swarm | Cost, centralized | swarm |
@@ -270,7 +270,7 @@ them.
   - **Effect on the checks:** the check of `main_test.py` and of the sweep fails on such a
     run. That is on purpose, so it stays visible.
   - **What might remove them:** planning further ahead, or a longer `SLOT_GUARD`.
-- **Fixed pair-decision radius.** `ENCOUNTER_RADIUS` is 200 m, the default range of swarm,
+- **Fixed pair-decision radius.** `ENCOUNTER_RADIUS` is 100 m, the default range of swarm (200 m before 2026-11-16),
   and does not follow `--range`. This keeps centralized the same at every range, so it is
   a flat reference line. At 2,000 m swarm makes many more pair decisions than centralized.
 - **Not tuned yet.** The coverage genes come from swarm, see [The individual](#the-individual).

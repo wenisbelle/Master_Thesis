@@ -42,15 +42,14 @@ NUMBER_OF_DRONES = 10
 ##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
 ##### runs back with --hand-tuned too). It starts as BEST_INDIVIDUAL of main.py.                 #####
 HAND_TUNED_INDIVIDUAL = [
-    28.4697,   # base_variance, between 0.25 and 100
-    55.3251,   # alpha_variance_modifier, between 0 and 100
-    109.3336,  # distance_between_drone_norm, between 10 and 1000
+    1.0,   # base_variance
+    1.0,   # alpha_variance_modifier, between 0 and 100
+    200,  # distance_between_drone_norm, between 10 and 1000
 ]
 
 ##### How often the drone state is sampled.
 MONITOR_INTERVAL = 10.0
 
-##### Cell spacing of the protocol, needed to turn metres into cells #####
 DISTANCE_BETWEEN_CELLS = 20
 
 ##### Each run is written into a logs directory next to this file, so runs can #####

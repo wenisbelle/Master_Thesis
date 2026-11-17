@@ -95,7 +95,7 @@ nothing runs untuned. There are two exceptions:
 | Duration | 10,000 s | `SIMULATION_DURATION` |
 | Drones | 3/5/7/10 in the GA, set per run elsewhere | `TRAINING_DRONE_COUNTS` |
 | Flight | 50 m altitude, 15 m/s cruise, 3 m/s² max acceleration | `DRONE_SPEED`, `DRONE_MAX_ACCELERATION` |
-| Communication range | 200 m by default, 100–2000 m swept | `TRANSMISSION_RANGE`, `--range` |
+| Communication range | 100 m by default, 100–2000 m swept | `TRANSMISSION_RANGE`, `--range` |
 | Base | Gaussian around the map centre, σ = 333 m (3σ reaches the border), snapped to a cell centre, drawn again if off the map | `sample_base_position` |
 | Charging capacity `Nc` | `int(drones / 3)`, soft: it changes decisions, nothing forbids more | |
 | Uncertainty growth | +0.001 per cell every second | `UNCERTAINTY_RATE`, `VANISHING_UPDATE_TIME` |

@@ -110,7 +110,7 @@ class Drone(IProtocol):
         'discharge_rate': 0.001,
         'charging_base_position': (0.0, 0.0),
         ##### Two MAPPING drones closer than this, in m, make a pair decision, see encounter_routine #####
-        'encounter_radius': 200.0,
+        'encounter_radius': 100.0,
         ##### The CentralizedWorld of the simulation, shared by every drone #####
         'world': None,
         ##### "train" runs silent and fast, "test" logs every routine #####
@@ -675,7 +675,7 @@ def drone_protocol_factory(
     charging_base_position: tuple,       # fixed
     results_aggregator: dict,
     world,                               # the CentralizedWorld of the simulation
-    encounter_radius: float = 200.0,     # fixed, m
+    encounter_radius: float = 100.0,     # fixed, m
     mode: str = "train",
     enable_map_plot: bool = False,
     initial_uncertainty: float = 0.5,
