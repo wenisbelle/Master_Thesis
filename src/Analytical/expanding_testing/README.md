@@ -1,24 +1,51 @@
 # Expanding testing: several recharge bases
 
 Test bench for claims that go beyond the scenario the protocols were tuned on.
-It holds the two systems of `Analytical/`, each in its own directory:
+It holds three systems of `Analytical/`, each in its own directory:
 
 - `swarm/`
 - `egocentric/`
+- `naive/` (added 2026-11-18)
 
 Each one is a copy of the test setup of the system with the same name in
 `Analytical/`, extended to **any number of recharge bases**. The map size, the
 communication range, the bases, the charging capacity and the individual are
-set on the command line. There is no GA and no cost here: the individuals come
-from the tuning in `Analytical/<system>/main.py` (the `Parameters:` line of a
-logbook in `Analytical/<system>/ga_logs/`), and a run is looked at through the
-global uncertainty and the drones charging and dead over time.
+set on the command line. There is no GA and no cost here. The individuals are
+the ones `Analytical/<system>` runs:
+- swarm and egocentric: the `Parameters:` line of a logbook in
+  `Analytical/<system>/ga_logs/`;
+- naive: `naive.main.default_individual`, which uses the coverage genes of the
+  egocentric logbook until naive is tuned;
+- with `--hand-tuned`: `HAND_TUNED_INDIVIDUAL` of `Analytical/<system>/main_test.py`.
 
-With a single base, the decisions of both systems are the same as in
+A run is looked at through the global uncertainty and the drones charging and
+dead over time.
+
+With a single base, the decisions of all three systems are the same as in
 `Analytical/`. Given the same inputs, the fitness and the battery estimate
 return exactly the same values. Whole runs still diverge after a few seconds:
 gradysim orders the events of the same instant by heap position only, and
 the base node adds events of its own (see [Checks](#checks)).
+
+**Synced with `Analytical/` on 2026-11-18.** The copies were made on
+2026-11-02, so two later changes of `Analytical/swarm` and `egocentric` were
+ported then:
+- **Base utility, Eq. (15).** kappa = K · mean(I/tau) (`fitness.mean_efficiency`),
+  no longer the constant K.
+- **`INITIAL_UNCERTAINTY = 10.0`.** It was 1.0 in swarm and 0.5 in egocentric.
+
+GA logbooks written before 2026-11-17 hold K in the old units, so with the new
+kappa their individuals are not tuned anymore. Until they are tuned again, use
+`--hand-tuned`.
+
+### Naive
+
+`naive/` is `Analytical/naive` with several bases. The cells are chosen by the
+uncertainty alone. A MAPPING drone goes to the **base nearest to it** when its
+battery drops below `RETURN_BATTERY_THRESHOLD` = 30%, plugs in there like the
+others, and the bases send nothing to it, as for egocentric. `Nc` is only the
+reference the runs are measured against, because the naive drone never reads it.
+The genes are the 3 coverage genes of `Analytical/naive`.
 
 ## What changes with several bases
 
@@ -101,7 +128,7 @@ ids `0..n-1` and base `b` is node `n + b`.
 expanding_testing/
 ├── README.md
 ├── plot_charging_bases.py global uncertainty and drones charging per base, several runs
-├── multiple_runs_bases.py                    many runs of the multi-base scenarios, one range
+├── multiple_runs_bases.py                    many runs of one multi-base scenario, one range
 ├── run_all_tests_with_multiple_runs_bases.py the same for every tuned range
 ├── plot_multiple_runs_bases.py               plots of those runs, per scenario and range
 ├── swarm/
@@ -113,14 +140,19 @@ expanding_testing/
 │   ├── recorder.py        writes the recording the plots read
 │   ├── visualization.py
 │   ├── logs/              default output of main_test.py
-│   └── multiple_runs/     output of multiple_runs_bases.py, <range>/<scenario>
-└── egocentric/            same files
+│   ├── multiple_runs/     output of multiple_runs_bases.py, <range>/<scenario>
+│   └── multiple_runs_hand_tuned/  the same with --hand-tuned
+├── egocentric/            same files
+└── naive/                 same files
 ```
 
 `diff Analytical/swarm/X expanding_testing/swarm/X` shows exactly what the
 multi-base extension changed. `diff expanding_testing/swarm/X
 expanding_testing/egocentric/X` shows the same energy-only differences as in
-`Analytical/`.
+`Analytical/`. `naive/` is `Analytical/naive` with the same multi-base changes as
+egocentric (`diff Analytical/naive/X expanding_testing/naive/X`), except `main.py`
+and `main_test.py`, which are those of `expanding_testing/egocentric` without the
+energy genes.
 
 ## Running a test simulation
 
@@ -144,17 +176,22 @@ python3 -m Analytical.expanding_testing.swarm.main_test --map-size 150 --transmi
 # any other individual
 python3 -m Analytical.expanding_testing.swarm.main_test --individual 90.6 95.4 ...
 
-# the same for egocentric (6 genes instead of 9)
+# HAND_TUNED_INDIVIDUAL of Analytical/swarm/main_test.py
+python3 -m Analytical.expanding_testing.swarm.main_test --hand-tuned --base -500 -500 --base 500 500
+
+# the same for egocentric (6 genes instead of 9) and naive (3 genes)
 python3 -m Analytical.expanding_testing.egocentric.main_test --base -500 -500 --base 500 500
+python3 -m Analytical.expanding_testing.naive.main_test --hand-tuned --base -500 -500 --base 500 500
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--base X Y` | one base at `(0, 0)` | position of a recharge base, in m, map centre at `(0, 0)`. Repeat it for every base |
-| `--charging-capacity NC` | `int(drones / 3)` | most drones charging at once, over all the bases together, before the protocol's congestion term starts |
+| `--charging-capacity NC` | `int(drones / 3)` | most drones charging at once, over all the bases together, before the protocol's congestion term starts (naive never reacts to it) |
 | `--map-size N` | `100` | side of the square map in cells, 20 m apart (100 → ±1000 m) |
-| `--transmission-range M` | `200` | communication range of the drones and of the bases, in m. Also picks the tuned individual |
-| `--individual G1 G2 ...` | the one tuned for `--transmission-range` | genes in the `GENE_NAMES` order of `main.py`: 9 for swarm, 6 for egocentric |
+| `--transmission-range M` | `100` | communication range of the drones and of the bases, in m. Also picks the tuned individual |
+| `--individual G1 G2 ...` | the one `Analytical/<system>` runs at `--transmission-range` | genes in the `GENE_NAMES` order of `main.py`: 9 for swarm, 6 for egocentric, 3 for naive |
+| `--hand-tuned` | off | run `HAND_TUNED_INDIVIDUAL` of `Analytical/<system>/main_test.py` |
 | `--drones N` | `10` | number of drones |
 | `--duration SECONDS` | `10000` | simulated seconds |
 | `--logs_directory NAME` | `logs` | directory, relative to `<system>/` (or absolute), for the log and the recording |
@@ -219,22 +256,33 @@ which uses the 1 s samples.
 ## Multiple runs on the multi-base scenarios
 
 `multiple_runs_bases.py` is `Analytical/multiple_runs.py` for the multi-base
-tests: it runs the systems many times (20 by default) with the individual the
-GA tuned for the range, each run with its bases placed again, and keeps the
-swarm level series of every run. `run_all_tests_with_multiple_runs_bases.py`
-runs it for every tuned range, one after the other, and
-`plot_multiple_runs_bases.py` draws the figures of
-`Analytical/plot_multiple_runs.py`, one set per scenario and range, with
-swarm and egocentric on the same figures: the global uncertainty, the drones
-charging above `Nc`, and the time between two visits of a cell by the distance
-from the cell to its nearest base.
+tests. It runs the systems many times (20 by default), each run with its bases
+placed again, and keeps the swarm level series of every run.
+`run_all_tests_with_multiple_runs_bases.py` runs it for every tuned range, one
+after the other. `plot_multiple_runs_bases.py` draws the figures of
+`Analytical/plot_multiple_runs.py`, one set per scenario and range, with all the
+systems on the same figures:
+- the global uncertainty;
+- the global uncertainty relative to a reference system (`--reference`, naive by
+  default), run k against run k;
+- the drones charging above `Nc`;
+- the time between two visits of a cell, by the distance from the cell to its
+  nearest base.
 
-| Scenario | Map | Drones | Bases | `Nc` |
-|---|---|---|---|---|
-| `100x100_10drones_2bases` | 100x100 cells (2000 m) | 10 | 2 | 3 |
-| `100x100_10drones_3bases` | 100x100 cells (2000 m) | 10 | 3 | 3 |
-| `200x200_20drones_2bases` | 200x200 cells (4000 m) | 20 | 2 | 6 |
-| `200x200_20drones_3bases` | 200x200 cells (4000 m) | 20 | 3 | 6 |
+The systems are drawn under the name of the system of `Analytical/` they extend,
+so swarm, egocentric and naive have the same colour, line, marker and legend label
+as in `plot_multiple_runs.py`.
+
+**The scenario** is set on the command line, one per call:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--cells SIDE` | `100` | side of the square map in cells, 20 m apart: `--cells 200` is 200x200 (4000 m) |
+| `--drones N` | `10` | number of drones. `Nc = int(drones / 3)`, over all the bases together |
+| `--bases N` (or `--base N`) | `2` | number of recharge bases, 1 to 4: one per quadrant, see below |
+
+The runs of a scenario go to the directory `<cells>x<cells>_<drones>drones_<bases>bases`,
+e.g. `100x100_10drones_2bases`, the same names as the four fixed scenarios used before.
 
 **Base placement.** The map is split into its 4 quadrants. Each base takes a
 quadrant of its own, drawn at random among the free ones, and its position is
@@ -244,44 +292,48 @@ cell map, 333 m on the 200 cell one), snapped to the nearest cell centre and
 drawn again when it falls outside the quadrant.
 
 Run k is seeded with `--seed + k`, and the bases are drawn from that seed too.
-Run k therefore has the same bases and wind on swarm and egocentric, and on
-every range, and the 3-base scenario of run k is its 2-base scenario plus one
-base.
+Run k therefore has the same bases and wind on every system, on every range and
+with any number of drones, and the 3-base scenario of run k is its 2-base
+scenario plus one base.
 
-The individual is the `Parameters:` line of
-`Analytical/<system>/ga_logs/ga_logbook_<range>.txt`. A range without one, for
-any of the systems given, is an error and nothing is run.
+The individual is the one `Analytical/<system>` runs at the range (see the top of
+this file), or `HAND_TUNED_INDIVIDUAL` of `Analytical/<system>/main_test.py` with
+`--hand-tuned`. A system without one is an error and nothing is run.
 
 ```bash
 cd src
 export PYTHONPATH=$PWD:$PWD/gradys-sim-nextgen
 
-# every scenario, both systems, 200 m, 20 runs each
-python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm egocentric
+# the three systems, hand-tuned, 100x100 map, 10 drones, 2 bases, 100 m, 20 runs each
+python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm egocentric naive --hand-tuned
 
-# every tuned range (100 ... 2000 m), one after the other
-python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm egocentric
+# 200x200 map, 20 drones, 3 bases, 500 m
+python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm egocentric naive --hand-tuned \
+    --cells 200 --drones 20 --bases 3 --range 500
 
-# only some ranges and scenarios
-python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm \
-    --ranges 100 200 --scenario 100x100_10drones_2bases 100x100_10drones_3bases
+# every tuned range (100 ... 2000 m), one after the other, same scenario on each
+python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm egocentric naive \
+    --hand-tuned --cells 100 --drones 10 --bases 3
 
-# figures: 200 m, every scenario, on screen
-python3 Analytical/expanding_testing/plot_multiple_runs_bases.py
-# every range, saved as figures/bases_<range>_<scenario>_{uncertainty,charging}.pdf
-python3 Analytical/expanding_testing/plot_multiple_runs_bases.py --range 100 200 500 750 1000 2000 \
-    --save figures/bases.pdf --no-show
+# figures: 100 m, every scenario run, on screen
+python3 Analytical/expanding_testing/plot_multiple_runs_bases.py --hand-tuned
+# only some scenarios (each flag takes several values), every range, saved as
+# figures/bases_<range>_<scenario>_{uncertainty,charging,revisit}.pdf
+python3 Analytical/expanding_testing/plot_multiple_runs_bases.py --hand-tuned --cells 100 --bases 2 3 \
+    --range 100 200 500 750 1000 2000 --save figures/bases.pdf --no-show
 ```
 
-The runs are written to `<system>/multiple_runs/<range>/<scenario>`
-(`--logs-root` changes `multiple_runs`) with the files of
-`Analytical/multiple_runs.py`: `run_<k>.pkl`, `config.json` and `summary.txt`.
-Each run also keeps the drones charging on each base (`charging_per_base`) and
-the quadrant of each base. The sweep writes `ranges_summary.txt` to
-`<system>/multiple_runs`. Every run of every system and scenario of a range
-goes into one pool of processes, the longest first. Runs already on disk are
-skipped, `--overwrite` runs them again, and a directory holding runs of
-another scenario (another duration, seed, individual ...) is refused.
+The runs are written to `<system>/multiple_runs/<range>/<scenario>`, or
+`<system>/multiple_runs_hand_tuned/<range>/<scenario>` with `--hand-tuned`
+(`--logs-root` changes it), with the files of `Analytical/multiple_runs.py`:
+`run_<k>.pkl`, `config.json` and `summary.txt`. Each run also keeps the drones
+charging on each base (`charging_per_base`) and the quadrant of each base. The
+sweep writes `ranges_summary_<scenario>.txt` to the logs root of each system.
+The runs of every system go into one pool of processes. Runs already on disk are
+skipped, and `--overwrite` runs them again. A directory holding runs of another
+configuration (another duration, seed, individual, initial uncertainty ...) is
+refused. `config.json` records `initial_uncertainty` since 2026-11-18, so runs
+made before the sync with `Analytical/` are never mixed with new ones.
 
 ## Checks
 
@@ -301,3 +353,20 @@ These are the checks run when this was written (2026-11-02):
 - **Swarm, base heartbeats.** In an instrumented run, the drones learned 14
   times about a drone charging on a base other than the one nearest to them
   (shared knowledge between bases), and chose their destination again each time.
+
+Checks run on 2026-11-18, after porting kappa and adding naive:
+
+- **One base, after the port.** I ran 150 random decisions (one drone and two
+  drones), with kappa = K · mean(I/tau). The fitness of all three systems returned
+  exactly what `Analytical/swarm`, `egocentric` and `naive` return. 25 and 24 of
+  those decisions chose the base, so the new kappa path was exercised.
+- **Naive, 2 bases.** `--hand-tuned`, 4 drones, 1800 s, 60x60 map. Every check
+  passed. Each drone flew to the base nearest to it at 30% battery and recharged
+  there: 3 recharges on one base, 1 on the other.
+- **`multiple_runs_bases.py`.** All three systems with `--hand-tuned`,
+  60x60 map, 4 drones, 2 bases, 2 runs of 1500 s:
+  - run k had the same bases on every system;
+  - a second call skipped the runs already on disk;
+  - another `--duration` was refused;
+  - `run_all_tests_with_multiple_runs_bases.py` and `plot_multiple_runs_bases.py`
+    read the runs back.

@@ -1,25 +1,25 @@
 """
-Runs the expanding_testing systems many times on the multi-base scenarios, with the
-individual the GA tuned for the range, each run with its recharge bases placed again,
-and keeps the swarm level series of every run, so plot_multiple_runs_bases.py can
-aggregate them. It is Analytical/multiple_runs.py with the scenarios and the base
-placement of the multi-base tests.
+Runs the expanding_testing systems many times on a multi-base scenario, each run with
+its recharge bases placed again, and keeps the swarm level series of every run, so
+plot_multiple_runs_bases.py can aggregate them. It is Analytical/multiple_runs.py with
+the scenario and the base placement of the multi-base tests.
 
     cd src
     export PYTHONPATH=$PWD:$PWD/gradys-sim-nextgen
-    python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm egocentric     # 4 scenarios, 200 m
-    python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm --range 500 \
-        --scenario 100x100_10drones_2bases
+    python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm egocentric naive   # 100x100, 10 drones, 2 bases, 100 m
+    python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm egocentric naive \
+        --cells 200 --drones 20 --bases 3 --range 500
+    python3 Analytical/expanding_testing/multiple_runs_bases.py --system swarm egocentric naive --hand-tuned
     python3 Analytical/expanding_testing/multiple_runs_bases.py --system egocentric --runs 40
 
 It can be started from any directory, with gradysim on the PYTHONPATH (it is in the
 container).
 
-Scenarios (--scenario, all four by default):
-    100x100_10drones_2bases   2 bases, 100x100 cells (2000 m x 2000 m), 10 drones, Nc = 3
-    100x100_10drones_3bases   3 bases, 100x100 cells (2000 m x 2000 m), 10 drones, Nc = 3
-    200x200_20drones_2bases   2 bases, 200x200 cells (4000 m x 4000 m), 20 drones, Nc = 6
-    200x200_20drones_3bases   3 bases, 200x200 cells (4000 m x 4000 m), 20 drones, Nc = 6
+The scenario is set by three flags, one run of the script is one scenario:
+    --cells N    side of the square map, N x N cells 20 m apart (100 -> 2000 m x 2000 m)
+    --drones N   drones of the swarm
+    --bases N    recharge bases, 1 to 4 (one per quadrant, see below). --base works too
+Its name is <cells>x<cells>_<drones>drones_<bases>bases, the directory the runs go to.
 Nc is default_charging_capacity of main.py, int(drones / 3), over all the bases together.
 
 Base placement. The map is split into its 4 quadrants. Each base takes a quadrant of
@@ -33,29 +33,38 @@ never in the same quadrant, they can be side by side or diagonal.
 
 Run k is seeded with --seed + k. The seed fixes the wind and the initial destinations
 of the drones, and the bases are drawn from it too, so:
-- run k of swarm and run k of egocentric have the same bases and the same wind, the two
-  systems are compared on the same scenarios;
-- run k has the same bases on every range;
-- run k of a 3 base scenario has the 2 bases of the 2 base scenario on the same map,
-  plus a third one.
+- run k of every system has the same bases and the same wind, the systems are
+  compared on the same scenarios;
+- run k has the same bases on every range and every number of drones;
+- run k with 3 bases has the 2 bases of the 2 base scenario on the same map, plus a
+  third one.
 
-The individual of each system is the one the GA tuned for --range, the "Parameters:"
-line of Analytical/<system>/ga_logs/ga_logbook_<range>.txt, the system expanding_testing
-extends. Without a logbook for the range, or without the Parameters line in it, it is
-an error and nothing is run.
+The individual of each system is the one Analytical/<system> runs at --range, the
+system expanding_testing/<system> extends:
+- swarm and egocentric: the "Parameters:" line of
+  Analytical/<system>/ga_logs/ga_logbook_<range>.txt;
+- naive: naive.main.default_individual, its own logbook once it is tuned, until then
+  the coverage genes of the egocentric individual tuned for the range;
+- with --hand-tuned, HAND_TUNED_INDIVIDUAL of Analytical/<system>/main_test.py, the same
+  for every range.
+Without one for a system, it is an error and nothing is run.
 
 The runs are written to <system>/<logs-root>/<range>/<scenario>, here in
 expanding_testing, with the files of Analytical/multiple_runs.py (run_<k>.pkl,
-config.json, summary.txt), so plot_multiple_runs.py reads them too. Each run also
-keeps the drones charging on each base and the quadrant of each base.
+config.json, summary.txt), so plot_multiple_runs.py reads them too. --logs-root is
+multiple_runs by default, multiple_runs_hand_tuned with --hand-tuned, so the hand-tuned
+runs never mix with the tuned ones. Each run also keeps the drones charging on each
+base and the quadrant of each base.
 
-The runs of every system and scenario go in one pool, a fresh process for each one, in
-train mode, the longest ones first. A run whose file already exists has finished
-before and is skipped, so --runs 40 after --runs 20 only runs the 20 new ones.
---overwrite runs them all again.
+The runs of every system go in one pool, a fresh process for each one, in train mode.
+A run whose file already exists has finished before and is skipped, so --runs 40 after
+--runs 20 only runs the 20 new ones. --overwrite runs them all again. A directory that
+holds runs of another configuration (individual, duration, seed, initial uncertainty
+...) is refused.
 """
 
 import os
+import re
 import sys
 import json
 import pickle
@@ -71,30 +80,44 @@ ANALYTICAL_DIR = os.path.dirname(EXPANDING_DIR)
 if ANALYTICAL_DIR not in sys.path:
     sys.path.insert(0, ANALYTICAL_DIR)
 
-from all_tests_distance import tuned_ranges, tuned_individuals, ga_logs_dir
+from all_tests_distance import system_individuals
 from multiple_runs import (SIMULATION_DURATION, TRANSMISSION_RANGE, GLOBAL_MAP_SAMPLE_INTERVAL,
                            DISTANCE_BETWEEN_CELLS, CONFIG_FILE, SUMMARY_FILE, RUN_PATTERN,
-                           system_dir, system_module, tuned_system, gene_names, run_file, run_simulation,
+                           DEFAULT_LOGS_DIRECTORY, HAND_TUNED_LOGS_DIRECTORY,
+                           system_dir, system_module, gene_names, run_file, run_simulation,
                            load_runs, summary, time_grid, run_statistics, format_position)
 from run_all_tests_with_multiple_runs import mean_std
 
 ##### Command line name of each system, and the directory it runs from #####
-SYSTEMS = {"swarm": "expanding_testing/swarm", "egocentric": "expanding_testing/egocentric"}
+SYSTEMS = {"swarm": "expanding_testing/swarm", "egocentric": "expanding_testing/egocentric",
+           "naive": "expanding_testing/naive"}
 
-SCENARIOS = {
-    "100x100_10drones_2bases": {"map_size": 100, "drones": 10, "bases": 2},
-    "100x100_10drones_3bases": {"map_size": 100, "drones": 10, "bases": 3},
-    "200x200_20drones_2bases": {"map_size": 200, "drones": 20, "bases": 2},
-    "200x200_20drones_3bases": {"map_size": 200, "drones": 20, "bases": 3},
-}
+##### The scenario of a run of the script: --cells, --drones, --bases #####
+MAP_SIZE = 100
+NUMBER_OF_DRONES = 10
+NUMBER_OF_BASES = 2
 
 NUMBER_OF_RUNS = 20
-DEFAULT_LOGS_ROOT = "multiple_runs"
+DEFAULT_LOGS_ROOT = DEFAULT_LOGS_DIRECTORY
+HAND_TUNED_LOGS_ROOT = HAND_TUNED_LOGS_DIRECTORY
 
 ##### Quadrant q covers the low (0) or high (1) half of the cells on x (q % 2) and on y (q // 2) #####
 QUADRANT_NAMES = ("SW", "SE", "NW", "NE")
 ##### Sigma of the Gaussian of a base, as a share of half the side of its quadrant: 3 sigma reaches its border #####
 BASE_SIGMA_IN_QUADRANT = 1.0 / 3.0
+
+SCENARIO_PATTERN = re.compile(r"^(\d+)x\1_(\d+)drones_(\d+)bases$")
+
+
+def scenario_name(map_size: int, drones: int, bases: int) -> str:
+    """Name of the scenario, the directory its runs go to: <cells>x<cells>_<drones>drones_<bases>bases."""
+    return f"{map_size}x{map_size}_{drones}drones_{bases}bases"
+
+
+def parse_scenario(name: str):
+    """(map_size, drones, bases) of a scenario name, None when name is not one."""
+    match = SCENARIO_PATTERN.match(name)
+    return tuple(int(value) for value in match.groups()) if match else None
 
 
 def scenario_directory(system: str, logs_root: str, transmission_range: float, scenario: str) -> str:
@@ -102,9 +125,14 @@ def scenario_directory(system: str, logs_root: str, transmission_range: float, s
 
 
 def scenario_label(scenario: str) -> str:
-    spec = SCENARIOS[scenario]
-    return (f"{spec['bases']} bases in random quadrants, {spec['map_size']}x{spec['map_size']} map, "
-            f"{spec['drones']} drones")
+    map_size, drones, bases = parse_scenario(scenario)
+    return (f"{bases} base{'s' if bases != 1 else ''} in random quadrants, {map_size}x{map_size} map, "
+            f"{drones} drones")
+
+
+def source_system(system: str) -> str:
+    """The system of Analytical that expanding_testing/<system> extends, and whose individual it runs."""
+    return system.split("/")[-1]
 
 
 def base_sigma(map_size: int) -> float:
@@ -211,19 +239,57 @@ def different_scenario(directory: str, config: dict):
     return [key for key in current if previous.get(key) != current[key]]
 
 
+def add_scenario_arguments(parser: argparse.ArgumentParser) -> None:
+    """--cells, --drones and --bases, shared with run_all_tests_with_multiple_runs_bases.py."""
+    parser.add_argument("--cells", type=int, default=MAP_SIZE, metavar="SIDE",
+                        help=f"side of the square map in cells, {DISTANCE_BETWEEN_CELLS} m apart: "
+                             "--cells 200 is a 200x200 map (default: %(default)s)")
+    parser.add_argument("--drones", type=int, default=NUMBER_OF_DRONES,
+                        help="number of drones (default: %(default)s)")
+    parser.add_argument("--bases", "--base", type=int, default=NUMBER_OF_BASES, dest="bases",
+                        metavar="NUMBER_OF_BASES",
+                        help=f"number of recharge bases, one per quadrant of the map, between 1 and "
+                             f"{len(QUADRANT_NAMES)} (default: %(default)s)")
+
+
+def check_scenario_arguments(parser: argparse.ArgumentParser, args) -> None:
+    if args.cells < 2:
+        parser.error(f"--cells {args.cells}: the map needs at least 2x2 cells, one row and column per half")
+    if args.drones < 1:
+        parser.error("--drones has to be at least 1")
+    if not 1 <= args.bases <= len(QUADRANT_NAMES):
+        parser.error(f"--bases {args.bases}: one base per quadrant, between 1 and {len(QUADRANT_NAMES)}")
+
+
+def system_individual(system: str, transmission_range: float, hand_tuned: bool) -> tuple:
+    """
+    (individual, where it comes from) of an expanding_testing system at transmission_range:
+    the one Analytical/<system> runs, see all_tests_distance.system_individuals. Raises
+    ValueError when there is none or when its genes do not fit the system.
+    """
+    individual, origin = system_individuals(source_system(system), [transmission_range],
+                                            hand_tuned)[transmission_range]
+    genes = len(gene_names(system))
+    if len(individual) != genes:
+        raise ValueError(f"{origin}: the individual has {len(individual)} genes, {system} takes {genes}")
+    return [float(gene) for gene in individual], origin
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Many runs of the expanding_testing systems on the multi-base scenarios, "
+        description="Many runs of the expanding_testing systems on one multi-base scenario, "
                     "each run with its bases in random quadrants")
     parser.add_argument("--system", choices=SYSTEMS, nargs="+", required=True,
                         help="system(s) to run, from expanding_testing")
-    parser.add_argument("--scenario", choices=SCENARIOS, nargs="+", default=list(SCENARIOS),
-                        help="scenario(s) to run (default: all of them)")
+    add_scenario_arguments(parser)
     parser.add_argument("--range", type=float, default=TRANSMISSION_RANGE, dest="transmission_range",
                         help="communication range of the drones and of the bases, in m. Also picks the "
                              "tuned individual (default: %(default)s)")
+    parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
+                        help="run HAND_TUNED_INDIVIDUAL of Analytical/<system>/main_test.py instead of the "
+                             f"tuned one, into {HAND_TUNED_LOGS_ROOT}/<range>/<scenario> by default")
     parser.add_argument("--runs", type=int, default=NUMBER_OF_RUNS,
-                        help="runs of every system and scenario (default: %(default)s)")
+                        help="runs of every system (default: %(default)s)")
     parser.add_argument("--duration", type=int, default=SIMULATION_DURATION,
                         help="simulated seconds of each run (default: %(default)s)")
     parser.add_argument("--sample-interval", type=float, default=GLOBAL_MAP_SAMPLE_INTERVAL,
@@ -231,9 +297,10 @@ def main() -> int:
                              "step of the series of every run (default: %(default)s)")
     parser.add_argument("--seed", type=int, default=0,
                         help="run k is seeded with SEED + k, which also draws its bases (default: %(default)s)")
-    parser.add_argument("--logs-root", default=DEFAULT_LOGS_ROOT,
+    parser.add_argument("--logs-root",
                         help="directory, relative to each system directory, the runs are written to, "
-                             "as <range>/<scenario> (default: %(default)s)")
+                             f"as <range>/<scenario> (default: {DEFAULT_LOGS_ROOT}, "
+                             f"{HAND_TUNED_LOGS_ROOT} with --hand-tuned)")
     parser.add_argument("--workers", type=int,
                         help="runs simulated at once (default: one per run, at most one per CPU)")
     parser.add_argument("--overwrite", action="store_true",
@@ -242,54 +309,55 @@ def main() -> int:
 
     if args.runs < 1:
         parser.error("--runs has to be at least 1")
+    check_scenario_arguments(parser, args)
+    if args.logs_root is None:
+        args.logs_root = HAND_TUNED_LOGS_ROOT if args.hand_tuned else DEFAULT_LOGS_ROOT
     systems = [SYSTEMS[name] for name in dict.fromkeys(args.system)]
-    scenarios = list(dict.fromkeys(args.scenario))
+    scenario = scenario_name(args.cells, args.drones, args.bases)
 
     ##### The individual of every system, before anything is run. No fallback to another one, #####
     ##### the range would run untuned.                                                         #####
     individuals, origins, errors = {}, {}, []
     for system in systems:
         try:
-            individuals[system] = tuned_individuals(tuned_system(system), [args.transmission_range])[
-                args.transmission_range]
-            origins[system] = tuned_ranges(tuned_system(system))[args.transmission_range]
+            individuals[system], origins[system] = system_individual(system, args.transmission_range,
+                                                                     args.hand_tuned)
         except ValueError as error:
-            errors.append(f"{tuned_system(system)} ({ga_logs_dir(tuned_system(system))}): {error}")
-            continue
-        genes = len(gene_names(system))
-        if len(individuals[system]) != genes:
-            errors.append(f"{origins[system]}: the individual has {len(individuals[system])} genes, "
-                          f"{system} takes {genes}")
+            errors.append(f"{system}: {error}")
     if errors:
-        parser.error("no tuned individual, nothing was run:\n" + "\n".join(errors) +
-                     "\nTune the range first with Analytical/all_optimizations_distance.py")
+        parser.error("no individual, nothing was run:\n" + "\n".join(errors) +
+                     "\nTune the range first with Analytical/all_optimizations_distance.py, or use --hand-tuned")
 
+    charging_capacity = system_module(systems[0]).default_charging_capacity(args.drones)
     configs = {}
     for system in systems:
-        for scenario in scenarios:
-            spec = SCENARIOS[scenario]
-            configs[scenario_directory(system, args.logs_root, args.transmission_range, scenario)] = {
-                "system": system,
-                "scenario": scenario,
-                "drones": spec["drones"],
-                "transmission_range": args.transmission_range,
-                "duration": args.duration,
-                "sample_interval": args.sample_interval,
-                "seed": args.seed,
-                "individual": individuals[system],
-                "map_size": spec["map_size"],
-                "bases": spec["bases"],
-                "charging_capacity": system_module(system).default_charging_capacity(spec["drones"]),
-                "base_placement": "quadrants",
-                "base_sigma": base_sigma(spec["map_size"]) * DISTANCE_BETWEEN_CELLS,
-            }
+        config = {
+            "system": system,
+            "scenario": scenario,
+            "drones": args.drones,
+            "transmission_range": args.transmission_range,
+            "duration": args.duration,
+            "sample_interval": args.sample_interval,
+            "seed": args.seed,
+            "individual": individuals[system],
+            "map_size": args.cells,
+            "bases": args.bases,
+            "charging_capacity": charging_capacity,
+            "base_placement": "quadrants",
+            "base_sigma": base_sigma(args.cells) * DISTANCE_BETWEEN_CELLS,
+            ##### Not in the runs before 2026-11-18 (1.0 or 0.5, kappa = K), so they are never mixed with these #####
+            "initial_uncertainty": system_module(system).INITIAL_UNCERTAINTY,
+        }
+        if args.hand_tuned:
+            config["hand_tuned"] = True
+        configs[scenario_directory(system, args.logs_root, args.transmission_range, scenario)] = config
 
     ##### Every directory is checked before any is touched, so a refused one leaves the others as they were #####
     if not args.overwrite:
         refused = [f"{directory} (different {', '.join(different)})"
                    for directory, config in configs.items() if (different := different_scenario(directory, config))]
         if refused:
-            parser.error("these directories hold runs of another scenario:\n  " + "\n  ".join(refused) +
+            parser.error("these directories hold runs of another configuration:\n  " + "\n  ".join(refused) +
                          "\nGive another --logs-root, or --overwrite to replace them")
 
     jobs = []
@@ -313,17 +381,13 @@ def main() -> int:
                          "sample_interval": args.sample_interval,
                          "charging_capacity": config["charging_capacity"],
                          "base_positions": positions, "base_quadrants": quadrants})
-    ##### The longest runs first, the big map with the big swarm, so they do not all start at the end #####
-    jobs.sort(key=lambda job: (-job["map_size"] ** 2 * job["drones"], job["run"]))
+    jobs.sort(key=lambda job: job["run"])
 
-    print(f"{', '.join(systems)}: {args.runs} runs of every scenario, {args.transmission_range:g} m, "
-          f"{args.duration} s, bases in random quadrants, seeds from {args.seed}")
-    for scenario in scenarios:
-        print(f"  {scenario}: {scenario_label(scenario)}, Nc = "
-              f"{system_module(systems[0]).default_charging_capacity(SCENARIOS[scenario]['drones'])}")
+    print(f"{', '.join(systems)}: {args.runs} runs of {scenario} ({scenario_label(scenario)}, "
+          f"Nc = {charging_capacity}), {args.transmission_range:g} m, {args.duration} s, seeds from {args.seed}")
     for system in systems:
         print(f"Individual of {system} ({origins[system]}): {individuals[system]}")
-    print(f"Logs: <system>/{args.logs_root}/{args.transmission_range:g}/<scenario>")
+    print(f"Logs: <system>/{args.logs_root}/{args.transmission_range:g}/{scenario}")
     skipped = len(configs) * args.runs - len(jobs)
     if skipped:
         print(f"{skipped} run(s) already in the directories, skipped")
@@ -334,9 +398,8 @@ def main() -> int:
         print(f"Running {len(jobs)} run(s), {workers} at once ...", flush=True)
         failed = run_jobs(jobs, workers, configs)
 
-    lines = [f"{'system':<28} {'scenario':<24} {'runs':>4}  {'mean uncertainty':>18}  {'above Nc (%)':>14}  "
-             f"{'dead at the end':>15}"]
-    for directory, config in configs.items():
+    lines = [f"{'system':<28} {'runs':>4}  {'mean uncertainty':>18}  {'above Nc (%)':>14}  {'dead at the end':>15}"]
+    for directory in configs:
         config, runs = load_runs(directory)
         if not runs:
             continue
@@ -348,15 +411,17 @@ def main() -> int:
         def values(name):
             return [stats[name] for stats in statistics]
 
-        lines.append(f"{config['system']:<28} {config['scenario']:<24} {len(runs):>4}  "
+        lines.append(f"{config['system']:<28} {len(runs):>4}  "
                      f"{mean_std(values('mean_uncertainty')):>18}  {mean_std(values('above_nc')):>14}  "
                      f"{mean_std(values('dead'), 2):>15}")
-    print(f"\nMean +- std deviation over the runs, {args.transmission_range:g} m "
+    print(f"\nMean +- std deviation over the runs, {scenario}, {args.transmission_range:g} m "
           f"(every run in {SUMMARY_FILE} of its directory):")
     print("\n".join(lines))
     print(f"\nPlot them with: python3 Analytical/expanding_testing/plot_multiple_runs_bases.py "
-          f"--range {args.transmission_range:g}" +
-          (f" --logs-root {args.logs_root}" if args.logs_root != DEFAULT_LOGS_ROOT else ""))
+          f"--range {args.transmission_range:g} --cells {args.cells} --drones {args.drones} --bases {args.bases}" +
+          (" --hand-tuned" if args.hand_tuned else "") +
+          (f" --logs-root {args.logs_root}"
+           if args.logs_root != (HAND_TUNED_LOGS_ROOT if args.hand_tuned else DEFAULT_LOGS_ROOT) else ""))
     return 1 if failed else 0
 
 

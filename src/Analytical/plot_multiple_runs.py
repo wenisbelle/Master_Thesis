@@ -66,6 +66,9 @@ SYSTEM_STYLES = {
     "naive":                        {"color": "#CC79A7", "ls": (0, (5, 2, 1, 2)), "marker": "h"},
     "expanding_testing/swarm":      {"color": "#009E73", "ls": "-.", "marker": "^"},
     "expanding_testing/egocentric": {"color": "#CC79A7", "ls": ":",  "marker": "D"},
+    ##### Only when this script draws expanding_testing/naive itself, e.g. next to naive. #####
+    ##### plot_multiple_runs_bases.py draws it with the style of naive.                   #####
+    "expanding_testing/naive":      {"color": "#E69F00", "ls": "--", "marker": "h"},
     "MARL/CTDE_MADQN":              {"color": "#E69F00", "ls": (0, (6, 2)),          "marker": "v"},
     "MARL/Independent_MADQN":       {"color": "#56B4E9", "ls": (0, (4, 1, 1, 1, 1, 1)), "marker": "P"},
 }

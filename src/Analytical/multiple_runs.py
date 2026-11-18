@@ -64,7 +64,7 @@ import numpy as np
 from all_tests_distance import tuned_ranges, tuned_individuals, hand_tuned_individual, RANGES_OF
 
 SYSTEMS = ("swarm", "egocentric", "centralized", "naive",
-           "expanding_testing/swarm", "expanding_testing/egocentric")
+           "expanding_testing/swarm", "expanding_testing/egocentric", "expanding_testing/naive")
 ##### The MARL systems write the same run files with src/MARL/<system>/multiple_runs.py. They are #####
 ##### only read here, by plot_multiple_runs.py, so they can be plotted next to the analytical ones. #####
 MARL_SYSTEMS = ("MARL/CTDE_MADQN", "MARL/Independent_MADQN")

@@ -12,6 +12,7 @@ Run it from the src directory, with gradysim on the PYTHONPATH:
     python3 -m Analytical.expanding_testing.swarm.main_test --map-size 150   # 150x150 cells, 3000 m x 3000 m
     python3 -m Analytical.expanding_testing.swarm.main_test --transmission-range 500   # the individual tuned for 500 m
     python3 -m Analytical.expanding_testing.swarm.main_test --individual 90.6 95.4 ...  # any other individual
+    python3 -m Analytical.expanding_testing.swarm.main_test --hand-tuned   # HAND_TUNED_INDIVIDUAL of Analytical/swarm/main_test.py
     python3 -m Analytical.expanding_testing.swarm.main_test --sample-interval 0.5   # finer global map sampling
     python3 -m Analytical.expanding_testing.swarm.main_test --map-plot        # live per-drone map (very slow)
     python3 -m Analytical.expanding_testing.swarm.main_test --simulation-plot # gradysim 3D view
@@ -20,7 +21,8 @@ Run it from the src directory, with gradysim on the PYTHONPATH:
 The individual is the one the GA tuned for --transmission-range, the "Parameters:"
 line of Analytical/swarm/ga_logs/ga_logbook_<range>.txt, as in all_tests_distance.py
 (there is no GA here). Without a logbook for the range, or without the Parameters
-line in it, it is an error and nothing is run. --individual overrides it.
+line in it, it is an error and nothing is run. --individual overrides it, and
+--hand-tuned runs HAND_TUNED_INDIVIDUAL of Analytical/swarm/main_test.py instead.
 
 The protocol log and the recording go to the logs directory, next to this file
 (logs by default). The recording has the format of Analytical/swarm, so the
@@ -42,7 +44,7 @@ from .main import GENE_NAMES
 from .recorder import SimulationRecorder
 from .protocol import DroneStatus, Drone, drone_protocol_factory
 ##### The individuals tuned for each range, found the same way as the tests do #####
-from ...all_tests_distance import tuned_ranges, tuned_individuals
+from ...all_tests_distance import system_individuals
 
 
 SIMULATION_DURATION = 10000
@@ -424,8 +426,11 @@ def main_test() -> int:
     parser.add_argument("--individual", type=float, nargs=len(GENE_NAMES),
                         metavar=tuple(name.upper() for name in GENE_NAMES),
                         help="genes of the individual to run, in the GENE_NAMES order (default: the one "
-                             f"tuned for --transmission-range in Analytical/{EXTENDED_SYSTEM}/ga_logs, "
-                             "an error when there is none)")
+                             f"Analytical/{EXTENDED_SYSTEM} runs at --transmission-range, an error when "
+                             "there is none)")
+    parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
+                        help=f"run HAND_TUNED_INDIVIDUAL of Analytical/{EXTENDED_SYSTEM}/main_test.py, "
+                             "filled in by hand, instead of the tuned one")
     parser.add_argument("--transmission-range", type=float, default=main.TRANSMISSION_RANGE,
                         help="communication range of the drones and the bases, in m. Also picks the "
                              "tuned individual (default: %(default)s)")
@@ -457,17 +462,20 @@ def main_test() -> int:
     main.TRANSMISSION_RANGE = args.transmission_range
     main.MAP_WIDTH = main.MAP_HEIGHT = args.map_size
 
+    if args.individual is not None and args.hand_tuned:
+        parser.error("--individual and --hand-tuned both give the individual, use one")
     if args.individual is not None:
         individual, origin = args.individual, "--individual"
     else:
-        ##### No fallback to a hardcoded individual, the range would run untuned #####
+        ##### The one Analytical/<system> runs: HAND_TUNED_INDIVIDUAL of its main_test.py with      #####
+        ##### --hand-tuned, otherwise the one tuned for the range. No fallback to a hardcoded one, #####
+        ##### the range would run untuned.                                                         #####
         try:
-            individual = tuned_individuals(EXTENDED_SYSTEM, [args.transmission_range])[
-                args.transmission_range]
+            individual, origin = system_individuals(EXTENDED_SYSTEM, [args.transmission_range],
+                                                    args.hand_tuned)[args.transmission_range]
         except ValueError as error:
             parser.error(f"no tuned individual, nothing was run:\n{error}\n"
-                         f"Tune the range first, or give the individual with --individual")
-        origin = tuned_ranges(EXTENDED_SYSTEM)[args.transmission_range]
+                         f"Tune the range first, or give the individual with --individual or --hand-tuned")
         if len(individual) != len(GENE_NAMES):
             parser.error(f"{origin} has {len(individual)} genes, {EXTENDED_SYSTEM} takes "
                          f"{len(GENE_NAMES)}: {GENE_NAMES}")

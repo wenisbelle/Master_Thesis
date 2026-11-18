@@ -19,7 +19,7 @@ class FitnessEvaluator:
                  base_variance: float,
                  alpha_variance_modifier: float, # tunable
                  energy_gamma: float, # tunable
-                 charging_base_multiplier: float, # tunable - K in the article
+                 charging_base_multiplier: float, # tunable - K in the article, kappa = K * mean(I/tau), Eq. (15)
                  distance_between_drone_norm: float, # tunable - couples the two targets at an encounter
                  kernel_n_sigma: int, # tunable
                  charge_margin: float = 0.30, # tunable
@@ -685,11 +685,28 @@ class FitnessEvaluator:
                 float(p1_vals[i]),
                 float(p2_vals[j]))
 
+    def mean_efficiency(self, map_data: np.array, drone_position: Tuple[float, float, float],
+                        map_center_offset: float, drone_speed: float) -> float:
+        """
+        Mean of phi = I/tau + decay (see uncertainty_modified_time_to_travel) over the cells that can
+        act as sources (drone_exclusion_mask), seen from drone_position. It scales the base utility,
+        Eq. (15): kappa = K * mean_efficiency. Same as in Analytical/<system>/fitness.py.
+
+        The cells under the camera are left out, as in the aggregation: their tau is close to 0, so
+        I/tau would blow up and set the mean on its own. phi is taken before the energy coefficient,
+        so the battery and the bases only enter the base utility through R_safe.
+        """
+        _, phi = self.uncertainty_modified_time_to_travel(map_data, drone_position, map_center_offset, drone_speed)
+        valid = self.drone_exclusion_mask(map_data.shape, drone_position, map_center_offset)
+        return float(phi[valid].mean())
+
     def recharge_base_fitness(self, drone_location: Tuple[float, float], recharge_base_positions: List[Tuple[float, float]],
                               current_drone_charge: float, drone_speed: float,
-                              mean_battery_value: float, drones_charging: int) -> float:
+                              mean_battery_value: float, drones_charging: int,
+                              mean_efficiency: float) -> float:
         """
-        Returns the fitness score of going to the recharge base nearest to the drone.
+        Utility of going to the recharge base nearest to the drone, Eq. (15): kappa * exp(-gamma * R_safe),
+        with kappa = K * mean_efficiency, as in Analytical/<system>/fitness.py.
 
         drones_charging is not used, the egocentric drone only looks at its own battery.
         """
@@ -703,7 +720,8 @@ class FitnessEvaluator:
         energy_to_base = (dist_to_base / drone_speed) * self.DISCHARGE_RATE
 
         R_safe = current_drone_charge - energy_to_base - self.CHARGE_MARGIN
-        return self.K * np.exp(-self.GAMMA * R_safe)
+        kappa = self.K * mean_efficiency
+        return kappa * np.exp(-self.GAMMA * R_safe)
 
     def nearest_base_cell(self, drone_location, recharge_base_positions: List[Tuple[float, float]],
                           map_center_offset: float) -> Tuple[int, int]:
@@ -731,9 +749,11 @@ class FitnessEvaluator:
         best_cell = max(fitness_scores, key=lambda x: x[0])
 
         # Check if the fitenss of the best cell is greater than the fitness of the recharge base
+        mean_efficiency = self.mean_efficiency(map_data, drone_location, map_center_offset, drone_speed)
         recharge_base_fitness = self.recharge_base_fitness(drone_location, recharge_base_positions,
                                                           current_drone_charge, drone_speed,
-                                                          mean_battery_value, drones_charging)
+                                                          mean_battery_value, drones_charging,
+                                                          mean_efficiency)
 
         if best_cell[0] < recharge_base_fitness:
             base_cell = self.nearest_base_cell(drone_location, recharge_base_positions, map_center_offset)
@@ -767,13 +787,17 @@ class FitnessEvaluator:
         best_fitness, best_1, best_2, best_1_fitness, best_2_fitness = best_pair
 
         # Now, let's check if each drone should go to the recharge base instead of the best cell
-        # Fitness for the recharge base for each drone
+        # Fitness for the recharge base for each drone. kappa uses the mean I/tau seen from each drone
+        first_mean_efficiency = self.mean_efficiency(map_data, first_drone_location, map_center_offset, drone_speed)
+        second_mean_efficiency = self.mean_efficiency(map_data, second_drone_location, map_center_offset, drone_speed)
         first_recharge_base_fitness = self.recharge_base_fitness(first_drone_location, recharge_base_positions,
                                                                  first_current_drone_charge, drone_speed,
-                                                                 mean_battery_value, drones_charging)
+                                                                 mean_battery_value, drones_charging,
+                                                                 first_mean_efficiency)
         second_recharge_base_fitness = self.recharge_base_fitness(second_drone_location, recharge_base_positions,
                                                                   second_current_drone_charge, drone_speed,
-                                                                  mean_battery_value, drones_charging)
+                                                                  mean_battery_value, drones_charging,
+                                                                  second_mean_efficiency)
 
         ##### Each drone goes to the base nearest to itself, the two can differ #####
         if best_1_fitness < first_recharge_base_fitness:

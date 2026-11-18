@@ -1,32 +1,36 @@
 """
 Runs multiple_runs_bases.py for every TRANSMISSION_RANGE the GA tuned, one range after
-the other, so the tuned systems are compared on the multi-base scenarios over many
-runs, each with its bases in random quadrants. It is
+the other, so the systems are compared on a multi-base scenario over many runs, each
+with its bases in random quadrants. It is
 Analytical/run_all_tests_with_multiple_runs.py for expanding_testing.
 
     cd src
     export PYTHONPATH=$PWD:$PWD/gradys-sim-nextgen
-    python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm egocentric
+    python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm egocentric naive
     python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm --ranges 100 200
-    python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system egocentric \
-        --scenario 100x100_10drones_2bases 100x100_10drones_3bases --runs 40
+    python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system egocentric naive \
+        --cells 200 --drones 20 --bases 3 --runs 40
+    python3 Analytical/expanding_testing/run_all_tests_with_multiple_runs_bases.py --system swarm egocentric naive \
+        --hand-tuned
 
 It can be started from any directory. The ranges are the ones tuned by
-all_optimizations_distance.py, found in Analytical/<system>/ga_logs/ga_logbook_<range>.txt,
-for every system given, and each system runs with the best individual of its own
-logbook, the "Parameters:" line. A range without a logbook for one of the systems, or
-without the Parameters line in it, is an error: nothing is run.
+all_optimizations_distance.py, found in Analytical/<system>/ga_logs/ga_logbook_<range>.txt
+(egocentric's for naive), for every system given. Each system runs with the individual
+multiple_runs_bases.py gives it for the range (--hand-tuned: HAND_TUNED_INDIVIDUAL of
+Analytical/<system>/main_test.py on every range). A range without one for one of the
+systems is an error: nothing is run.
 
-Every range runs every scenario of multiple_runs_bases.py (all four by default) on
-every system, in one call to it, so all of its runs share one pool of processes. They
-are written to <system>/<logs-root>/<range>/<scenario>, here in expanding_testing.
+The scenario is the one of multiple_runs_bases.py, --cells, --drones and --bases, the
+same on every range. Every range runs it on every system in one call to
+multiple_runs_bases.py, so all of its runs share one pool of processes. They are
+written to <system>/<logs-root>/<range>/<scenario>, here in expanding_testing.
 
-Run k of every range and scenario is seeded with --seed + k, so every range runs the
-same bases and the same wind. The runs already in a directory are skipped by
-multiple_runs_bases.py, so a sweep that was interrupted can be started again without
-repeating them, and --runs 40 after --runs 20 only runs the new ones. At the end the
-mean +- std deviation over the runs of every range and scenario is printed and written
-to <system>/<logs-root>/ranges_summary.txt.
+Run k of every range is seeded with --seed + k, so every range runs the same bases and
+the same wind. The runs already in a directory are skipped by multiple_runs_bases.py,
+so a sweep that was interrupted can be started again without repeating them, and
+--runs 40 after --runs 20 only runs the new ones. At the end the mean +- std deviation
+over the runs of every range is printed and written to
+<system>/<logs-root>/ranges_summary_<scenario>.txt.
 """
 
 import os
@@ -39,10 +43,12 @@ ANALYTICAL_DIR = os.path.dirname(EXPANDING_DIR)
 if ANALYTICAL_DIR not in sys.path:
     sys.path.insert(0, ANALYTICAL_DIR)
 
-from all_tests_distance import tuned_ranges, tuned_individuals, ga_logs_dir
+from all_tests_distance import tuned_ranges, ga_logs_dir
 from multiple_runs import SIMULATION_DURATION, GLOBAL_MAP_SAMPLE_INTERVAL, system_dir, tuned_system
 from run_all_tests_with_multiple_runs import RANGES_SUMMARY_FILE, run_range, mean_std, directory_statistics
-from multiple_runs_bases import SYSTEMS, SCENARIOS, NUMBER_OF_RUNS, DEFAULT_LOGS_ROOT, scenario_directory
+from multiple_runs_bases import (SYSTEMS, NUMBER_OF_RUNS, DEFAULT_LOGS_ROOT, HAND_TUNED_LOGS_ROOT,
+                                 scenario_directory, scenario_name, add_scenario_arguments,
+                                 check_scenario_arguments, system_individual)
 
 MULTIPLE_RUNS_BASES = os.path.join(EXPANDING_DIR, "multiple_runs_bases.py")
 
@@ -55,11 +61,14 @@ def main() -> int:
     parser.add_argument("--ranges", type=float, nargs="+",
                         help="transmission ranges to run, in m (default: every range in "
                              "Analytical/<system>/ga_logs, of every system given)")
-    parser.add_argument("--scenario", choices=SCENARIOS, nargs="+", default=list(SCENARIOS),
-                        help="scenario(s) to run on every range (default: all of them)")
-    parser.add_argument("--logs-root", default=DEFAULT_LOGS_ROOT,
+    add_scenario_arguments(parser)
+    parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
+                        help="run HAND_TUNED_INDIVIDUAL of Analytical/<system>/main_test.py on every range, "
+                             "instead of the tuned one")
+    parser.add_argument("--logs-root",
                         help="directory, relative to each system directory, the runs are written to, "
-                             "as <range>/<scenario> (default: %(default)s)")
+                             f"as <range>/<scenario> (default: {DEFAULT_LOGS_ROOT}, "
+                             f"{HAND_TUNED_LOGS_ROOT} with --hand-tuned)")
 
     ##### Passed on to every multiple_runs_bases.py, see its help #####
     parser.add_argument("--runs", type=int, default=NUMBER_OF_RUNS,
@@ -78,8 +87,11 @@ def main() -> int:
 
     if args.runs < 1:
         parser.error("--runs has to be at least 1")
+    check_scenario_arguments(parser, args)
+    if args.logs_root is None:
+        args.logs_root = HAND_TUNED_LOGS_ROOT if args.hand_tuned else DEFAULT_LOGS_ROOT
     systems = [SYSTEMS[name] for name in dict.fromkeys(args.system)]
-    scenarios = list(dict.fromkeys(args.scenario))
+    scenario = scenario_name(args.cells, args.drones, args.bases)
 
     if args.ranges is not None:
         ranges = sorted(set(args.ranges))
@@ -93,19 +105,22 @@ def main() -> int:
     ##### and system, so the sweep stops before the first one and not after hours of the others. #####
     errors = []
     for system in systems:
-        try:
-            tuned_individuals(tuned_system(system), ranges)
-        except ValueError as error:
-            errors.append(f"{tuned_system(system)}:\n{error}")
+        for transmission_range in ranges:
+            try:
+                system_individual(system, transmission_range, args.hand_tuned)
+            except ValueError as error:
+                errors.append(f"{system}, {transmission_range:g} m: {error}")
     if errors:
-        parser.error("no tuned individual, nothing was run:\n" + "\n".join(errors))
+        parser.error("no individual, nothing was run:\n" + "\n".join(errors))
 
     summary = []
     sweep_start = time.time()
     for done, transmission_range in enumerate(ranges, start=1):
         command = [sys.executable, "-u", MULTIPLE_RUNS_BASES,
                    "--system", *args.system,
-                   "--scenario", *scenarios,
+                   "--cells", str(args.cells),
+                   "--drones", str(args.drones),
+                   "--bases", str(args.bases),
                    "--range", f"{transmission_range:g}",
                    "--runs", str(args.runs),
                    "--duration", str(args.duration),
@@ -116,9 +131,11 @@ def main() -> int:
             command += ["--workers", str(args.workers)]
         if args.overwrite:
             command.append("--overwrite")
+        if args.hand_tuned:
+            command.append("--hand-tuned")
 
         print(f"\n##### [{done}/{len(ranges)}] {transmission_range:g} m: {', '.join(args.system)}, "
-              f"{len(scenarios)} scenario(s), {args.runs} runs each #####", flush=True)
+              f"{scenario}, {args.runs} runs each #####", flush=True)
         start = time.time()
         try:
             status = run_range(command)
@@ -134,39 +151,45 @@ def main() -> int:
         logs_root = os.path.join(system_dir(system), args.logs_root)
         lines = [
             f"===== {system}: multiple_runs_bases.py on every range, logs in {logs_root}/<range>/<scenario> =====",
-            f"{args.duration} s, bases in random quadrants, seeds from {args.seed}",
-            "Mean +- std deviation over the runs of each range and scenario. The time is the one of the range, "
-            "over every system and scenario",
+            f"{scenario}, {args.duration} s, bases in random quadrants, seeds from {args.seed}"
+            + (", HAND_TUNED_INDIVIDUAL" if args.hand_tuned else ""),
+            "Mean +- std deviation over the runs of each range. The time is the one of the range, "
+            "over every system",
             "",
             f"{'range':>7}  {'scenario':<24}  {'result':<12} {'time':>9}  {'runs':>4}  {'mean uncertainty':>18}  "
             f"{'above Nc (%)':>14}  {'dead at the end':>15}",
         ]
         for transmission_range, result, elapsed in summary:
-            for scenario in scenarios:
-                row = (f"{transmission_range:>5g} m  {scenario:<24}  {result:<12} {elapsed / 60:>5.1f} min  ")
-                statistics = directory_statistics(
-                    scenario_directory(system, args.logs_root, transmission_range, scenario))
-                if statistics is None:
-                    row += f"{'no runs':>4}"
-                else:
-                    runs, values = statistics
-                    row += (f"{runs:>4}  {mean_std(values['mean_uncertainty']):>18}  "
-                            f"{mean_std(values['above_nc']):>14}  {mean_std(values['dead'], 2):>15}")
-                lines.append(row)
+            row = (f"{transmission_range:>5g} m  {scenario:<24}  {result:<12} {elapsed / 60:>5.1f} min  ")
+            statistics = directory_statistics(
+                scenario_directory(system, args.logs_root, transmission_range, scenario))
+            if statistics is None:
+                row += f"{'no runs':>4}"
+            else:
+                runs, values = statistics
+                row += (f"{runs:>4}  {mean_std(values['mean_uncertainty']):>18}  "
+                        f"{mean_std(values['above_nc']):>14}  {mean_std(values['dead'], 2):>15}")
+            lines.append(row)
         lines.append("")
         lines.append(f"Total: {total:.1f} min")
         text = "\n".join(lines)
         os.makedirs(logs_root, exist_ok=True)
-        with open(os.path.join(logs_root, RANGES_SUMMARY_FILE), "w") as f:
+        ##### One per scenario, a sweep of another scenario does not overwrite it #####
+        stem, extension = os.path.splitext(RANGES_SUMMARY_FILE)
+        summary_path = os.path.join(logs_root, f"{stem}_{scenario}{extension}")
+        with open(summary_path, "w") as f:
             f.write(text + "\n")
-        texts.append((text, os.path.join(logs_root, RANGES_SUMMARY_FILE)))
+        texts.append((text, summary_path))
 
     for text, path in texts:
         print("\n" + text)
         print(f"\nWritten to {path}")
     print(f"\nPlot them with: python3 Analytical/expanding_testing/plot_multiple_runs_bases.py "
-          f"--range {' '.join(f'{r:g}' for r, _, _ in summary)}" +
-          (f" --logs-root {args.logs_root}" if args.logs_root != DEFAULT_LOGS_ROOT else "") +
+          f"--range {' '.join(f'{r:g}' for r, _, _ in summary)} "
+          f"--cells {args.cells} --drones {args.drones} --bases {args.bases}" +
+          (" --hand-tuned" if args.hand_tuned else "") +
+          (f" --logs-root {args.logs_root}"
+           if args.logs_root != (HAND_TUNED_LOGS_ROOT if args.hand_tuned else DEFAULT_LOGS_ROOT) else "") +
           " --save <name>.pdf --no-show")
     return 0 if all(result == "ok" for _, result, _ in summary) else 1
 

@@ -49,7 +49,7 @@ DISCHARGE_RATE = 0.00073  # measured: 0.000725-0.000733 per second, flying at 15
 CHARGING_BASE_POSITIONS = [(0.0, 0.0)]  # [(x, y), ...] in metres, one per base
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
-INITIAL_UNCERTAINTY = 1.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the accumulated uncertainty
+INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
 ##### The range of gradysim is 3D. The drones fly, and charge, at the protocol's DRONE_ALTITUDE, so the antenna of #####
 ##### the bases is put at that altitude too: their heartbeats reach as far as the drone-to-drone messages, and as   #####
@@ -66,7 +66,7 @@ GENE_NAMES = [
     "base_variance",               # sigma_0^2 of Eq. (11), in cells^2
     "alpha_variance_modifier",     # alpha of Eq. (11)
     "energy_gamma",                # gamma of Eqs. (14)/(15)
-    "charging_base_multiplier",    # kappa of Eq. (15)
+    "charging_base_multiplier",    # K of Eq. (15), kappa = K * mean(I/tau)
     "distance_between_drone_norm",
     "a_battery_modifier",
     "b_battery_modifier",
