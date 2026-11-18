@@ -3,6 +3,12 @@ Plots the runs multiple_runs.py wrote, for one or more systems, in two figures:
 
 - Global uncertainty: at every time, the mean over the runs (line) and one standard
   deviation around it (band).
+- Global uncertainty relative to a reference system (--reference, naive by default), in %,
+  when there are several systems: the absolute figure hides differences of a few %. Seeded
+  alike, run k of each system is compared with run k of the reference (same base(s) and
+  wind), which removes the spread the base position adds to both. (a) in time, in windows
+  of --uncertainty-window seconds; (b) the mean of each run from --steady-state on, a dot
+  per run, with a paired Wilcoxon signed-rank test.
 - More than Nc drones charging, in three panels that aggregate the runs, so they read
   the same with 10 runs or 200:
   (a) when: the probability of more than Nc drones charging, in windows of --window
@@ -74,6 +80,11 @@ BOOTSTRAP_RESAMPLES = 5000
 BOOTSTRAP_SEED = 0
 JITTER_SEED = 0
 OVER_CAPACITY_COLOR = "0.95"
+
+##### Windows the difference of uncertainty to the reference is averaged in, in s. Long #####
+##### enough to smooth the recharge waves, short enough to show the first sweep apart.  #####
+UNCERTAINTY_WINDOW = 1000.0
+REFERENCE_SYSTEM = "naive"
 
 ##### Distance bins of the revisit figure, in m: 5 cells #####
 DISTANCE_BIN = 100.0
@@ -195,6 +206,143 @@ def plot_uncertainty(loaded):
     ax.grid(True, **GRID)
     ax.legend(loc="lower right", fontsize=8, frameon=False, handlelength=3.5)
     fig.suptitle(f"Global uncertainty over the runs, {scenario(loaded)}")
+    return fig
+
+
+def paired_runs(data, reference_data):
+    """
+    (row in data, row in reference_data) of every run number both have, when the two are
+    seeded alike: run k then has the same base(s) and wind on both. None otherwise.
+    """
+    if data["config"]["seed"] != reference_data["config"]["seed"]:
+        return None
+    row_of = {record["run"]: row for row, record in enumerate(reference_data["runs"])}
+    pairs = [(row, row_of[record["run"]]) for row, record in enumerate(data["runs"]) if record["run"] in row_of]
+    return pairs or None
+
+
+def bootstrap_relative_difference(values, reference, paired):
+    """
+    100 * (mean of values / mean of reference - 1), the difference in % of the reference,
+    with its percentile bootstrap interval. values and reference have a row per run. Paired,
+    row k of both is the same run and the rows are drawn together, so the spread the base
+    position adds to both systems cancels out. Unpaired, each system is drawn on its own.
+    """
+    values, reference = np.asarray(values, dtype=float), np.asarray(reference, dtype=float)
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+
+    def weights(runs):
+        return rng.multinomial(runs, np.full(runs, 1.0 / runs), size=BOOTSTRAP_RESAMPLES) / runs
+
+    values_weights = weights(len(values))
+    reference_weights = values_weights if paired else weights(len(reference))
+    ratio = ((values_weights @ values.reshape(len(values), -1))
+             / (reference_weights @ reference.reshape(len(reference), -1)))
+    tail = (100 - CONFIDENCE) / 2
+    low, high = np.percentile(100.0 * (ratio - 1.0), [tail, 100 - tail], axis=0)
+    mean = 100.0 * (values.mean(axis=0) / reference.mean(axis=0) - 1.0)
+    return mean, low.reshape(values.shape[1:]), high.reshape(values.shape[1:])
+
+
+def plot_uncertainty_difference(loaded, reference, window, steady_state):
+    """
+    The uncertainty of every system relative to the reference, in %, so differences of a
+    few % that the absolute figure hides become readable:
+      (a) in time, averaged in windows of window seconds, mean and bootstrap interval;
+      (b) the mean over each run from steady_state on, a dot per run, box plot and mean.
+    Seeded alike, run k of a system is compared with run k of the reference (same base(s)
+    and wind), which removes the spread the base position adds to both. None with a
+    single system.
+    """
+    others = [system for system in loaded if system != reference]
+    if not others:
+        return None
+    reference_data = loaded[reference]
+    dt = reference_data["config"]["sample_interval"]
+
+    fig = plt.figure(figsize=(12, 4.6), constrained_layout=True)
+    layout = fig.add_gridspec(1, 2, width_ratios=(2.2, 1))
+    ax_time, ax_runs = fig.add_subplot(layout[0]), fig.add_subplot(layout[1])
+    jitter = np.random.default_rng(JITTER_SEED)
+    tested = []
+    for position, system in enumerate(others):
+        data = loaded[system]
+        style = SYSTEM_STYLES[system]
+        if data["config"]["sample_interval"] != dt:
+            print(f"{system}: sampled every {data['config']['sample_interval']:g} s, {reference} every {dt:g} s, "
+                  f"left out of the difference figure")
+            continue
+        pairs = paired_runs(data, reference_data)
+        paired = pairs is not None
+        rows, reference_rows = zip(*pairs) if paired else (range(len(data["runs"])),
+                                                           range(len(reference_data["runs"])))
+        ##### Both on the shorter run, when the durations differ #####
+        samples = min(len(data["grid"]), len(reference_data["grid"]))
+        grid = reference_data["grid"][:samples]
+        uncertainty = np.array([data["series"][row]["global_uncertainty"][:samples] for row in rows])
+        reference_uncertainty = np.array([reference_data["series"][row]["global_uncertainty"][:samples]
+                                          for row in reference_rows])
+
+        ##### (a) In time #####
+        windows, edges = windowed(uncertainty, grid, dt, window)
+        reference_windows, _ = windowed(reference_uncertainty, grid, dt, window)
+        mean, low, high = bootstrap_relative_difference(windows, reference_windows, paired)
+        ax_time.fill_between(edges, np.r_[low, low[-1]], np.r_[high, high[-1]], step="post",
+                             color=style["color"], alpha=BAND_ALPHA, lw=0)
+        ax_time.step(edges, np.r_[mean, mean[-1]], where="post", color=style["color"], ls=style["ls"], lw=1.6,
+                     label=f"{system}, {len(rows)} runs" + (" paired" if paired else ""))
+
+        ##### (b) Each run, from steady_state on #####
+        steady = grid >= steady_state
+        run_mean = uncertainty[:, steady].mean(axis=1)
+        reference_mean = reference_uncertainty[:, steady].mean(axis=1)
+        per_run = 100.0 * (run_mean / (reference_mean if paired else reference_mean.mean()) - 1.0)
+        line = {"color": style["color"], "lw": 1.0}
+        ax_runs.boxplot(per_run, positions=[position], widths=0.45, showfliers=False, boxprops=line,
+                        whiskerprops=line, capprops=line, medianprops={"color": style["color"], "lw": 2.0})
+        ax_runs.scatter(position + jitter.uniform(-0.13, 0.13, len(per_run)), per_run, marker=style["marker"],
+                        s=18, color=style["color"], alpha=0.6, lw=0, zorder=3)
+        total, total_low, total_high = bootstrap_relative_difference(run_mean, reference_mean, paired)
+        ax_runs.errorbar(position + 0.36, total, yerr=[[total - total_low], [total_high - total]], fmt="o",
+                         color="black", ms=4, capsize=3, lw=1.0, zorder=4)
+        summary = (f"{system} vs {reference}: mean uncertainty from {steady_state:g} s {total:+.1f}%, "
+                   f"{CONFIDENCE}% interval [{total_low:+.1f}, {total_high:+.1f}] over {len(rows)} runs")
+        if paired and len(rows) > 1 and np.any(run_mean != reference_mean):
+            p_value = float(wilcoxon(run_mean, reference_mean).pvalue)
+            summary += ", paired Wilcoxon " + ("p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}")
+            tested.append(f"{system}: " + ("p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}"))
+        print(summary)
+
+    for ax in (ax_time, ax_runs):
+        ax.axhline(0.0, color="0.35", lw=1.0, zorder=1)
+        ax.grid(True, axis="y", **GRID)
+        ax.set_axisbelow(True)
+    ax_time.text(0.995, 0.0, f"{reference} (reference) ", transform=ax_time.get_yaxis_transform(),
+                 ha="right", va="top", fontsize=7, color="0.35", zorder=5,
+                 bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0})
+    if steady_state > 0:
+        ax_time.axvspan(0, steady_state, color=OVER_CAPACITY_COLOR, lw=0, zorder=0)
+        ax_time.text(steady_state / 2, 0.02, "left out\nof (b)", transform=ax_time.get_xaxis_transform(),
+                     ha="center", va="bottom", fontsize=7, color="0.35")
+    ax_time.grid(True, axis="x", **GRID)
+    ax_time.set_xlim(0, reference_data["grid"][-1] + dt)
+    ax_time.set_xlabel("time (s)")
+    ax_time.set_ylabel(f"global uncertainty relative\nto {reference} (%)")
+    ax_time.set_title(f"(a) In time, {window:g} s windows: mean over the runs, {CONFIDENCE}% bootstrap interval. "
+                      f"Below 0: less uncertainty than {reference}", loc="left", fontsize=9)
+    ax_time.legend(loc="best", fontsize=8, frameon=False, handlelength=3.5)
+
+    ax_runs.set_xlim(-0.6, len(others) - 0.4)
+    ax_runs.set_xticks(range(len(others)))
+    ax_runs.set_xticklabels([system.replace("/", "/\n") for system in others], fontsize=8)
+    ax_runs.set_ylabel(f"mean uncertainty of the run\nrelative to {reference} (%)")
+    ax_runs.set_title("(b) Each run" + (f", from {steady_state:g} s" if steady_state > 0 else "")
+                      + ("\npaired Wilcoxon " + ", ".join(tested) if tested else ""), loc="left", fontsize=9)
+    ax_runs.legend(handles=[Line2D([], [], marker="o", ls="none", color="0.45", alpha=0.6, ms=4, label="one run"),
+                            Line2D([], [], marker="o", ls="none", color="black", ms=4,
+                                   label=f"mean, {CONFIDENCE}% interval")],
+                   loc="best", fontsize=7, frameon=False, handletextpad=0.3)
+    fig.suptitle(f"Global uncertainty relative to {reference}, {scenario(loaded)}")
     return fig
 
 
@@ -415,16 +563,35 @@ if __name__ == "__main__":
     parser.add_argument("--hand-tuned", "--hand_tuned", action="store_true",
                         help="read the runs of multiple_runs.py --hand-tuned, in multiple_runs_hand_tuned/ "
                              "(ignored with --logs-directory)")
+    parser.add_argument("--reference",
+                        help="system the others are compared to in the difference of uncertainty figure "
+                             f"(default: {REFERENCE_SYSTEM} when plotted, otherwise the first --system)")
+    parser.add_argument("--uncertainty-window", type=float, default=UNCERTAINTY_WINDOW,
+                        help="width of the windows the difference of uncertainty is averaged in, in s "
+                             "(default: %(default)s)")
+    parser.add_argument("--steady-state", type=float, default=0.0,
+                        help="the per-run panel of the difference figure only averages from this time on, "
+                             "in s, to leave the first sweep of the map out (default: %(default)s)")
     parser.add_argument("--save",
-                        help="also save the figures, as <name>_uncertainty<ext>, <name>_charging<ext> and "
-                             "<name>_revisit<ext>, the extension sets the format (pdf, png, ...)")
+                        help="also save the figures, as <name>_uncertainty<ext>, <name>_uncertainty_difference<ext>, "
+                             "<name>_charging<ext> and <name>_revisit<ext>, the extension sets the format (pdf, png, ...)")
     args = parser.parse_args()
     if args.distance_bin <= 0:
         parser.error("--distance-bin has to be positive")
+    if args.uncertainty_window <= 0:
+        parser.error("--uncertainty-window has to be positive")
 
     loaded = load_systems(args.system, args.logs_directory, args.transmission_range, args.drones,
                           args.hand_tuned)
-    figures = {"uncertainty": plot_uncertainty(loaded), "charging": plot_charging(loaded, args.window),
+    reference = args.reference or (REFERENCE_SYSTEM if REFERENCE_SYSTEM in loaded else next(iter(loaded)))
+    if reference not in loaded:
+        parser.error(f"--reference {reference} has no runs here, it has to be one of {', '.join(loaded)}")
+    if args.steady_state >= min(data["config"]["duration"] for data in loaded.values()):
+        parser.error("--steady-state has to be shorter than the runs")
+    figures = {"uncertainty": plot_uncertainty(loaded),
+               "uncertainty_difference": plot_uncertainty_difference(loaded, reference, args.uncertainty_window,
+                                                                     args.steady_state),
+               "charging": plot_charging(loaded, args.window),
                "revisit": plot_revisit(loaded, args.distance_bin)}
     figures = {name: fig for name, fig in figures.items() if fig is not None}
     if args.save:

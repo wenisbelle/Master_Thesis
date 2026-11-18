@@ -1,0 +1,22 @@
+{
+  "system": "swarm",
+  "drones": 3,
+  "transmission_range": 100.0,
+  "duration": 30000,
+  "sample_interval": 1.0,
+  "seed": 0,
+  "individual": [
+    4.0,
+    0.0,
+    100.0,
+    1.0,
+    200.0,
+    0.25,
+    0.25,
+    0.1,
+    0.3
+  ],
+  "map_size": 100,
+  "bases": 1,
+  "charging_capacity": null
+}

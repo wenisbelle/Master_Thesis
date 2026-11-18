@@ -5,6 +5,7 @@ plot_multiple_runs.py can aggregate them.
 
     python3 Analytical/multiple_runs.py --system egocentric --runs 20
     python3 Analytical/multiple_runs.py --system swarm --runs 10 --drones 5 --range 500
+    python3 Analytical/multiple_runs.py --system egocentric --runs 50 --drones 3 6 9 12 --range 100
     python3 Analytical/multiple_runs.py --system expanding_testing/swarm --runs 10 --bases 2
     python3 Analytical/multiple_runs.py --system expanding_testing/egocentric --runs 10 --bases 3 --map-size 150 \
         --logs-directory multiple_runs/3_bases_150
@@ -419,15 +420,97 @@ def run_jobs(jobs: list, workers: int, logs_directory: str, config: dict) -> int
     return failed
 
 
+def run_scenario(parser, args, drones: int, map_size: int, individual: list, origin: str) -> int:
+    """All the runs of one number of drones. Returns 1 when any run failed."""
+    logs_directory = os.path.join(system_dir(args.system), args.logs_directory or
+                                  default_logs_directory(args.transmission_range, drones, args.hand_tuned))
+    config = {
+        "system": args.system,
+        "drones": drones,
+        "transmission_range": args.transmission_range,
+        "duration": args.duration,
+        "sample_interval": args.sample_interval,
+        "seed": args.seed,
+        "individual": individual,
+        "map_size": map_size,
+        "bases": args.bases,
+        "charging_capacity": args.charging_capacity,
+    }
+    ##### Only when set, so the directories written before the flag keep the same config #####
+    if args.hand_tuned:
+        config["hand_tuned"] = True
+
+    ##### The runs of a directory are aggregated together, so they all have to come from #####
+    ##### the same scenario. Another scenario goes to another directory, or replaces them. #####
+    config_path = os.path.join(logs_directory, CONFIG_FILE)
+    os.makedirs(logs_directory, exist_ok=True)
+    existing = [name for name in os.listdir(logs_directory) if RUN_PATTERN.match(name)]
+    if args.overwrite:
+        for name in existing + [CONFIG_FILE, SUMMARY_FILE]:
+            if os.path.exists(os.path.join(logs_directory, name)):
+                os.remove(os.path.join(logs_directory, name))
+        existing = []
+    elif os.path.exists(config_path):
+        with open(config_path) as f:
+            previous = json.load(f)
+        ##### Compared as JSON, the way it was read back #####
+        current = json.loads(json.dumps(config))
+        different = [key for key in current if previous.get(key) != current[key]]
+        if different and existing:
+            parser.error(f"{logs_directory} holds {len(existing)} runs of another scenario "
+                         f"(different {', '.join(different)}). Give another --logs-directory, "
+                         f"or --overwrite to replace them")
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    jobs = []
+    for run in range(args.runs):
+        if os.path.exists(os.path.join(logs_directory, run_file(run))):
+            continue
+        seed = args.seed + run
+        jobs.append({"system": args.system, "run": run, "seed": seed, "individual": individual,
+                     "drones": drones, "sample_interval": args.sample_interval,
+                     "charging_capacity": args.charging_capacity,
+                     "base_positions": sample_base_positions(seed, args.bases, map_size)})
+
+    print(f"{args.system}: {args.runs} runs of {drones} drones, {args.transmission_range:g} m, "
+          f"{args.duration} s, {args.bases} base(s) drawn again on every run")
+    print(f"Individual ({origin}): {individual}")
+    print(f"Logs: {logs_directory}")
+    skipped = args.runs - len(jobs)
+    if skipped:
+        print(f"{skipped} run(s) already in the directory, skipped")
+
+    failed = 0
+    if jobs:
+        workers = args.workers or min(len(jobs), os.cpu_count() or 1)
+        print(f"Running {len(jobs)} run(s), {workers} at once ...", flush=True)
+        failed = run_jobs(jobs, workers, logs_directory, config)
+
+    config, runs = load_runs(logs_directory)
+    if runs:
+        text = summary(config, runs)
+        with open(os.path.join(logs_directory, SUMMARY_FILE), "w") as f:
+            f.write(text + "\n")
+        print()
+        print(text)
+        print(f"\nPlot them with: python3 Analytical/plot_multiple_runs.py --system {args.system} "
+              + (f"--logs-directory {args.logs_directory}" if args.logs_directory else
+                 f"--range {args.transmission_range:g} --drones {drones}"
+                 + (" --hand-tuned" if args.hand_tuned else "")))
+    return 1 if failed else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Many runs of one system, each with its recharge base(s) somewhere else")
-    parser.add_argument("--system", choices=SYSTEMS, required=True,
-                        help="which system to run")
+    parser.add_argument("--system", choices=SYSTEMS, nargs="+", required=True,
+                        help="which system(s) to run, several to run one after the other")
     parser.add_argument("--runs", type=int, default=NUMBER_OF_RUNS,
                         help="number of runs (default: %(default)s)")
-    parser.add_argument("--drones", type=int, default=NUMBER_OF_DRONES,
-                        help="number of drones (default: %(default)s)")
+    parser.add_argument("--drones", type=int, nargs="+", default=[NUMBER_OF_DRONES],
+                        help="number of drones, several to run one scenario after the other, each in "
+                             "its own directory (default: %(default)s)")
     parser.add_argument("--range", type=float, default=TRANSMISSION_RANGE, dest="transmission_range",
                         help="communication range of the drones, in m. Also picks the tuned individual "
                              "(default: %(default)s)")
@@ -462,6 +545,19 @@ def main() -> int:
                         help="delete the runs already in the directory and run them all again")
     args = parser.parse_args()
 
+    systems = list(dict.fromkeys(args.system))
+    if len(systems) > 1 and args.individual is not None:
+        parser.error("--individual has the genes of one system, it cannot be used with several --system")
+    if len(systems) > 1 and args.logs_directory:
+        parser.error("--logs-directory is one directory, it cannot hold several --system")
+    status = 0
+    for system in systems:
+        args.system = system
+        status |= run_system(parser, args)
+    return status
+
+
+def run_system(parser, args) -> int:
     if args.runs < 1:
         parser.error("--runs has to be at least 1")
     if not is_expanding(args.system):
@@ -511,83 +607,13 @@ def main() -> int:
         parser.error(f"the individual has {len(individual)} genes, {args.system} takes "
                      f"{len(genes)}: {genes}")
 
-    logs_directory = os.path.join(system_dir(args.system), args.logs_directory or
-                                  default_logs_directory(args.transmission_range, args.drones, args.hand_tuned))
-    config = {
-        "system": args.system,
-        "drones": args.drones,
-        "transmission_range": args.transmission_range,
-        "duration": args.duration,
-        "sample_interval": args.sample_interval,
-        "seed": args.seed,
-        "individual": individual,
-        "map_size": map_size,
-        "bases": args.bases,
-        "charging_capacity": args.charging_capacity,
-    }
-    ##### Only when set, so the directories written before the flag keep the same config #####
-    if args.hand_tuned:
-        config["hand_tuned"] = True
-
-    ##### The runs of a directory are aggregated together, so they all have to come from #####
-    ##### the same scenario. Another scenario goes to another directory, or replaces them. #####
-    config_path = os.path.join(logs_directory, CONFIG_FILE)
-    os.makedirs(logs_directory, exist_ok=True)
-    existing = [name for name in os.listdir(logs_directory) if RUN_PATTERN.match(name)]
-    if args.overwrite:
-        for name in existing + [CONFIG_FILE, SUMMARY_FILE]:
-            if os.path.exists(os.path.join(logs_directory, name)):
-                os.remove(os.path.join(logs_directory, name))
-        existing = []
-    elif os.path.exists(config_path):
-        with open(config_path) as f:
-            previous = json.load(f)
-        ##### Compared as JSON, the way it was read back #####
-        current = json.loads(json.dumps(config))
-        different = [key for key in current if previous.get(key) != current[key]]
-        if different and existing:
-            parser.error(f"{logs_directory} holds {len(existing)} runs of another scenario "
-                         f"(different {', '.join(different)}). Give another --logs-directory, "
-                         f"or --overwrite to replace them")
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
-
-    jobs = []
-    for run in range(args.runs):
-        if os.path.exists(os.path.join(logs_directory, run_file(run))):
-            continue
-        seed = args.seed + run
-        jobs.append({"system": args.system, "run": run, "seed": seed, "individual": individual,
-                     "drones": args.drones, "sample_interval": args.sample_interval,
-                     "charging_capacity": args.charging_capacity,
-                     "base_positions": sample_base_positions(seed, args.bases, map_size)})
-
-    print(f"{args.system}: {args.runs} runs of {args.drones} drones, {args.transmission_range:g} m, "
-          f"{args.duration} s, {args.bases} base(s) drawn again on every run")
-    print(f"Individual ({origin}): {individual}")
-    print(f"Logs: {logs_directory}")
-    skipped = args.runs - len(jobs)
-    if skipped:
-        print(f"{skipped} run(s) already in the directory, skipped")
-
-    failed = 0
-    if jobs:
-        workers = args.workers or min(len(jobs), os.cpu_count() or 1)
-        print(f"Running {len(jobs)} run(s), {workers} at once ...", flush=True)
-        failed = run_jobs(jobs, workers, logs_directory, config)
-
-    config, runs = load_runs(logs_directory)
-    if runs:
-        text = summary(config, runs)
-        with open(os.path.join(logs_directory, SUMMARY_FILE), "w") as f:
-            f.write(text + "\n")
-        print()
-        print(text)
-        print(f"\nPlot them with: python3 Analytical/plot_multiple_runs.py --system {args.system} "
-              + (f"--logs-directory {args.logs_directory}" if args.logs_directory else
-                 f"--range {args.transmission_range:g} --drones {args.drones}"
-                 + (" --hand-tuned" if args.hand_tuned else "")))
-    return 1 if failed else 0
+    ##### One scenario per number of drones, each in its own directory #####
+    if len(args.drones) > 1 and args.logs_directory:
+        parser.error("--logs-directory is one directory, it cannot hold several --drones")
+    status = 0
+    for drones in args.drones:
+        status |= run_scenario(parser, args, drones, map_size, individual, origin)
+    return status
 
 
 if __name__ == "__main__":

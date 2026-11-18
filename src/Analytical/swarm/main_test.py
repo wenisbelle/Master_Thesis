@@ -42,15 +42,15 @@ NUMBER_OF_DRONES = 10
 ##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
 ##### runs back with --hand-tuned too). It starts as BEST_INDIVIDUAL of main.py.                 #####
 HAND_TUNED_INDIVIDUAL = [
-    1.0,   # base_variance, between 0.25 and 100
-    1.0,   # alpha_variance_modifier, between 0 and 100
+    4.0,   # base_variance, between 0.25 and 100. 3-6 best, at 8+ the map is blurred too much
+    0.5,   # alpha_variance_modifier, between 0 and 100. 0.5: +1-2% steady uncertainty vs 0, slightly faster far revisits; 1+ is worse
     100.0, # energy_gamma, between 0.1 and 100. Paper: 0.5 per distance unit x C_max 200 units = 100 per battery fraction
-    1.0,    # charging_base_multiplier, between 0 and 100
-    200.0,  # distance_between_drone_norm, between 10 and 1000
-    0.25,    # a_battery_modifier, between 0 and 10. Above the swarm mean by 0.2 -> margin -0.05 (return later)
-    0.5,     # b_battery_modifier, between 0 and 10. Below the swarm mean by 0.2 -> margin +0.10 (return earlier)
-    0.05,    # c_battery_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.05 (~70 s later)
-    0.3,    # charge_margin, between 0.2 and 0.5
+    1.0,   # charging_base_multiplier, between 0 and 100
+    200.0, # distance_between_drone_norm, between 10 and 1000
+    0.25,  # a_battery_modifier, between 0 and 10. Above the swarm mean by 0.2 -> margin -0.05 (return later)
+    0.25,  # b_battery_modifier, between 0 and 10. Below the swarm mean by 0.2 -> margin +0.05 (return earlier)
+    0.10,  # c_battery_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.10 (~140 s later)
+    0.3,   # charge_margin, between 0.2 and 0.5. Above MIN_CHARGE_MARGIN, so a and c have room to delay the return
 ]
 
 ##### How often the drone state is sampled.
