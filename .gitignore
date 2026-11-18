@@ -1,7 +1,38 @@
+# Python bytecode & cache (fixes the pycache/ typo)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Simulation data, logs & recordings
 *.pkl
+*.pickle
 *.h5
+*.hdf5
 *.npy
+*.npz
 *.csv
 *.dat
 *.log
-pycache/
+logs/
+
+# PyTorch / RL checkpoints & experiment tracking
+*.pt
+*.pth
+*.ckpt
+*.onnx
+runs/
+wandb/
+outputs/
+checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE & OS metadata
+.vscode/
+.idea/
+.DS_Store
+*.swp
