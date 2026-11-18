@@ -42,12 +42,12 @@ NUMBER_OF_DRONES = 10
 ##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
 ##### runs back with --hand-tuned too). It starts as BEST_INDIVIDUAL of main.py.                 #####
 HAND_TUNED_INDIVIDUAL = [
-    76.31,   # base_variance, between 0.25 and 100
-    40.14,   # alpha_variance_modifier, between 0 and 100
-    7.44,    # energy_gamma, between 0.1 and 100
-    52.38,   # charging_base_multiplier, between 0 and 100
-    455.63,  # distance_between_drone_norm, between 10 and 1000
-    0.26,    # charge_margin, between 0.2 and 0.5
+    1.0,     # base_variance, between 0.25 and 100
+    1.0,     # alpha_variance_modifier, between 0 and 100
+    100.0,   # energy_gamma, between 0.1 and 100. Paper: 0.5 per distance unit x C_max 200 units = 100 per battery fraction
+    1.0,     # charging_base_multiplier, between 0 and 100
+    200.0,   # distance_between_drone_norm, between 10 and 1000
+    0.30,    # charge_margin, between 0.2 and 0.5
 ]
 
 ##### How often the drone state is sampled.

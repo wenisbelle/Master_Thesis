@@ -104,66 +104,16 @@ class FitnessEvaluator:
         return (int(np.clip(row, 0, self.map_width - 1)),
                 int(np.clip(col, 0, self.map_height - 1)))
 
-    ##### OLD VERSION, kept commented for comparison. Replaced by the version below, which returns  #####
-    ##### the same cells in the same order, but takes the geometry from a cache instead of building #####
-    ##### a new meshgrid on every call (it was called once per candidate cell, ~400 per decision).  #####
-    # def get_cells_visited_in_trajectory(self, drone_altitude: float, initial_cell: Tuple[int, int], final_cell: Tuple[int, int]) -> list:
-    #     """
-    #     Cells covered by the camera on the way from initial_cell to final_cell.
-    #     The initial cell is NOT included: the drone is already there, and its
-    #     uncertainty is inflated by the near-zero travel time, so counting it
-    #     would bias every trajectory average.
-    #     """
-    #     x0, y0 = initial_cell
-    #     x1, y1 = final_cell
-    #
-    #     radius_coverage = drone_altitude * np.tan(self.camera_angle)
-    #
-    #     x_min, x_max = min(x0, x1) , max(x0, x1) 
-    #     y_min, y_max = min(y0, y1) , max(y0, y1) 
-    #
-    #     X, Y = np.meshgrid(np.arange(x_min, x_max + 1), np.arange(y_min, y_max + 1))
-    #
-    #     ### Equation distance between point and line
-    #     A = y1 - y0
-    #     B = x0 - x1
-    #     C = x1 * y0 - y1 * x0
-    #     denominator = np.sqrt(A**2 + B**2)
-    #
-    #     if denominator == 0:
-    #         # Drone is evaluating its exact current cell
-    #         return []
-    #
-    #     distances = np.abs(A * X + B * Y + C) / denominator
-    #     map_size_d = distances * self.distance_between_cells
-    #
-    #     # Filter cells within the camera radius
-    #     mask = map_size_d <= radius_coverage
-    #
-    #     # Extract the valid coordinates
-    #     valid_x = X[mask]
-    #     valid_y = Y[mask]
-    #
-    #     # Filter out coordinates that fall outside the actual map boundaries,
-    #     # and the initial cell itself (see docstring)
-    #     bounds_mask = (valid_x >= 0) & (valid_x < self.map_width) & (valid_y >= 0) & (valid_y < self.map_height)
-    #     bounds_mask &= ~((valid_x == x0) & (valid_y == y0))
-    #     valid_x = valid_x[bounds_mask]
-    #     valid_y = valid_y[bounds_mask]
-    #
-    #     # Create the final list of absolute coordinates
-    #     cells_within_trajectory = list(zip(valid_x, valid_y))
-    #
-    #     return cells_within_trajectory
-
     def _trajectory_pattern(self, dx: int, dy: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Geometry of a straight trajectory from cell (0, 0) to cell (dx, dy): the cells of its bounding
         box, relative to the initial cell (initial cell already removed), and the distance in metres
         from each one to the line. It only depends on the offset, so it is computed once and cached.
 
-        Same meshgrid order and same integer line equation as the old get_cells_visited_in_trajectory,
-        so filtering it by the camera radius selects exactly the same cells, in the same order.
+        Filtered by the camera radius (altitude*tan(camera_angle)) and the map bounds, it gives the cells
+        the camera covers on the way. The initial cell is NOT included: the drone is already there, and
+        its uncertainty is inflated by the near-zero travel time, so counting it would bias every
+        trajectory average.
         """
         key = (self.distance_between_cells, dx, dy)
         pattern = FitnessEvaluator._trajectory_pattern_cache.get(key)
@@ -185,31 +135,6 @@ class FitnessEvaluator:
                 pattern = (X[not_initial], Y[not_initial], map_size_d[not_initial])
             FitnessEvaluator._trajectory_pattern_cache[key] = pattern
         return pattern
-
-    def get_cells_visited_in_trajectory(self, drone_altitude: float, initial_cell: Tuple[int, int], final_cell: Tuple[int, int]) -> list:
-        """
-        Cells covered by the camera on the way from initial_cell to final_cell.
-        The initial cell is NOT included: the drone is already there, and its
-        uncertainty is inflated by the near-zero travel time, so counting it
-        would bias every trajectory average.
-
-        Same output as the old version (kept commented above), the geometry now comes from the
-        cached _trajectory_pattern.
-        """
-        x0, y0 = initial_cell
-        x1, y1 = final_cell
-
-        radius_coverage = drone_altitude * np.tan(self.camera_angle)
-
-        relative_x, relative_y, map_size_d = self._trajectory_pattern(x1 - x0, y1 - y0)
-        valid_x = relative_x + x0
-        valid_y = relative_y + y0
-
-        # Cells within the camera radius and inside the actual map boundaries
-        mask = ((map_size_d <= radius_coverage)
-                & (valid_x >= 0) & (valid_x < self.map_width) & (valid_y >= 0) & (valid_y < self.map_height))
-
-        return list(zip(valid_x[mask], valid_y[mask]))
 
     def uncertainty_modified_time_to_travel(self, map_data:np.array, drone_position: Tuple[float, float, float],
                                             map_center_offset: float, drone_speed: float) -> np.array:
@@ -584,9 +509,9 @@ class FitnessEvaluator:
                                     y_range: Tuple[int, int]) -> list:
         """
         Vectorized form of the candidate loop of the old cells_priority. For every cell (i, j) of the
-        window x_range x y_range except current_cell: the average of reward_map over
-        get_cells_visited_in_trajectory(drone_altitude, current_cell, (i, j)), or 0.0 when there are
-        no cells. Returns [(average, (i, j)), ...] in the same order as the old double loop. Each
+        window x_range x y_range except current_cell: the average of reward_map over the cells the
+        camera covers on the straight path from current_cell to (i, j) (see _trajectory_pattern), or
+        0.0 when there are no cells. Returns [(average, (i, j)), ...] in the same order as the old double loop. Each
         average is summed in the same order as before, so the values are identical bit for bit.
         """
         current_i, current_j = current_cell
@@ -606,7 +531,7 @@ class FitnessEvaluator:
         y = cells_y + current_j
         radius_coverage = drone_altitude * np.tan(self.camera_angle)
 
-        # Same filters as get_cells_visited_in_trajectory, keeping only the candidates of this window
+        # Cells within the camera radius and inside the map, keeping only the candidates of this window
         keep = (in_window[owner] & (map_size_d <= radius_coverage)
                 & (x >= 0) & (x < self.map_width) & (y >= 0) & (y < self.map_height))
 

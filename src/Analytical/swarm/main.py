@@ -61,7 +61,7 @@ GENE_BOUNDS = [
     ("base_variance",            0.25,  100.0),   # sigma_0^2 of Eq. (11), in cells^2
     ("alpha_variance_modifier",  0.0,   100.0),   # alpha of Eq. (11)
     ("energy_gamma",             0.10,  100.0),   # gamma of Eqs. (14)/(15)
-    ("charging_base_multiplier", 0.0,  100.0),   # kappa of Eq. (15)
+    ("charging_base_multiplier", 0.0,  100.0),   # K of Eq. (15), kappa = K * mean(I/tau). Bounds not recalibrated for it yet
     ("distance_between_drone_norm", 10.0, 1000.0),
     ("a_battery_modifier", 0.0, 10.0),
     ("b_battery_modifier", 0.0, 10.0),

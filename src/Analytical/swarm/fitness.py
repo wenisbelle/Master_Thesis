@@ -19,7 +19,7 @@ class FitnessEvaluator:
                  base_variance: float,
                  alpha_variance_modifier: float, # tunable
                  energy_gamma: float, # tunable
-                 charging_base_multiplier: float, # tunable - K in the article
+                 charging_base_multiplier: float, # tunable - K in the article, kappa = K * mean(I/tau), Eq. (15)
                  distance_between_drone_norm: float, # tunable - couples the two targets at an encounter
                  kernel_n_sigma: int, # tunable
                  a_battery_modifier: float, # tunable
@@ -109,66 +109,16 @@ class FitnessEvaluator:
         return (int(np.clip(row, 0, self.map_width - 1)),
                 int(np.clip(col, 0, self.map_height - 1)))
 
-    ##### OLD VERSION, kept commented for comparison. Replaced by the version below, which returns  #####
-    ##### the same cells in the same order, but takes the geometry from a cache instead of building #####
-    ##### a new meshgrid on every call (it was called once per candidate cell, ~400 per decision).  #####
-    # def get_cells_visited_in_trajectory(self, drone_altitude: float, initial_cell: Tuple[int, int], final_cell: Tuple[int, int]) -> list:
-    #     """
-    #     Cells covered by the camera on the way from initial_cell to final_cell.
-    #     The initial cell is NOT included: the drone is already there, and its
-    #     uncertainty is inflated by the near-zero travel time, so counting it
-    #     would bias every trajectory average.
-    #     """
-    #     x0, y0 = initial_cell
-    #     x1, y1 = final_cell
-    #
-    #     radius_coverage = drone_altitude * np.tan(self.camera_angle)
-    #
-    #     x_min, x_max = min(x0, x1) , max(x0, x1) 
-    #     y_min, y_max = min(y0, y1) , max(y0, y1) 
-    #
-    #     X, Y = np.meshgrid(np.arange(x_min, x_max + 1), np.arange(y_min, y_max + 1))
-    #
-    #     ### Equation distance between point and line
-    #     A = y1 - y0
-    #     B = x0 - x1
-    #     C = x1 * y0 - y1 * x0
-    #     denominator = np.sqrt(A**2 + B**2)
-    #
-    #     if denominator == 0:
-    #         # Drone is evaluating its exact current cell
-    #         return []
-    #
-    #     distances = np.abs(A * X + B * Y + C) / denominator
-    #     map_size_d = distances * self.distance_between_cells
-    #
-    #     # Filter cells within the camera radius
-    #     mask = map_size_d <= radius_coverage
-    #
-    #     # Extract the valid coordinates
-    #     valid_x = X[mask]
-    #     valid_y = Y[mask]
-    #
-    #     # Filter out coordinates that fall outside the actual map boundaries,
-    #     # and the initial cell itself (see docstring)
-    #     bounds_mask = (valid_x >= 0) & (valid_x < self.map_width) & (valid_y >= 0) & (valid_y < self.map_height)
-    #     bounds_mask &= ~((valid_x == x0) & (valid_y == y0))
-    #     valid_x = valid_x[bounds_mask]
-    #     valid_y = valid_y[bounds_mask]
-    #
-    #     # Create the final list of absolute coordinates
-    #     cells_within_trajectory = list(zip(valid_x, valid_y))
-    #
-    #     return cells_within_trajectory
-
     def _trajectory_pattern(self, dx: int, dy: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Geometry of a straight trajectory from cell (0, 0) to cell (dx, dy): the cells of its bounding
         box, relative to the initial cell (initial cell already removed), and the distance in metres
         from each one to the line. It only depends on the offset, so it is computed once and cached.
 
-        Same meshgrid order and same integer line equation as the old get_cells_visited_in_trajectory,
-        so filtering it by the camera radius selects exactly the same cells, in the same order.
+        Filtered by the camera radius (altitude*tan(camera_angle)) and the map bounds, it gives the cells
+        the camera covers on the way. The initial cell is NOT included: the drone is already there, and
+        its uncertainty is inflated by the near-zero travel time, so counting it would bias every
+        trajectory average.
         """
         key = (self.distance_between_cells, dx, dy)
         pattern = FitnessEvaluator._trajectory_pattern_cache.get(key)
@@ -190,31 +140,6 @@ class FitnessEvaluator:
                 pattern = (X[not_initial], Y[not_initial], map_size_d[not_initial])
             FitnessEvaluator._trajectory_pattern_cache[key] = pattern
         return pattern
-
-    def get_cells_visited_in_trajectory(self, drone_altitude: float, initial_cell: Tuple[int, int], final_cell: Tuple[int, int]) -> list:
-        """
-        Cells covered by the camera on the way from initial_cell to final_cell.
-        The initial cell is NOT included: the drone is already there, and its
-        uncertainty is inflated by the near-zero travel time, so counting it
-        would bias every trajectory average.
-
-        Same output as the old version (kept commented above), the geometry now comes from the
-        cached _trajectory_pattern.
-        """
-        x0, y0 = initial_cell
-        x1, y1 = final_cell
-
-        radius_coverage = drone_altitude * np.tan(self.camera_angle)
-
-        relative_x, relative_y, map_size_d = self._trajectory_pattern(x1 - x0, y1 - y0)
-        valid_x = relative_x + x0
-        valid_y = relative_y + y0
-
-        # Cells within the camera radius and inside the actual map boundaries
-        mask = ((map_size_d <= radius_coverage)
-                & (valid_x >= 0) & (valid_x < self.map_width) & (valid_y >= 0) & (valid_y < self.map_height))
-
-        return list(zip(valid_x[mask], valid_y[mask]))
 
     def uncertainty_modified_time_to_travel(self, map_data:np.array, drone_position: Tuple[float, float, float],
                                             map_center_offset: float, drone_speed: float) -> np.array:
@@ -589,9 +514,9 @@ class FitnessEvaluator:
                                     y_range: Tuple[int, int]) -> list:
         """
         Vectorized form of the candidate loop of the old cells_priority. For every cell (i, j) of the
-        window x_range x y_range except current_cell: the average of reward_map over
-        get_cells_visited_in_trajectory(drone_altitude, current_cell, (i, j)), or 0.0 when there are
-        no cells. Returns [(average, (i, j)), ...] in the same order as the old double loop. Each
+        window x_range x y_range except current_cell: the average of reward_map over the cells the
+        camera covers on the straight path from current_cell to (i, j) (see _trajectory_pattern), or
+        0.0 when there are no cells. Returns [(average, (i, j)), ...] in the same order as the old double loop. Each
         average is summed in the same order as before, so the values are identical bit for bit.
         """
         current_i, current_j = current_cell
@@ -611,7 +536,7 @@ class FitnessEvaluator:
         y = cells_y + current_j
         radius_coverage = drone_altitude * np.tan(self.camera_angle)
 
-        # Same filters as get_cells_visited_in_trajectory, keeping only the candidates of this window
+        # Cells within the camera radius and inside the map, keeping only the candidates of this window
         keep = (in_window[owner] & (map_size_d <= radius_coverage)
                 & (x >= 0) & (x < self.map_width) & (y >= 0) & (y < self.map_height))
 
@@ -699,11 +624,30 @@ class FitnessEvaluator:
         return max(self.MIN_CHARGE_MARGIN,
                    self.CHARGE_MARGIN + swarm_shift + congestion_shift)
 
+    def mean_efficiency(self, map_data: np.array, drone_position: Tuple[float, float, float],
+                        map_center_offset: float, drone_speed: float) -> float:
+        """
+        Mean of phi = I/tau + decay (see uncertainty_modified_time_to_travel) over the cells that can
+        act as sources (drone_exclusion_mask), seen from drone_position. It scales the base utility,
+        Eq. (15): kappa = K * mean_efficiency.
+
+        The cells under the camera are left out, as in the aggregation: their tau is close to 0, so
+        I/tau would blow up and set the mean on its own. phi is taken before the energy coefficient,
+        so the battery only enters the base utility through R_safe.
+        """
+        _, phi = self.uncertainty_modified_time_to_travel(map_data, drone_position, map_center_offset, drone_speed)
+        valid = self.drone_exclusion_mask(map_data.shape, drone_position, map_center_offset)
+        return float(phi[valid].mean())
+
     def recharge_base_fitness(self, drone_location: Tuple[float, float], recharge_base_position: Tuple[float, float],
                               current_drone_charge: float, drone_speed: float,
-                              mean_battery_value: float, drones_charging: int) -> float:
+                              mean_battery_value: float, drones_charging: int,
+                              mean_efficiency: float) -> float:
         """
-        Returns the fitness score of the base location, which is the distance from the base to the center of the map.
+        Utility of the recharge base, Eq. (15): kappa * exp(-gamma * R_safe), with kappa = K * mean_efficiency.
+        Scaling by the mean I/tau of the map puts the base in the same units as the cells, so the moment
+        the drone returns no longer moves with the overall uncertainty level (first sweep vs steady state,
+        swarm size, transmission range): only the cells' fitness relative to the map mean matters.
         """
         # Distance from each cell to the recharge base.
         # drone_location is the 3D telemetry position, only x/y matter here.
@@ -715,7 +659,8 @@ class FitnessEvaluator:
         margin = self.charge_margin(current_drone_charge, mean_battery_value, drones_charging)
 
         R_safe = current_drone_charge - energy_to_base - margin
-        return self.K * np.exp(-self.GAMMA * R_safe)
+        kappa = self.K * mean_efficiency
+        return kappa * np.exp(-self.GAMMA * R_safe)
      
 
     
@@ -733,9 +678,11 @@ class FitnessEvaluator:
         best_cell = max(fitness_scores, key=lambda x: x[0])
 
         # Check if the fitenss of the best cell is greater than the fitness of the recharge base
+        mean_efficiency = self.mean_efficiency(map_data, drone_location, map_center_offset, drone_speed)
         recharge_base_fitness = self.recharge_base_fitness(drone_location, recharge_base_position,
-                                                          current_drone_charge, drone_speed, 
-                                                          mean_battery_value, drones_charging)
+                                                          current_drone_charge, drone_speed,
+                                                          mean_battery_value, drones_charging,
+                                                          mean_efficiency)
 
         if best_cell[0] < recharge_base_fitness:
             ##### The base arrives here in metres, but the caller turns whatever is #####
@@ -772,13 +719,17 @@ class FitnessEvaluator:
         best_fitness, best_1, best_2, best_1_fitness, best_2_fitness = best_pair
 
         # Now, let's check if each drone should go to the recharge base instead of the best cell
-        # Fitness for the recharge base for each drone
+        # Fitness for the recharge base for each drone. kappa uses the mean I/tau seen from each drone
+        first_mean_efficiency = self.mean_efficiency(map_data, first_drone_location, map_center_offset, drone_speed)
+        second_mean_efficiency = self.mean_efficiency(map_data, second_drone_location, map_center_offset, drone_speed)
         first_recharge_base_fitness = self.recharge_base_fitness(first_drone_location, recharge_base_position,
-                                                                 first_current_drone_charge, drone_speed, 
-                                                                 mean_battery_value, drones_charging)
+                                                                 first_current_drone_charge, drone_speed,
+                                                                 mean_battery_value, drones_charging,
+                                                                 first_mean_efficiency)
         second_recharge_base_fitness = self.recharge_base_fitness(second_drone_location, recharge_base_position,
                                                                   second_current_drone_charge, drone_speed,
-                                                                  mean_battery_value, drones_charging)
+                                                                  mean_battery_value, drones_charging,
+                                                                  second_mean_efficiency)
 
         ##### Same as in choose_one_cell: the base leaves as a cell index #####
         base_cell = self.position_to_cell(recharge_base_position, map_center_offset)
