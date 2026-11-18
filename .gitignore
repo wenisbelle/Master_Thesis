@@ -35,4 +35,5 @@ env/
 .vscode/
 .idea/
 .DS_Store
-*.swp
+*.swp__pycache__/
+*.py[cod]
