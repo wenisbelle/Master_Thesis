@@ -43,6 +43,7 @@ the two disagree, the code is right and this file is out of date.
 | `run_all_tests_with_multiple_runs.py` | `multiple_runs.py` for every tuned range |
 | `plot_multiple_runs.py` | The figures over many runs: uncertainty, charging, time between visits |
 | `estimation_decision.md` | Plan and pilot results: how good the swarm battery estimate is |
+| `waiting_room.md` | The hard base capacity and the waiting room of 2026-11-24: what changed, why, and where in the code (swarm first) |
 | `variance_explained.md` | What `base_variance` and `alpha_variance_modifier` do (in Portuguese) |
 
 ## Running
@@ -571,6 +572,8 @@ width, and a moving average would only call it something else.
 - [`centralized/README.md`](centralized/README.md): the centralized reference, its
   scheduler, the checks and the references.
 - [`naive/README.md`](naive/README.md): the naive baseline.
+- [`waiting_room.md`](waiting_room.md): the hard base capacity (pads and waiting room) of
+  2026-11-24, what changed and where in the code.
 - [`estimation_decision.md`](estimation_decision.md): the battery estimate against
   the real battery.
 - [`variance_explained.md`](variance_explained.md): the Gaussian width genes.
