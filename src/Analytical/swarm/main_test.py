@@ -42,15 +42,15 @@ NUMBER_OF_DRONES = 10
 ##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
 ##### runs back with --hand-tuned too). It starts as BEST_INDIVIDUAL of main.py.                 #####
 HAND_TUNED_INDIVIDUAL = [
-    4.0,   # base_variance, between 0.25 and 100. 3-6 best, at 8+ the map is blurred too much
-    0.5,   # alpha_variance_modifier, between 0 and 100. 0.5: +1-2% steady uncertainty vs 0, slightly faster far revisits; 1+ is worse
+    1.0,   # base_variance, between 0.25 and 100. Same kernel in every system so they compare fairly (2026-11-24). 4.0 was tuned on swarm alone and gives any system ~-8% steady uncertainty
+    1.0,   # alpha_variance_modifier, between 0 and 100. Same kernel in every system so they compare fairly (2026-11-24)
     100.0, # energy_gamma, between 0.1 and 100. Paper: 0.5 per distance unit x C_max 200 units = 100 per battery fraction
     1.0,   # charging_base_multiplier, between 0 and 100
     200.0, # distance_between_drone_norm, between 10 and 1000
-    0.25,  # a_battery_modifier, between 0 and 10. Above the swarm mean by 0.2 -> margin -0.05 (return later)
-    0.25,  # b_battery_modifier, between 0 and 10. Below the swarm mean by 0.2 -> margin +0.05 (return earlier)
-    0.10,  # c_battery_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.10 (~140 s later)
-    0.3,   # charge_margin, between 0.2 and 0.5. Above MIN_CHARGE_MARGIN, so a and c have room to delay the return
+    0.20,  # a_battery_modifier, between 0 and 10. Applies ABOVE the swarm mean: above it by 0.2 -> margin -0.04 (return later). Hand-tuned 2026-11-24
+    0.30,  # b_battery_modifier, between 0 and 10. Applies BELOW the swarm mean: below it by 0.2 -> margin +0.06 (return earlier). 0.3 was the best b of the 2026-11-24 a/b/c sweep (-2.3% steady uncertainty)
+    0.05,  # c_battery_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.05 (~75 s later). Hand-tuned 2026-11-24
+    0.25,  # charge_margin, between MIN_CHARGE_MARGIN (0.15) and 0.5. Same as egocentric and the centralized reserve; naive returns at 0.30 (2026-11-24). 0.10 above MIN, the room a and c have to delay the return
 ]
 
 ##### How often the drone state is sampled.
@@ -121,12 +121,14 @@ def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
                 event = "decision"
             elif current == DroneStatus.DEAD:
                 event = "death"
-            elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.CHARGING:
+            elif previous == DroneStatus.GOING_TO_BASE and current in (DroneStatus.CHARGING, DroneStatus.WAITING):
+                ##### Landed on the base, on a free pad or in the waiting room #####
                 event = "arrival"
             elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.MAPPING:
                 event = "abort"
             else:
-                ##### CHARGING -> MAPPING, the end of the recharge, is not part of a trip #####
+                ##### WAITING -> CHARGING (a pad freed) and CHARGING -> MAPPING (the end #####
+                ##### of the recharge) are not part of a trip                            #####
                 return
 
             recorder = recorder_holder.get("recorder")
@@ -371,10 +373,23 @@ def report(results: dict, recorder: SimulationRecorder,
     print(format_summary(summarize(recorder.drone_arrays(), recorder.returns, status_values)))
     print()
 
+    ##### The base: its pads and its waiting room, see charging_station.py #####
+    station = global_map.charging_station
+    print("=== Base (pads and waiting room) ===")
+    print(station.report(global_map.times[-1] if global_map.times else duration, global_map.charging_drones))
+    print()
+
     ##### Checks. Each one is a claim that has to hold for the run to be #####
     ##### considered healthy, printed so a failure is obvious.           #####
     print("=== Checks ===")
     checks = []
+
+    ##### The pads are a hard limit: a drone that finds them taken waits landed #####
+    most_charging = int(max(global_map.charging_drones, default=0))
+    checks.append((
+        most_charging <= station.pads,
+        f"never more than {station.pads} drone(s) charging at once, the pads of the base "
+        f"(at most {most_charging} were)"))
 
     mapping_drones = [drone_id for drone_id, drone_results in results.items()
                       if drone_results["unvisited_cells"] < total_cells]

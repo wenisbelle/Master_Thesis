@@ -95,7 +95,10 @@ CONFIG_FILE = "config.json"
 SUMMARY_FILE = "summary.txt"
 RUN_PATTERN = re.compile(r"run_(\d+)\.pkl$")
 ##### Series of GlobalMapMonitor kept on every sample, under the names the runs store them #####
-SERIES = {"global_uncertainty": "uncertainty", "charging": "charging_drones", "dead": "dead_drones"}
+SERIES = {"global_uncertainty": "uncertainty", "charging": "charging_drones", "dead": "dead_drones",
+          ##### Drones in the waiting room of the base (since 2026-11-24, see charging_station.py). #####
+          ##### Older runs and the MARL ones do not have it.                                       #####
+          "waiting": "waiting_drones"}
 
 ##### Period of the camera timer of every protocol, in s: a drone passing over a cell sees it once #####
 ##### per period, so observations this close belong to the same visit.                            #####
@@ -289,7 +292,8 @@ def run_simulation(job: dict) -> dict:
             "base_positions": job["base_positions"],
             "nc_charging_base": global_map.nc_charging_base,
             "times": np.array(global_map.times),
-            **{name: np.array(getattr(global_map, attribute)) for name, attribute in SERIES.items()},
+            **{name: np.array(getattr(global_map, attribute)) for name, attribute in SERIES.items()
+               if hasattr(global_map, attribute)},
             "drones": results,
             "revisit": monitors[0].result(),
             "elapsed": time.time() - start,
@@ -317,7 +321,7 @@ def time_grid(config: dict) -> np.ndarray:
 def aligned(record: dict, grid: np.ndarray) -> dict:
     """The series of the run on grid: the value at t is the last one sampled at or before t."""
     index = np.clip(np.searchsorted(record["times"], grid, side="right") - 1, 0, None)
-    return {name: np.asarray(record[name])[index] for name in SERIES}
+    return {name: np.asarray(record[name])[index] for name in SERIES if name in record}
 
 
 def run_statistics(record: dict, grid: np.ndarray) -> dict:
@@ -329,6 +333,10 @@ def run_statistics(record: dict, grid: np.ndarray) -> dict:
         "max_charging": int(series["charging"].max()),
         "dead": int(series["dead"][-1]),
     }
+    ##### Time spent in the waiting room of the base, in drone*s #####
+    if "waiting" in series:
+        step = float(grid[1] - grid[0]) if len(grid) > 1 else 1.0
+        statistics["waiting"] = float(series["waiting"].sum() * step)
     ##### The runs of expanding_testing have no cost, see has_cost #####
     if "cost" in record:
         statistics["cost"] = record["cost"]
@@ -358,6 +366,8 @@ def summary(config: dict, runs: list) -> str:
     grid = time_grid(config)
     statistics = [run_statistics(record, grid) for record in runs]
     with_cost = has_cost(config["system"])
+    ##### Runs written before the waiting room have no waiting series #####
+    with_waiting = bool(statistics) and all("waiting" in stats for stats in statistics)
     nc = sorted({record["nc_charging_base"] for record in runs})
     lines = [
         f"{config['system']}: {len(runs)} runs, {config['drones']} drones, {config['transmission_range']:g} m, "
@@ -366,11 +376,13 @@ def summary(config: dict, runs: list) -> str:
         f"Individual: {config['individual']}",
         "",
         f"{'run':>4} {'seed':>6} {'mean unc':>10} {'above Nc':>9} {'max charging':>13} {'dead':>5} "
+        + (f"{'waiting s':>10} " if with_waiting else "")
         + (f"{'cost':>10}  " if with_cost else " ") + "base(s)",
     ]
     for record, stats in zip(runs, statistics):
         lines.append(f"{record['run']:>4} {record['seed']:>6} {stats['mean_uncertainty']:>10.1f} "
                      f"{stats['above_nc']:>8.1f}% {stats['max_charging']:>13} {stats['dead']:>5} "
+                     + (f"{stats['waiting']:>10.0f} " if with_waiting else "")
                      + (f"{stats['cost']:>10.1f}  " if with_cost else " ")
                      + " ".join(format_position(position) for position in record["base_positions"]))
 
@@ -385,6 +397,8 @@ def summary(config: dict, runs: list) -> str:
     lines.append("  time with more than Nc drones charging: {:.1f} +- {:.1f} %".format(*spread("above_nc")))
     lines.append("  most drones charging at once: {:.2f} +- {:.2f}".format(*spread("max_charging")))
     lines.append("  dead drones at the end: {:.2f} +- {:.2f}".format(*spread("dead")))
+    if with_waiting:
+        lines.append("  time in the waiting room of the base: {:.0f} +- {:.0f} drone*s".format(*spread("waiting")))
     if all("mean_revisit" in stats for stats in statistics):
         lines.append("  time between two visits of a cell: {:.1f} +- {:.1f} s".format(*spread("mean_revisit")))
     if with_cost:

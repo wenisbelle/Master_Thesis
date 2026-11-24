@@ -214,10 +214,17 @@ def GotoCoordsMobilityCommand(current_position: np.ndarray,
 
 
 
+##### Wind (since 2026-11-24): the old random air speed N(0, 4) m/s along the heading, but each    #####
+##### drone keeps a value for 60 s before drawing the next one (piecewise constant). Drawn every     #####
+##### second it averaged out over a flight (100 s of cruise: 0.94-1.08x the mean drain), held for 60 s #####
+##### it does not (0.77-1.70x over 100 s, 0.86-1.25x over 1000 s), so the drain estimate is not exact. #####
+##### Same distribution as before, so the mean drain and DISCHARGE_RATE are unchanged. Same config as  #####
+##### Analytical/*/protocol.py, so with the same seed both see the same wind.                        #####
 SHARED_BATTERY_CONFIG = BatteryPowerConfiguration(
     random_air_speed=True,
-    random_air_speed_u=0.0,      # mean air speed, m/s
-    random_air_speed_sigma=4.0,  # std deviation, m/s
+    random_air_speed_u=0.0,       # mean air speed, m/s
+    random_air_speed_sigma=4.0,   # std deviation, m/s
+    random_air_speed_hold=60.0,   # each drawn value is kept for this many seconds
 )
 
 class Drone(IProtocol):

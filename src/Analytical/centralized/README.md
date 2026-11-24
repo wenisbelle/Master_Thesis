@@ -41,8 +41,8 @@ the code is right.
 | Encounter (pair decision) | heard heartbeat within the radio range, higher id decides both | two MAPPING drones closer than `ENCOUNTER_RADIUS` (100 m, fixed), higher id decides both, at most once per pair every 10 s. The same `choose_two_cells` with the separation term |
 | Who takes part in a pair decision | MAPPING or GOING_TO_BASE | MAPPING only: a drone sent to the base keeps going |
 | Going to the base | the drone compares the base attraction `κ·exp(−γ·R_safe)` with its best cell | **the scheduler** sends it, checked on every 1 s mobility tick |
-| Reserve kept for the trip home | `charge_margin` + swarm and congestion terms, at least 0.20 | fixed `MIN_CHARGE_MARGIN` = 0.20 |
-| Energy factor of the cells (Eq. 14) | uses the tuned `charge_margin` | uses 0.20, the same reserve as the scheduler |
+| Reserve kept for the trip home | `charge_margin` + swarm and congestion terms, at least `MIN_CHARGE_MARGIN` = 0.15 | fixed `MIN_CHARGE_MARGIN` = 0.25 (0.20 before 2026-11-24) |
+| Energy factor of the cells (Eq. 14) | uses the tuned `charge_margin` | uses 0.25, the same reserve as the scheduler |
 | Genes | 9 | **4**: `base_variance`, `alpha_variance_modifier`, `energy_gamma`, `distance_between_drone_norm` |
 
 Everything else is swarm's code, copied with its comments: the camera, the mobility and
@@ -75,10 +75,14 @@ because they all take off full at t = 0.
 The scheduler is computed again from the true state every time a MAPPING drone asks, once
 per mobility tick (1 s):
 
-1. **Booked charges.** These are the drones CHARGING, from their arrival, and the drones
-   GOING_TO_BASE, at the slot they left for.
+1. **Booked charges.** These are the drones CHARGING, from the start of their charge, the
+   drones GOING_TO_BASE, at the slot they left for, and (since 2026-11-24) the drones in
+   the waiting room of the base, at the moment a pad frees for them
+   (`waiting_room_starts`: in the order they landed, each at the end of the earliest
+   charge still on a pad).
 2. **Deadlines.** Each MAPPING drone gets its latest safe arrival,
-   `now + (battery − 0.20) / (1.15 · DISCHARGE_RATE)`. Arriving then still leaves 0.20.
+   `now + (battery − reserve) / (1.15 · DISCHARGE_RATE)`. Arriving then still leaves the
+   reserve, `MIN_CHARGE_MARGIN` = 0.25 (0.20 before 2026-11-24).
    The flight time to the base cancels out of this formula.
 3. **Slots.** The drones are taken from the latest deadline to the earliest. Each gets
    the latest charging slot that starts no later than its deadline, during which fewer
@@ -95,8 +99,14 @@ per mobility tick (1 s):
    checks once per tick, it is always a little late for its slot. A free slot missed by at
    most `SLOT_GUARD` means "leave now".
 
-The flight time is `distance / 15 + 15 / (2 · 1.2) + 7 s`. The first two terms are swarm's
+The flight time is `distance / 15 + 15 / (2 · 0.4a) + APPROACH_EXTRA_TIME` (0 since 2026-11-24, 7 s before). The first two terms are swarm's
 `EXPECTED_TIME_TO_BASE` formula (cruise plus braking).
+
+**The pads are hard (since 2026-11-24).** As in every system, the base has `max(1, Nc)`
+pads (`charging_station.py`). A drone that lands with every pad taken waits on the
+ground, with its battery frozen, until one frees. So what used to be an overrun of the
+capacity (step 5, or a drain above the planning factor) is now a short wait, and it can
+no longer exceed the capacity or kill a drone on the base.
 
 ### Where the constants come from
 
@@ -104,7 +114,7 @@ Each one fixes a failure the sweep found (2026-11-15):
 
 | Constant | Value | Measured | What went wrong without it |
 |---|---|---|---|
-| `APPROACH_EXTRA_TIME` | 7 s | Over 270 trips, the real flight to the base took 7.3 ± 2.9 s longer than `d/v + v/2a`. The extra time is the turn towards the base and the last centimetres of the approach | Charges planned back to back overlapped by a few seconds |
+| `APPROACH_EXTRA_TIME` | 0 s (7 s until 2026-11-24, measured at 3 m/s²; not re-measured at 10 m/s²) | Over 270 trips at 3 m/s², the real flight to the base took 7.3 ± 2.9 s longer than `d/v + v/2a`. The extra time is the turn towards the base and the last centimetres of the approach | Charges planned back to back overlapped by a few seconds |
 | `PLANNING_DRAIN_FACTOR` | 1.15 | Over 100 s of MAPPING, the real drain is 0.999 of `DISCHARGE_RATE` on average, 1.08 at the 95th percentile, 1.12 at the 99th and 1.22 at most | With the nominal rate, a drone that drained faster saw its deadline move earlier, after the drones planned around it had left. Up to 5 drones charged at once with `Nc = 3`. With 1.15 a deadline only moves later. The cost is about 0.01 of battery at arrival |
 | Booking of a drone GOING_TO_BASE | its slot | While a drone turns towards the base its distance barely drops, so `now + flight time` slid later by up to 1 s per second | On a base full to capacity, a 2 s slide pushed another drone 105 s earlier, and a third was left with no slot |
 | `SLOT_GUARD` | 15 s | Absorbs the remaining error in the arrival time (±3 s) and one tick of delay | |
@@ -121,7 +131,8 @@ plan is needed on every tick of every drone. `check_centralized.py` compares the
 with that MILP instead (see [Checks](#checks)). Planning routes and charges together
 (Kim, Song & Morrison 2013; Mitchell et al. 2015) does not scale to 10,000 cells and
 10 drones. It would also replace the coverage planner, so the gap to swarm would no
-longer measure only the energy coordination.
+longer measure only the energy coordination. See [Related work](#related-work) for how
+each paper relates to this scheduler.
 
 ## The individual
 
@@ -177,7 +188,10 @@ The report of `main_test.py` adds two things:
 - A **Charging (the scheduler)** section: departures, the battery at departure and at
   arrival, how far each slot was moved earlier for the capacity, and the most drones
   charging at once.
-- A check that no more than `max(1, Nc)` drones were ever charging at once.
+- A **Base (pads and waiting room)** section, as in every system: landings, how many
+  found every pad taken, and how long they waited.
+- A check that no more than `max(1, Nc)` drones were ever charging at once, the pads of
+  the base. Since the pads it holds by construction.
 
 ## Checks
 
@@ -259,8 +273,9 @@ them.
 
 - **Not a proven bound.** The coverage is still swarm's greedy fitness, and the scheduler
   is a heuristic tested against an exact solver on small cases, not proven optimal.
-- **Rare overruns of the capacity.** In 4 of the 80 full runs, one drone more than
-  `max(1, Nc)` charged for 1–67 s.
+- **Rare overruns of the capacity (before 2026-11-24).** In 4 of the 80 full runs, one
+  drone more than `max(1, Nc)` charged for 1–67 s. Since the pads, such a drone waits
+  landed instead (see the scheduler).
   - **The 67 s case** (10 drones, seed 12, t ≈ 2,018 s): two drones left on the same tick
     and a third half a second later. Four arrivals were then bunched in a window with room
     for three. In that second cycle, the slots were packed against the capacity, and the
@@ -274,11 +289,127 @@ them.
   and does not follow `--range`. This keeps centralized the same at every range, so it is
   a flat reference line. At 2,000 m swarm makes many more pair decisions than centralized.
 - **Not tuned yet.** The coverage genes come from swarm, see [The individual](#the-individual).
-- **Inherited artefacts.** The battery still drains at hover while CHARGING, as in swarm
-  (`estimation_decision.md`). It only matters if a drone could die on the base, and none
-  came close (arrivals ≥ 0.19).
+- **Inherited artefacts (fixed 2026-11-24).** Until then the battery drained at hover while
+  CHARGING, as in swarm (`estimation_decision.md`). Since the pads, the battery plugin is
+  stopped from landing to take-off, in every system.
 - **A wave of early first returns.** At t = 0 every drone is full, so the first cycle has
   to be staggered: some drones return 200–450 s early once. Later cycles stay staggered.
+
+## Related work
+
+The scheduler is not an implementation of any one paper. It is a greedy written for this
+problem: backward earliest-deadline-first with a repair (see
+[The charging scheduler](#the-charging-scheduler-worldpy)). Each paper below gives it one
+piece:
+- Simons (1983) defines the problem it solves.
+- Mitchell et al. (2015) and Kim, Song & Morrison (2013) are the full centralized methods
+  it simplifies.
+- Bethke, How & Vian (2008) motivates one design choice.
+- Hartuv et al. (2018) and Derenick et al. (2011) are related work only.
+
+What is said here about each paper comes from its abstract (see [References](#references)).
+
+| Paper | What this method takes from it | What it leaves out |
+|---|---|---|
+| Simons (1983) | The formal problem that placing the slots solves | Simons' algorithm. A greedy, checked against an exact MILP, is used instead |
+| Mitchell et al. (2015) | The setting: one central planner decides when fuel-limited robots refuel during persistent coverage | Planning the visits. The drones still choose where to map |
+| Kim, Song & Morrison (2013) | The exact joint formulation (a MILP) that this method approximates | The MILP. It is far too large to solve on every tick |
+| Bethke, How & Vian (2008) | Fuel use is uncertain, so plan conservatively and plan again often | Their planning method |
+| Hartuv, Agmon & Kraus (2018) | The same goal: keep a persistent task going under battery limits | Spare drones. There are none here |
+| Derenick, Michael & Kumar (2011) | Nothing in this system. It is the decentralized counterpart, closer to swarm | Everything |
+
+### Simons (1983): the problem the slots solve
+
+Simons schedules jobs of equal length on identical parallel machines. Each job has a release
+time, before which it cannot start, and a deadline. The paper gives a polynomial-time
+algorithm for this problem. Placing the charging slots ([`place_slots`](world.py)) is an
+instance of it:
+
+| Simons | This scheduler |
+|---|---|
+| A job, all of equal length | One charge: `TIME_TO_RECHARGE` + `SLOT_GUARD` = 115 s |
+| The identical machines | The `max(1, Nc)` places on the base |
+| Release time | The earliest arrival: `now` + the flight time to the base |
+| Deadline | The latest safe arrival, `now + (battery − 0.20) / (1.15 · DISCHARGE_RATE)`. This bounds the start of the charge, so Simons' deadline (on the end of the job) is this plus 115 s |
+| (no equivalent) | Booked charges: the drones CHARGING or GOING_TO_BASE. They are fixed, and act as machines that are busy for a while |
+
+How it is used:
+- **To name the problem.** In the thesis the scheduler can be described as a greedy
+  heuristic for Simons' problem, solved again on every tick (a rolling horizon).
+- **The objective differs.** Simons asks for a schedule that meets every deadline. This
+  scheduler also wants every charge as late as possible, because a charge that starts early
+  only wastes battery. So it does not run Simons' algorithm. It runs the backward greedy,
+  which places each charge as late as its deadline and the capacity allow.
+- **The exact check.** The time-indexed MILP in `check_centralized.py` solves this same
+  problem with integer times. The greedy with its repair matched the optimum in 389 of
+  390 feasible cases (see [Checks](#checks)).
+
+### Mitchell et al. (2015): the setting
+
+Mitchell et al. study fuel-limited robots that cover an area persistently. One central
+planner decides both the visits and the refuelling. It is the closest published
+counterpart of this system: persistent coverage, limited batteries, refuelling at a base,
+and all the information in one place.
+
+- **Taken.** The refuelling is decided centrally from the state of the whole team.
+- **Left out.** Planning the visits. Here the drones still choose where to map with swarm's
+  greedy fitness and the same coverage genes. If centralized also planned the routes, the
+  gap to swarm would mix a better coverage planner with better energy coordination. The A1
+  claim is only about the second.
+- **The cost.** Centralized is not an upper bound (see [Limitations](#limitations)).
+- **In the thesis.** Cite it as the full centralized approach. This reference is
+  deliberately only its refuelling half.
+
+### Kim, Song & Morrison (2013): the exact version
+
+Kim, Song & Morrison schedule UAVs and the fuel service stations they share, for long
+missions, with a mixed-integer linear program (MILP). It is the exact joint problem:
+which UAV does which task, and when and where each one refuels. As here, the stations
+are shared, so one UAV's refuelling constrains the others.
+
+- **Taken.** The base is a shared resource that the charges have to be scheduled on.
+- **Left out.** The MILP. A joint MILP over 10,000 cells and 10 drones, solved again every
+  second, is far too large. Even the MILP over the slots alone takes about a second per
+  instance, which is why it is only used as a check. See
+  [Why not an exact optimizer](#why-not-an-exact-optimizer).
+- **In the thesis.** Cite it, with Mitchell et al., as the exact methods this scheduler
+  approximates.
+
+### Bethke, How & Vian (2008): fuel use is uncertain
+
+Bethke, How & Vian plan persistent surveillance with UAV teams whose fuel use is uncertain,
+so the plan has to allow for a UAV burning more fuel than expected. Their method is not
+used here, but two choices follow the same idea:
+
+- **A rolling horizon.** The plan is computed again from the true batteries on every 1 s
+  tick. A drone that drains faster gets an earlier deadline at once.
+- **A conservative drain.** Deadlines are computed with `PLANNING_DRAIN_FACTOR` = 1.15
+  times `DISCHARGE_RATE`. This way a deadline only moves later. It never moves earlier
+  after the other drones have been planned around it. The value 1.15 was measured in this
+  simulator (99th percentile 1.12, see
+  [Where the constants come from](#where-the-constants-come-from)). It is not from the
+  paper.
+
+### Hartuv, Agmon & Kraus (2018): same goal, other means
+
+Hartuv, Agmon & Kraus schedule spare drones that take over from drones whose battery runs
+low, so that a persistent task never stops. Their goal is the same as this scheduler's:
+keep the task going while drones leave to recharge.
+
+- **The difference.** This system has no spares. A drone that charges leaves the map for
+  100 s and the others keep mapping. The scheduler only staggers the charges so the base
+  is never over capacity, and keeps each drone in the air as long as is safe.
+- **Not used in the code.** It is related work only.
+
+### Derenick, Michael & Kumar (2011): the decentralized counterpart
+
+Derenick, Michael & Kumar study coverage control in which each robot, with no central
+planner, balances covering its area against going to dock and recharge.
+
+- **Closer to swarm.** Its drone also weighs the pull of the base against its best cell.
+  Nothing in centralized comes from this paper.
+- **In the thesis.** Cite it in the related work on decentralized energy-aware coverage,
+  as the contrast to the central scheduler here.
 
 ## References
 

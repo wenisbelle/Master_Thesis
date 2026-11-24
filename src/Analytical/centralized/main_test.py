@@ -36,18 +36,18 @@ from .protocol import DroneStatus, Drone, drone_protocol_factory
 from .estimation_metrics import summarize, format_summary
 
 
-SIMULATION_DURATION = 10000
-NUMBER_OF_DRONES = 10
+SIMULATION_DURATION = 30000
+NUMBER_OF_DRONES = 9
 
 ##### The individual filled in by hand, one gene per line in the GENE_BOUNDS order of main.py.  #####
 ##### --hand-tuned runs it instead of the GA logbooks, here and in all_tests_distance.py,        #####
 ##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
 ##### runs back with --hand-tuned too). It starts as BEST_INDIVIDUAL of main.py.                 #####
 HAND_TUNED_INDIVIDUAL = [
-    94.1556,  # base_variance, between 0.25 and 100
-    93.6658,  # alpha_variance_modifier, between 0 and 100
-    30.9578,  # energy_gamma, between 0.1 and 100
-    292.091,  # distance_between_drone_norm, between 10 and 1000
+    1.0,    # base_variance, between 0.25 and 100. Same kernel in every system so they compare fairly (2026-11-24)
+    1.0,    # alpha_variance_modifier, between 0 and 100. Same kernel in every system so they compare fairly (2026-11-24)
+    100.0,  # energy_gamma, between 0.1 and 100
+    200.0,  # distance_between_drone_norm, between 10 and 1000
 ]
 
 ##### How often the drone state is sampled.
@@ -109,12 +109,14 @@ def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
                 event = "decision"
             elif current == DroneStatus.DEAD:
                 event = "death"
-            elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.CHARGING:
+            elif previous == DroneStatus.GOING_TO_BASE and current in (DroneStatus.CHARGING, DroneStatus.WAITING):
+                ##### Landed on the base, on a free pad or in the waiting room #####
                 event = "arrival"
             elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.MAPPING:
                 event = "abort"
             else:
-                ##### CHARGING -> MAPPING, the end of the recharge, is not part of a trip #####
+                ##### WAITING -> CHARGING (a pad freed) and CHARGING -> MAPPING (the end #####
+                ##### of the recharge) are not part of a trip                            #####
                 return
 
             recorder = recorder_holder.get("recorder")
@@ -384,10 +386,23 @@ def report(results: dict, recorder: SimulationRecorder,
     print(format_summary(summarize(recorder.drone_arrays(), recorder.returns, status_values)))
     print()
 
+    ##### The base: its pads and its waiting room, see charging_station.py #####
+    station = global_map.charging_station
+    print("=== Base (pads and waiting room) ===")
+    print(station.report(global_map.times[-1] if global_map.times else duration, global_map.charging_drones))
+    print()
+
     ##### Checks. Each one is a claim that has to hold for the run to be #####
     ##### considered healthy, printed so a failure is obvious.           #####
     print("=== Checks ===")
     checks = []
+
+    ##### The pads are a hard limit: a drone that finds them taken waits landed #####
+    most_charging = int(max(global_map.charging_drones, default=0))
+    checks.append((
+        most_charging <= station.pads,
+        f"never more than {station.pads} drone(s) charging at once, the pads of the base "
+        f"(at most {most_charging} were)"))
 
     mapping_drones = [drone_id for drone_id, drone_results in results.items()
                       if drone_results["own_cells_seen"] > 0]
@@ -430,13 +445,9 @@ def report(results: dict, recorder: SimulationRecorder,
         f"every drone stayed within {tolerance:.0f} m of the map centre"
         f"{'' if not far_drones else f' (outside: {far_drones})'}"))
 
-    ##### The scheduler never plans more than max(1, Nc) charges at once. It can only #####
-    ##### happen when the deadlines leave no free slot, which it reports as congestion. #####
-    capacity = max(1, nc)
-    most_charging = int(charging.max()) if charging.size else 0
-    checks.append((
-        most_charging <= capacity,
-        f"never more than {capacity} drone(s) charging at once (at most {most_charging} were)"))
+    ##### The old check "never more than max(1, Nc) drones charging at once" is the pad #####
+    ##### check at the top since 2026-11-24: a drone the scheduler sends to a full base  #####
+    ##### (no free slot left before its deadline) now waits landed, see charging_station.py #####
 
     for passed, description in checks:
         print(f"[{'ok  ' if passed else 'FAIL'}] {description}")

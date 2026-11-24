@@ -47,7 +47,7 @@ HAND_TUNED_INDIVIDUAL = [
     100.0,   # energy_gamma, between 0.1 and 100. Paper: 0.5 per distance unit x C_max 200 units = 100 per battery fraction
     1.0,     # charging_base_multiplier, between 0 and 100
     200.0,   # distance_between_drone_norm, between 10 and 1000
-    0.30,    # charge_margin, between 0.2 and 0.5
+    0.25,    # charge_margin, between 0.2 and 0.5. Same as swarm and the centralized reserve; naive returns at 0.30 (2026-11-24)
 ]
 
 ##### How often the drone state is sampled.
@@ -118,12 +118,14 @@ def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
                 event = "decision"
             elif current == DroneStatus.DEAD:
                 event = "death"
-            elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.CHARGING:
+            elif previous == DroneStatus.GOING_TO_BASE and current in (DroneStatus.CHARGING, DroneStatus.WAITING):
+                ##### Landed on the base, on a free pad or in the waiting room #####
                 event = "arrival"
             elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.MAPPING:
                 event = "abort"
             else:
-                ##### CHARGING -> MAPPING, the end of the recharge, is not part of a trip #####
+                ##### WAITING -> CHARGING (a pad freed) and CHARGING -> MAPPING (the end #####
+                ##### of the recharge) are not part of a trip                            #####
                 return
 
             recorder = recorder_holder.get("recorder")
@@ -368,10 +370,23 @@ def report(results: dict, recorder: SimulationRecorder,
     print(format_summary(summarize(recorder.drone_arrays(), recorder.returns, status_values)))
     print()
 
+    ##### The base: its pads and its waiting room, see charging_station.py #####
+    station = global_map.charging_station
+    print("=== Base (pads and waiting room) ===")
+    print(station.report(global_map.times[-1] if global_map.times else duration, global_map.charging_drones))
+    print()
+
     ##### Checks. Each one is a claim that has to hold for the run to be #####
     ##### considered healthy, printed so a failure is obvious.           #####
     print("=== Checks ===")
     checks = []
+
+    ##### The pads are a hard limit: a drone that finds them taken waits landed #####
+    most_charging = int(max(global_map.charging_drones, default=0))
+    checks.append((
+        most_charging <= station.pads,
+        f"never more than {station.pads} drone(s) charging at once, the pads of the base "
+        f"(at most {most_charging} were)"))
 
     mapping_drones = [drone_id for drone_id, drone_results in results.items()
                       if drone_results["unvisited_cells"] < total_cells]

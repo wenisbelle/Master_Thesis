@@ -27,7 +27,7 @@ BATTERY_COLOR = "0.6"
 BAND_ALPHA = 0.15
 ##### States drawn as background bands. The margin is not used in any of them: #####
 ##### decisions are only taken while MAPPING.                                  #####
-BAND_STATUSES = ("GOING_TO_BASE", "CHARGING", "DEAD")
+BAND_STATUSES = ("GOING_TO_BASE", "WAITING", "CHARGING", "DEAD")
 
 
 def finite_parameter(parameters, name):

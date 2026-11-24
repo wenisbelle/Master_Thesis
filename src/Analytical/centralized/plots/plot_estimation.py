@@ -252,7 +252,7 @@ def plot_drone_beliefs(data, observer):
         ##### True state of the target as background bands #####
         for value, start, end in status_runs(t, S[j]["status"]):
             name = status_names.get(value)
-            if name in ("GOING_TO_BASE", "CHARGING", "DEAD"):
+            if name in ("GOING_TO_BASE", "WAITING", "CHARGING", "DEAD"):
                 ax.axvspan(start, end, color=STATUS_COLORS[name], alpha=BAND_ALPHA, lw=0)
                 seen.add(name)
         ##### Where the observer believes the target charges: a hatched strip at the bottom #####
@@ -279,7 +279,7 @@ def plot_drone_beliefs(data, observer):
                       label=f"what drone {observer} believes")]
     handles += [Patch(facecolor=STATUS_COLORS[name], alpha=BAND_ALPHA,
                       label=f"really {name.lower().replace('_', ' ')}")
-                for name in ("GOING_TO_BASE", "CHARGING", "DEAD") if name in seen]
+                for name in ("GOING_TO_BASE", "WAITING", "CHARGING", "DEAD") if name in seen]
     if "believed" in seen:
         handles.append(Patch(facecolor="none", edgecolor=STATUS_COLORS["CHARGING"], hatch="////",
                              label=f"drone {observer} believes it charges"))

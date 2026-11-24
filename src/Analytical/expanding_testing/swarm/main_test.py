@@ -337,6 +337,14 @@ def report(results: dict, recorder: SimulationRecorder,
           f"Nc was respected {100.0 * (1.0 - above / max(duration, 1e-9)):.1f}% of the time")
     print()
 
+    ##### The pads of every base and its waiting room, see Analytical/charging_station.py #####
+    registry = global_map.charging_registry
+    end_time = global_map.times[-1] if global_map.times else duration
+    print("=== Pads and waiting rooms of the bases ===")
+    for base, station in enumerate(registry.stations):
+        print(f"base {base}: " + station.report(end_time, charging_per_base[:, base]).replace("\n", "\n        "))
+    print()
+
     ##### The global map is the element-wise minimum of the maps of every drone: #####
     ##### what the system knows as a whole.                                       #####
     print("=== Swarm (global map) ===")
@@ -356,6 +364,15 @@ def report(results: dict, recorder: SimulationRecorder,
     ##### considered healthy, printed so a failure is obvious.           #####
     print("=== Checks ===")
     checks = []
+
+    ##### The pads are a hard limit on every base: a drone that finds them taken waits landed #####
+    most_per_base = [int(charging_per_base[:, base].max()) if len(charging_per_base) else 0
+                     for base in range(number_of_bases)]
+    over_pads = {base: most for base, most in enumerate(most_per_base) if most > registry.stations[base].pads}
+    checks.append((
+        not over_pads,
+        f"never more drones charging on a base than its {registry.stations[0].pads} pad(s) "
+        f"(at most {max(most_per_base, default=0)} were)"))
 
     mapping_drones = [drone_id for drone_id, drone_results in results.items()
                       if drone_results["unvisited_cells"] < total_cells]

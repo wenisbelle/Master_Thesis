@@ -6,7 +6,7 @@ Beware that this plugin needs to receive the Dynamic Velocity Mobility Telemetry
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
@@ -42,7 +42,12 @@ class BatteryPowerPlugin:
         many draws this or any other node made before, so two runs seeded alike keep the
         same wind even after their nodes take different decisions. When None the air
         speed is drawn from the global np.random at every step, as before.
+
+        Each air speed drawn from rng is kept for configuration.random_air_speed_hold
+        seconds, so the wind is piecewise constant (1 s, the default, is a new one per step).
         """
+        if configuration.random_air_speed and configuration.random_air_speed_hold > 1.0 and rng is None:
+            raise BatteryPowerPluginException("random_air_speed_hold > 1 s needs rng")
 
         self._dispatcher = create_dispatcher(protocol)
         self._protocol = protocol
@@ -73,8 +78,13 @@ class BatteryPowerPlugin:
         )
         self._wind_rng = rng if configuration.random_air_speed else None
         self._wind = np.empty(0)
+        ##### Battery ticks each air speed is kept for #####
+        self._wind_hold_ticks = max(1, int(round(configuration.random_air_speed_hold
+                                                 / self._battery_model.TIME_STEP)))
         self.velocity = [0.0, 0.0]  # Initialize velocity to zero
         self._active = True
+        ##### Whether a control timer is scheduled and has not fired yet, see resume #####
+        self._tick_pending = False
         self._initialize_telemetry_handling()
         self._initialize_battery_loop()
 
@@ -87,7 +97,13 @@ class BatteryPowerPlugin:
                     "mobility handler."
                 )
         
-            self.velocity = [telemetry.current_velocity[0], telemetry.current_velocity[2]]
+            # The power model works in the body frame: (forward speed, vertical speed). The
+            # handler reports the velocity in the world frame (vx, vy, vz), and a multirotor
+            # flies with its body x axis along its horizontal velocity, so the forward speed
+            # is the norm of (vx, vy). Taking vx alone made a drone flying along y pay hover
+            # power, about 34% more than the same flight along x.
+            vx, vy, vz = telemetry.current_velocity
+            self.velocity = [float(np.hypot(vx, vy)), vz]
             return DispatchReturn.CONTINUE
         
         self._dispatcher.register_handle_telemetry(telemetry_handler)
@@ -98,6 +114,7 @@ class BatteryPowerPlugin:
             def timer_handler(_instance: IProtocol, timer: str) -> DispatchReturn:
                 if timer != CONTROL_TIMER_TAG:
                     return DispatchReturn.CONTINUE
+                self._tick_pending = False
 
                 # Stopped by shutdown(): consume nothing and let the loop die by
                 # not rescheduling. resume() starts it again.
@@ -113,6 +130,7 @@ class BatteryPowerPlugin:
             self._schedule_next_tick()
 
     def _schedule_next_tick(self) -> None:
+        self._tick_pending = True
         self._protocol.provider.schedule_timer(
             CONTROL_TIMER_TAG,
             self._protocol.provider.current_time() + self._battery_model.TIME_STEP,
@@ -120,12 +138,14 @@ class BatteryPowerPlugin:
 
     def _air_speed_at_current_tick(self) -> float:
         tick = int(round(self._protocol.provider.current_time() / self._battery_model.TIME_STEP))
-        if tick >= len(self._wind):
-            # Extended in blocks, so the value of a tick never depends on when it was asked
-            block = max(1024, tick + 1 - len(self._wind))
+        ##### One value per hold period: ticks [k*hold, (k+1)*hold) share the k-th draw #####
+        period = tick // self._wind_hold_ticks
+        if period >= len(self._wind):
+            # Extended in blocks, so the value of a period never depends on when it was asked
+            block = max(1024, period + 1 - len(self._wind))
             self._wind = np.concatenate((self._wind, self._wind_rng.normal(
                 self._config.random_air_speed_u, self._config.random_air_speed_sigma, size=block)))
-        return float(self._wind[tick])
+        return float(self._wind[period])
 
     def battery_step(self):
         """Perform a single step of the battery management model."""
@@ -167,10 +187,16 @@ class BatteryPowerPlugin:
         self._active = False
 
     def resume(self) -> None:
-        """Restart the battery loop after a `shutdown`."""
+        """Restart the battery loop after a `shutdown`.
+
+        When the shutdown was less than a TIME_STEP ago, the tick scheduled before it has
+        not fired yet: that tick carries the loop on. Scheduling another one would start a
+        second loop and bill every step twice.
+        """
         if not self._active:
             self._active = True
-            self._schedule_next_tick()
+            if not self._tick_pending:
+                self._schedule_next_tick()
 
     
 

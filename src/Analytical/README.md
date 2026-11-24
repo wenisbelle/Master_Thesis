@@ -30,6 +30,7 @@ the two disagree, the code is right and this file is out of date.
 |---|---|
 | `swarm/`, `egocentric/` | One system each. `main.py` holds the scenario and the GA (`--mode train`). `main_test.py` runs one recorded simulation with a report. Also `protocol.py`, `fitness.py` (the decisions), `recorder.py`, `estimation_metrics.py` and `plots/` (plots of one recorded run) |
 | `centralized/` | The same files for the centralized reference, plus `world.py` (global map, true state, charging scheduler) and `check_centralized.py`. See [Centralized](#centralized) |
+| `charging_station.py` | The pads and the waiting room of a recharge base, used by every system (since 2026-11-24). See [Battery, recharge and death](#battery-recharge-and-death) |
 | `naive/` | The same files for the naive baseline (no energy model, back to the base below 30%). See [Naive](#naive) |
 | `<system>/ga_logs/` | GA logbooks, one per communication range. The `Parameters:` line is the tuned individual |
 | `<system>/test_logs/<range>/<drones>/` | Single test runs, written by `all_tests_distance.py` |
@@ -94,16 +95,16 @@ nothing runs untuned. There are two exceptions:
 | Cell `i` | centre at `20 i - 1000` m, on each axis | `protocol.py` |
 | Duration | 10,000 s | `SIMULATION_DURATION` |
 | Drones | 3/5/7/10 in the GA, set per run elsewhere | `TRAINING_DRONE_COUNTS` |
-| Flight | 50 m altitude, 15 m/s cruise, 3 m/s² max acceleration | `DRONE_SPEED`, `DRONE_MAX_ACCELERATION` |
+| Flight | 50 m altitude, 15 m/s cruise, 10 m/s² max acceleration (3 m/s² before 2026-11-24) | `DRONE_SPEED`, `DRONE_MAX_ACCELERATION` |
 | Communication range | 100 m by default, 100–2000 m swept | `TRANSMISSION_RANGE`, `--range` |
 | Base | Gaussian around the map centre, σ = 333 m (3σ reaches the border), snapped to a cell centre, drawn again if off the map | `sample_base_position` |
-| Charging capacity `Nc` | `int(drones / 3)`, soft: it changes decisions, nothing forbids more | |
+| Charging capacity `Nc` | `int(drones / 3)` pads, at least 1. Hard since 2026-11-24: a drone that lands with every pad taken waits on the ground until one frees. Before, it was soft: it changed decisions, nothing forbade more | `charging_station.py`, `main.py` |
 | Uncertainty growth | +0.001 per cell every second | `UNCERTAINTY_RATE`, `VANISHING_UPDATE_TIME` |
 | Initial uncertainty | swarm 1.0, egocentric 0.5 (see [Known issues](#known-issues-2026-11-15)) | `INITIAL_UNCERTAINTY` |
-| Wind | random air speed, mean 0, σ 4 m/s | `SHARED_BATTERY_CONFIG` |
-| Discharge assumed by the decisions | 0.00073 of the battery per second (measured at 15 m/s with the wind) | `DISCHARGE_RATE` |
+| Wind | Random air speed N(0, 4) m/s along the heading, each drone keeps a value for 60 s (piecewise constant). Same mean drain as before, but over 100 s of cruise 0.77–1.70× of it (p1–p99, 0.86–1.25× over 1000 s) instead of 0.94–1.08×. Until 2026-11-24 a new value every second | `SHARED_BATTERY_CONFIG`, gradysim `BatteryPowerConfiguration.random_air_speed_hold` |
+| Discharge assumed by the decisions | 0.00067 of the battery per second (measured cruising at 15 m/s with the wind, after the 2026-11-23 battery plugin fix; 0.00073 before) | `DISCHARGE_RATE` |
 | Dead | battery ≤ 10% | `DEAD_BATTERY_THRESHOLD` |
-| Recharge | 100 s on the base, then full | `TIME_TO_RECHARGE` |
+| Recharge | 100 s on a pad, then full. On the ground, waiting or charging, the battery does not change (the battery plugin is stopped from landing to take-off, since 2026-11-24) | `TIME_TO_RECHARGE` |
 
 The drones take off from the base. The real battery drain comes from gradysim's
 `BatteryPowerPlugin`. `DISCHARGE_RATE` is only what the decisions assume. At
@@ -115,7 +116,7 @@ that rate, going from full battery to dead takes about 1,230 s of flight.
 
 Each drone has its own map, `map[x, y]`, with two values per cell:
 - `[..., 0]`: the uncertainty. It starts at `INITIAL_UNCERTAINTY` and grows by 0.001
-  every second, on every cell, in every status (also CHARGING and DEAD).
+  every second, on every cell, in every status (also CHARGING, WAITING and DEAD).
 - `[..., 1]`: the last time the cell was seen. It is 0 before the cell has ever
   been seen.
 
@@ -127,8 +128,8 @@ A cell seen at time `t₀` therefore has an uncertainty of about `0.001 · (t �
 Every second a MAPPING or GOING_TO_BASE drone looks straight down from 50 m with
 a 30° half angle. It sees a disk of radius `50 · tan 30° = 28.9 m`: every cell
 whose centre is inside it gets uncertainty 0 and time = now. Flying at 15 m/s,
-this paints a strip about 58 m wide, 2–3 cells. A drone that is CHARGING or DEAD
-does not look.
+this paints a strip about 58 m wide, 2–3 cells. A drone that is CHARGING, WAITING
+or DEAD does not look.
 
 Only the camera writes a time into the map. Encounters copy the newer time of
 the other drone, they never create one.
@@ -141,7 +142,12 @@ drone started charging. The candidates are the cells of a 20 x 20 window around
 it (±200 m), except its own cell. For each candidate:
 
 1. **Value of a cell:** `U/τ + 0.001`, where `U` is its uncertainty and `τ` the
-   flight time to it. It is multiplied by the **energy factor** `exp(γ · min(R, 0))`.
+   flight time to it: `τ = d/v + |v·û − v_now| / (2a)`, the distance over the cruise
+   speed plus the time lost turning the current velocity `v_now` towards the cell (`û`
+   the unit vector to it, `a` = `DRONE_MAX_ACCELERATION`). Straight ahead at cruise the
+   second term is 0, a U-turn costs `2v/(2a)`. In a pair decision the other drone's
+   velocity comes in the gossip message (`FitnessEvaluator.turn_time`, since 2026-11-24).
+   It is multiplied by the **energy factor** `exp(γ · min(R, 0))`.
    `R` is the battery left after flying to the cell and from there to the base,
    minus the charge margin. A cell the drone cannot safely fly to and back from
    is damped. This damping hits the far cells first, so **as the battery drops,
@@ -161,7 +167,7 @@ charge margin. If the base attracts more, the drone goes to the base
 - Egocentric uses the tuned `charge_margin` as it is.
 - Swarm moves it:
   `charge_margin + (b or a) · (mean battery of the others − own battery) − c · max(0, charging + 1 − Nc)`,
-  never below 0.20. `b` applies when the drone is below the mean of the others, `a`
+  never below `MIN_CHARGE_MARGIN` (0.15 for swarm since 2026-11-24, 0.20 before). `b` applies when the drone is below the mean of the others, `a`
   when it is above. With more drones charging, the margin drops, so the drone stays
   out longer.
 
@@ -190,9 +196,20 @@ Who takes part in step 4 differs:
 - **Arrival at the base:** the drone brakes on the approach, at
   `min(15, √(2 a d), d / 1 s)` with `a` = 1.2 m/s² and `d` the distance left. It
   is on the base once within 5 cm and below 0.1 m/s.
-- **Charging:** the drone is then CHARGING and frozen for 100 s. Every routine
-  stops: camera, heartbeat, mobility. Swarm drones broadcast a charging
-  notification every second, with the time they arrived and their battery then.
+- **Landing:** the drone then lands and is frozen until it takes off again. Every
+  routine stops: camera, heartbeat, mobility. The motors are off, so its battery
+  plugin stops too: the battery does not change on the ground and no drone can die
+  there. Before 2026-11-24 the plugin kept billing hover power during the charge.
+- **Pads and waiting room** (since 2026-11-24, `charging_station.py`): the base has
+  `Nc` pads. With a pad free and nobody waiting, the drone takes it and is CHARGING
+  at once. Otherwise it is WAITING, landed in the waiting room next to the base, and
+  asks for a pad every second; the pads go to the drones in the order they landed.
+  So at most `Nc` drones charge at once, and the others at the base wait, landed. Before,
+  any number of drones charged at once and the capacity was only a penalty of the cost,
+  which let a system that ignored it get its drones back to mapping sooner.
+- **Charging:** 100 s on the pad. Swarm drones broadcast a charging notification
+  every second, with the time the charge started and their battery then. A WAITING
+  drone sends nothing.
 - **After the charge:** full battery, MAPPING, and the drone chooses a cell.
 - **Death:** at ≤ 10% the drone is DEAD. It stops where it is and from then on only
   broadcasts that it is dead, every 5 s.
@@ -200,9 +217,13 @@ Who takes part in step 4 differs:
 **Swarm battery estimate** (`estimate_drone_battery`). From the last row heard
 about each drone, a swarm drone projects that drone forward. It assumes the drone:
 - flies at `DISCHARGE_RATE`;
-- goes to the base when it reaches 0.20 (if it was MAPPING), or after the mean
+- goes to the base when it reaches `MIN_CHARGE_MARGIN` (if it was MAPPING), or after the mean
   flight time to the base (if it was GOING_TO_BASE);
 - charges for 100 s and comes back full, with the same cycle repeating.
+
+A drone in the waiting room is silent. The others keep projecting it from the last row
+they heard (GOING_TO_BASE: charging from its expected arrival on) until its charging
+notifications start, so a long wait shows up as a charge that seems to end too early.
 
 This gives the mean battery of the others and how many are charging. Known-dead
 drones are left out. `estimation_decision.md` measures how far off this estimate is.
@@ -243,8 +264,11 @@ description, the checks and the references are in
   the true state, a latest-safe slot for each drone, with at most `max(1, Nc)` drones on
   the base at once. It works backwards from the latest deadline, with a repair for drones
   whose window is narrow. A drone leaves when its slot minus its flight time has come.
-  The reserve is the fixed 0.20 (`MIN_CHARGE_MARGIN`). A recharge always takes 100 s
-  whatever the battery, so returning late is the right goal.
+  The reserve is the fixed 0.25 (`MIN_CHARGE_MARGIN`, 0.20 before 2026-11-24). A
+  recharge always takes 100 s whatever the battery, so returning late is the right goal.
+  The pads are hard here too: a drone sent to a full base (no free slot before its
+  deadline) waits landed, and the scheduler books the drones of the waiting room at the
+  moment a pad frees for them (`world.waiting_room_starts`).
 - **4 genes.** The coverage genes are kept. The base attraction `κ`, the genes `a`, `b`,
   `c` and `charge_margin` are gone.
 
@@ -287,7 +311,7 @@ by a fixed rule. Details are in [`naive/README.md`](naive/README.md).
 - **Cells by uncertainty alone.** The energy factor of the cells (Eq. 14) is 1, so a low
   battery no longer pulls the drone towards the base.
 - **A fixed return rule.** A MAPPING drone goes to the base as soon as its battery drops
-  below `RETURN_BATTERY_THRESHOLD` = 0.30, checked every second. The base is never
+  below `RETURN_BATTERY_THRESHOLD` = 0.30 (back to 0.30 on 2026-11-24 after a day at 0.25), checked every second. The base is never
   compared with the best cell, and pair decisions only send drones to map.
 - **3 genes.** `base_variance`, `alpha_variance_modifier` and
   `distance_between_drone_norm`. `energy_gamma`, `charging_base_multiplier` and
@@ -348,7 +372,11 @@ is its sum over the cells. On the 100 x 100 map it starts at 10,000 (swarm) or
 
 ### Drones charging and dead
 
-- **Charging:** the number of drones in status CHARGING, compared with `Nc`.
+- **Charging:** the number of drones in status CHARGING, compared with `Nc`. Since
+  the pads (2026-11-24) it never exceeds `Nc` (from 3 drones on).
+- **Waiting:** the number of drones in the waiting room (WAITING), the congestion
+  since the pads. `run_<k>.pkl` stores it as `waiting`, and `summary.txt` gives each
+  run's time in the waiting room, in drone·s. Older runs do not have it.
 - **Dead:** the number of DEAD drones. It never goes down.
 
 ### Time between two visits of a cell
@@ -382,6 +410,9 @@ cost = 0.00072 · global uncertainty
      + 30 · (exp(5 · excess / drones) − 1),   excess = max(0, charging − Nc)
 ```
 
+- **Congestion since the pads (2026-11-24):** the drones CHARGING never exceed `Nc`
+  (from 3 drones on), so the last term is 0. Congestion costs through the uncertainty
+  instead: a drone in the waiting room does not map.
 - **One individual:** the cost is averaged over 5 runs per swarm size, then summed
   over 3, 5, 7 and 10 drones.
 - **Seeds:** every generation draws 5 new seeds and bases, and every individual of
@@ -414,6 +445,9 @@ mean ± std over the runs.
     other by a paired Wilcoxon signed-rank test.
 - **(c) How many at once:** the share of time with exactly `k` drones charging, on
   a log scale. Everything right of `Nc` is the congestion.
+
+Since the pads (2026-11-24) no run with 3 drones or more goes above `Nc`, so these
+panels only show something on older runs. The congestion is in the `waiting` series.
 
 Bootstrap: 5000 resamples, seeded, so the figure is the same on every call.
 
@@ -492,15 +526,16 @@ width, and a moving average would only call it something else.
 |---|---|
 | `ga_logbook_<range>.txt` | Per generation: avg/std/min/max cost and the terms of the best (`min_uncertainty`, `min_dead`, `min_charging`). At the end, the best individual of the last generation and its `Parameters:` line |
 | `ga_output_<range>.txt` | Everything the GA printed, including each generation's seeds and bases |
-| `test_logs/.../test_output.txt` | The report of `main_test.py`: per drone results, the status episodes, the battery estimate error, and the checks |
+| `test_logs/.../test_output.txt` | The report of `main_test.py`: per drone results, the status episodes, the battery estimate error, the pads and waiting room of the base, and the checks |
 | `test_logs/.../test_recording.pkl` | The full recording: every drone's map and state every 10 s, read by `<system>/plots/` |
 | `test_logs/.../main_test.log` | The protocol log, every routine of every drone |
-| `multiple_runs/.../run_<k>.pkl` | One run: the uncertainty, charging and dead series, the base(s), the seed, the cost and its terms (not in `expanding_testing`), each drone's final state, and the revisit sums per cell |
+| `multiple_runs/.../run_<k>.pkl` | One run: the uncertainty, charging, waiting (since 2026-11-24) and dead series, the base(s), the seed, the cost and its terms (not in `expanding_testing`), each drone's final state, and the revisit sums per cell |
 | `multiple_runs/.../config.json` | The scenario of the directory. A directory refuses runs of another scenario |
 | `multiple_runs/.../summary.txt` | One line per run and the mean ± std over the runs |
 | `multiple_runs/ranges_summary.txt` | `run_all_tests_with_multiple_runs.py`: the same per range |
 
 `main_test.py` exits with status 1 when a check fails. The checks are:
+- never more drones charging at once than the pads of the base;
 - every drone mapped something;
 - the global map is at least as good as the best drone's;
 - every drone recharged at least once;
@@ -512,6 +547,9 @@ width, and a moving average would only call it something else.
 
 ## Known issues (2026-11-15)
 
+- **Runs before 2026-11-24 are not comparable with newer ones.** That day the wind
+  became piecewise constant (held 60 s), the base got hard pads with a waiting room,
+  and the battery stopped draining on the ground.
 - **Revisit data in old runs:** run files written before 2026-11-15 have no
   revisit data, and neither do the MARL runs. The revisit figure leaves them out
   and says so. Run them again with `--overwrite`, or into a new directory, to get it.

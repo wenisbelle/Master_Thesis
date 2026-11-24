@@ -19,6 +19,8 @@ from typing import Type
 
 from gradysim.protocol.interface import IProtocol
 
+from ...charging_station import ChargingStation
+
 
 class ChargingRegistry:
     """
@@ -27,9 +29,12 @@ class ChargingRegistry:
     bases read it. A new one is created for every simulation, see main.py.
     """
 
-    def __init__(self, number_of_bases: int):
+    def __init__(self, number_of_bases: int, pads_per_base: int):
         ##### Per base, {drone id: (time it started charging, its battery then)} #####
         self.charging = [{} for _ in range(number_of_bases)]
+        ##### The pads and the waiting room of every base (since 2026-11-24): at most pads_per_base #####
+        ##### drones charge on a base at once, the others wait landed, see charging_station.py       #####
+        self.stations = [ChargingStation(pads_per_base) for _ in range(number_of_bases)]
 
     def dock(self, base_index: int, drone_id: int, charging_start_time: float, battery: float) -> None:
         self.charging[base_index][drone_id] = (float(charging_start_time), float(battery))

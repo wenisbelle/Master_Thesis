@@ -51,6 +51,7 @@ STATUS_COLORS = {
     "MAPPING":       "#BDC3C7",
     "GOING_TO_BASE": "#E69F00",
     "CHARGING":      "#009E73",
+    "WAITING":       "#0072B2",  # landed on a full base, waiting for a pad (since 2026-11-24)
     "DEAD":          "#D55E00",
 }
 UNKNOWN_STATUS_COLOR = "#7F8C8D"

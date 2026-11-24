@@ -27,6 +27,11 @@ Plots the runs multiple_runs.py wrote, for one or more systems, in two figures:
   only drawn where at least half of the runs revisited a cell there. Cells seen at most
   once have no time between two visits and are left out, their share is printed. Runs
   written before the revisits were recorded, and the MARL ones, do not have them.
+- Time between two visits relative to the reference (--reference), in %, when there are
+  several systems, the counterpart of the uncertainty difference: (a) by distance to the
+  base, the mean over every revisit, paired run by run when seeded alike, with a bootstrap
+  interval; (b) the whole-map mean of each run, a dot per run, with a paired Wilcoxon
+  signed-rank test. Below 0 the cells are seen again sooner than with the reference.
 
     python3 Analytical/plot_multiple_runs.py --system egocentric
     python3 Analytical/plot_multiple_runs.py --system swarm egocentric --range 500 --drones 5   # compared
@@ -45,6 +50,7 @@ drawn on the same figures, a system without runs there is left out.
 
 import os
 import argparse
+import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -544,6 +550,177 @@ def plot_revisit(loaded, distance_bin):
     fig.suptitle(f"Time between two visits of a cell by distance to the base, {scenario(loaded)}")
     return fig
 
+
+def revisit_sums(record, distance_bin, bins):
+    """
+    Number of revisits and their summed time per distance bin (distance from the cell to its
+    nearest base), for one run: the pooled mean of a bin over some runs is the sum of their
+    times over the sum of their counts, the mean over every revisit, as in plot_revisit.
+    """
+    distance = cell_distance_to_base(record["revisit"]["count"].shape, record["base_positions"])
+    index = (np.ravel(distance) // distance_bin).astype(int)
+    count = np.bincount(index, weights=np.ravel(record["revisit"]["count"]).astype(float), minlength=bins)
+    total = np.bincount(index, weights=np.ravel(record["revisit"]["total"]).astype(float), minlength=bins)
+    return count[:bins], total[:bins]
+
+
+def bootstrap_relative_pooled(counts, totals, reference_counts, reference_totals, paired):
+    """
+    100 * (pooled mean time between two visits / pooled mean of the reference - 1), per
+    column, with its percentile bootstrap interval. counts and totals have a row per run.
+    Paired, row k of both is the same run (same base(s) and wind) and the rows are drawn
+    together, as in bootstrap_relative_difference. NaN where either side has no revisit.
+    """
+    counts, totals = np.asarray(counts, dtype=float), np.asarray(totals, dtype=float)
+    reference_counts = np.asarray(reference_counts, dtype=float)
+    reference_totals = np.asarray(reference_totals, dtype=float)
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+
+    def weights(runs):
+        return rng.multinomial(runs, np.full(runs, 1.0 / runs), size=BOOTSTRAP_RESAMPLES) / runs
+
+    values_weights = weights(len(counts))
+    reference_weights = values_weights if paired else weights(len(reference_counts))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = ((values_weights @ totals) / (values_weights @ counts)
+                 / ((reference_weights @ reference_totals) / (reference_weights @ reference_counts)))
+        mean = 100.0 * ((totals.sum(axis=0) / counts.sum(axis=0))
+                        / (reference_totals.sum(axis=0) / reference_counts.sum(axis=0)) - 1.0)
+    tail = (100 - CONFIDENCE) / 2
+    ratio = np.where(np.isfinite(ratio), ratio, np.nan)
+    ##### A bin no resample reaches is all NaN: nanpercentile warns and gives NaN, which is what we want #####
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        low, high = np.nanpercentile(100.0 * (ratio - 1.0), [tail, 100 - tail], axis=0)
+    mean = np.where(np.isfinite(mean), mean, np.nan)
+    return mean, low, high
+
+
+def plot_revisit_difference(loaded, reference, distance_bin):
+    """
+    The time between two visits of a cell of every system relative to the reference, in %,
+    the counterpart of plot_uncertainty_difference for the revisits. Below 0 the cells are
+    seen again sooner than with the reference.
+      (a) by distance from the cell to its nearest base, in bins of distance_bin metres: the
+          pooled mean over every revisit of the runs, and its bootstrap interval. A bin is
+          drawn where at least MIN_RUN_SHARE of the runs of both systems revisited a cell;
+      (b) the whole map, a dot per run (the mean over every revisit of the run, relative to
+          run k of the reference when seeded alike), box plot, pooled mean and interval,
+          paired Wilcoxon signed-rank test.
+    The revisits are summed over the whole run, there is no steady-state cut. Cells seen at
+    most once have no time between two visits and are left out of both systems. None with a
+    single system, or when the reference or every other system has no revisits.
+    """
+    def with_revisit(system):
+        return [row for row, record in enumerate(loaded[system]["runs"]) if "revisit" in record]
+
+    reference_data = loaded[reference]
+    reference_rows_all = with_revisit(reference)
+    others = [system for system in loaded if system != reference and with_revisit(system)]
+    if not others or not reference_rows_all:
+        return None
+
+    ##### Distance bins shared by every system #####
+    largest = max(cell_distance_to_base(record["revisit"]["count"].shape, record["base_positions"]).max()
+                  for data in loaded.values() for record in data["runs"] if "revisit" in record)
+    bins = int(largest // distance_bin) + 1
+    centres = (np.arange(bins) + 0.5) * distance_bin
+
+    fig = plt.figure(figsize=(12, 4.6), constrained_layout=True)
+    layout = fig.add_gridspec(1, 2, width_ratios=(2.2, 1))
+    ax_distance, ax_runs = fig.add_subplot(layout[0]), fig.add_subplot(layout[1])
+    jitter = np.random.default_rng(JITTER_SEED)
+    tested = []
+    drawn = 0.0
+    for position, system in enumerate(others):
+        data = loaded[system]
+        style = SYSTEM_STYLES[system]
+        rows_all = with_revisit(system)
+        pairs = paired_runs(data, reference_data)
+        if pairs is not None:
+            pairs = [(row, reference_row) for row, reference_row in pairs
+                     if row in rows_all and reference_row in reference_rows_all]
+        paired = bool(pairs)
+        rows, reference_rows = zip(*pairs) if paired else (rows_all, reference_rows_all)
+
+        sums = [revisit_sums(data["runs"][row], distance_bin, bins) for row in rows]
+        reference_sums = [revisit_sums(reference_data["runs"][row], distance_bin, bins) for row in reference_rows]
+        counts, totals = np.array([s[0] for s in sums]), np.array([s[1] for s in sums])
+        reference_counts = np.array([s[0] for s in reference_sums])
+        reference_totals = np.array([s[1] for s in reference_sums])
+
+        ##### (a) By distance. The far bins that only a few runs reach are not drawn, see MIN_RUN_SHARE #####
+        mean, low, high = bootstrap_relative_pooled(counts, totals, reference_counts, reference_totals, paired)
+        enough = (((counts > 0).sum(axis=0) >= MIN_RUN_SHARE * len(rows))
+                  & ((reference_counts > 0).sum(axis=0) >= MIN_RUN_SHARE * len(reference_rows)))
+        mean, low, high = (np.where(enough, value, np.nan) for value in (mean, low, high))
+        shown = np.isfinite(mean)
+        if shown.any():
+            drawn = max(drawn, centres[shown].max() + distance_bin / 2)
+        ax_distance.fill_between(centres, low, high, where=shown & np.isfinite(low) & np.isfinite(high),
+                                 color=style["color"], alpha=BAND_ALPHA, lw=0)
+        ax_distance.plot(centres, mean, color=style["color"], ls=style["ls"], marker=style["marker"], ms=3.5,
+                         lw=1.6, label=f"{system}, {len(rows)} runs" + (" paired" if paired else ""))
+
+        ##### (b) The whole map, each run #####
+        run_mean = totals.sum(axis=1) / np.maximum(counts.sum(axis=1), 1)
+        reference_mean = reference_totals.sum(axis=1) / np.maximum(reference_counts.sum(axis=1), 1)
+        per_run = 100.0 * (run_mean / (reference_mean if paired else reference_mean.mean()) - 1.0)
+        line = {"color": style["color"], "lw": 1.0}
+        ax_runs.boxplot(per_run, positions=[position], widths=0.45, showfliers=False, boxprops=line,
+                        whiskerprops=line, capprops=line, medianprops={"color": style["color"], "lw": 2.0})
+        ax_runs.scatter(position + jitter.uniform(-0.13, 0.13, len(per_run)), per_run, marker=style["marker"],
+                        s=18, color=style["color"], alpha=0.6, lw=0, zorder=3)
+        total, total_low, total_high = bootstrap_relative_pooled(counts.sum(axis=1, keepdims=True),
+                                                                 totals.sum(axis=1, keepdims=True),
+                                                                 reference_counts.sum(axis=1, keepdims=True),
+                                                                 reference_totals.sum(axis=1, keepdims=True), paired)
+        total, total_low, total_high = float(total[0]), float(total_low[0]), float(total_high[0])
+        ax_runs.errorbar(position + 0.36, total, yerr=[[total - total_low], [total_high - total]], fmt="o",
+                         color="black", ms=4, capsize=3, lw=1.0, zorder=4)
+        at_most_once = 100.0 * np.mean([np.mean(data["runs"][row]["revisit"]["count"] == 0) for row in rows])
+        reference_once = 100.0 * np.mean([np.mean(reference_data["runs"][row]["revisit"]["count"] == 0)
+                                          for row in reference_rows])
+        summary = (f"{system} vs {reference}: time between two visits over the whole map {total:+.1f}%, "
+                   f"{CONFIDENCE}% interval [{total_low:+.1f}, {total_high:+.1f}] over {len(rows)} runs "
+                   f"(cells seen at most once, left out: {at_most_once:.1f}% vs {reference_once:.1f}%)")
+        if paired and len(rows) > 1 and np.any(run_mean != reference_mean):
+            p_value = float(wilcoxon(run_mean, reference_mean).pvalue)
+            summary += ", paired Wilcoxon " + ("p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}")
+            tested.append(f"{system}: " + ("p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}"))
+        print(summary)
+
+    for ax in (ax_distance, ax_runs):
+        ax.axhline(0.0, color="0.35", lw=1.0, zorder=1)
+        ax.grid(True, axis="y", **GRID)
+        ax.set_axisbelow(True)
+    ax_distance.text(0.995, 0.0, f"{reference} (reference) ", transform=ax_distance.get_yaxis_transform(),
+                     ha="right", va="top", fontsize=7, color="0.35", zorder=5,
+                     bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0})
+    ax_distance.grid(True, axis="x", **GRID)
+    ax_distance.set_xlim(0, drawn or bins * distance_bin)
+    ax_distance.set_xlabel(f"distance from the cell to the nearest base (m), in {distance_bin:g} m bins, "
+                           f"where at least {MIN_RUN_SHARE:.0%} of the runs revisited a cell")
+    ax_distance.set_ylabel(f"time between two visits\nrelative to {reference} (%)")
+    ax_distance.set_title(f"(a) By distance to the base: mean over every revisit of the runs, {CONFIDENCE}% "
+                          f"bootstrap interval\nBelow 0: cells seen again sooner than with {reference}",
+                          loc="left", fontsize=9)
+    ax_distance.legend(loc="best", fontsize=8, frameon=False, handlelength=3.5)
+
+    ax_runs.set_xlim(-0.6, len(others) - 0.4)
+    ax_runs.set_xticks(range(len(others)))
+    ax_runs.set_xticklabels([system.replace("/", "/\n") for system in others], fontsize=8)
+    ax_runs.set_ylabel(f"mean time between two visits\nof the run relative to {reference} (%)")
+    ax_runs.set_title("(b) Each run, whole map" + ("\npaired Wilcoxon\n" + "\n".join(tested) if tested else ""),
+                      loc="left", fontsize=9)
+    ax_runs.legend(handles=[Line2D([], [], marker="o", ls="none", color="0.45", alpha=0.6, ms=4, label="one run"),
+                            Line2D([], [], marker="o", ls="none", color="black", ms=4,
+                                   label=f"mean, {CONFIDENCE}% interval")],
+                   loc="best", fontsize=7, frameon=False, handletextpad=0.3)
+    fig.suptitle(f"Time between two visits of a cell relative to {reference}, {scenario(loaded)}")
+    return fig
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Global uncertainty (mean and std deviation), drones charging above Nc and time between "
@@ -577,7 +754,8 @@ if __name__ == "__main__":
                              "in s, to leave the first sweep of the map out (default: %(default)s)")
     parser.add_argument("--save",
                         help="also save the figures, as <name>_uncertainty<ext>, <name>_uncertainty_difference<ext>, "
-                             "<name>_charging<ext> and <name>_revisit<ext>, the extension sets the format (pdf, png, ...)")
+                             "<name>_charging<ext>, <name>_revisit<ext> and <name>_revisit_difference<ext>, the "
+                             "extension sets the format (pdf, png, ...)")
     args = parser.parse_args()
     if args.distance_bin <= 0:
         parser.error("--distance-bin has to be positive")
@@ -595,7 +773,8 @@ if __name__ == "__main__":
                "uncertainty_difference": plot_uncertainty_difference(loaded, reference, args.uncertainty_window,
                                                                      args.steady_state),
                "charging": plot_charging(loaded, args.window),
-               "revisit": plot_revisit(loaded, args.distance_bin)}
+               "revisit": plot_revisit(loaded, args.distance_bin),
+               "revisit_difference": plot_revisit_difference(loaded, reference, args.distance_bin)}
     figures = {name: fig for name, fig in figures.items() if fig is not None}
     if args.save:
         stem, extension = os.path.splitext(args.save)

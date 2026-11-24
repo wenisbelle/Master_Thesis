@@ -30,7 +30,8 @@ class FitnessEvaluator:
                  discharge_rate: float = 0.001, # fixed, percentage per second. 1000 SECONDS the whole charge is depleted, reaching charge 1.
                  Nc_charging_base: int = 2, # fixed, number of drone that can charge at the same time over ALL the bases together. A bigger number will start receiving penalty
                  information_decay_rate: float = 0.001,
-                 number_of_cells_x_y: int = 10):
+                 number_of_cells_x_y: int = 10,
+                 drone_max_acceleration: float = 3.0):  # fixed, horizontal acceleration limit, m/s^2 (turn_time)
 
         self.map_width = map_width
         self.map_height = map_height
@@ -46,6 +47,7 @@ class FitnessEvaluator:
         self.c_battery_modifier = c_battery_modifier
         self.NUMBER_OF_CELLS_X_Y = number_of_cells_x_y
         self.INFORMATION_DECAY_RATE = information_decay_rate
+        self.DRONE_MAX_ACCELERATION = drone_max_acceleration
         self.CHARGE_MARGIN = charge_margin
         self.MIN_CHARGE_MARGIN = min_charge_margin
         self.DISCHARGE_RATE = discharge_rate
@@ -225,11 +227,14 @@ class FitnessEvaluator:
         return list(zip(valid_x[mask], valid_y[mask]))
 
     def uncertainty_modified_time_to_travel(self, map_data:np.array, drone_position: Tuple[float, float, float],
-                                            map_center_offset: float, drone_speed: float) -> np.array:
+                                            map_center_offset: float, drone_speed: float,
+                                            drone_velocity: Optional[Tuple[float, ...]] = None) -> np.array:
         """
         Returns the uncertainty modified by the time to travel to each cell in the map.
         U = U(t+theta)/theta, where theta is the time to travel to the specific cell.
-        The time to travel is calculated as the distance to the cell divided by the drone's speed.
+        The time to travel is the distance to the cell divided by the drone's speed, plus the time
+        lost turning the velocity vector towards the cell (turn_time). drone_velocity is the
+        drone's current velocity (world frame, only x/y are used). None leaves dist / speed alone.
         """
         rows, cols = map_data.shape
         drone_x, drone_y, _ = drone_position
@@ -239,13 +244,35 @@ class FitnessEvaluator:
         # Distance from the drone to every cell at once
         dist = np.hypot(x_cell - drone_x, y_cell - drone_y)
 
-        # (U + k*theta)/theta == U/theta + k, with theta = dist/speed
+        # (U + k*theta)/theta == U/theta + k, with theta = dist/speed + turn time
         tau = dist / drone_speed
+        if drone_velocity is not None:
+            tau = tau + self.turn_time(x_cell - drone_x, y_cell - drone_y, dist, drone_speed, drone_velocity)
         phi = map_data / (tau + 10e-5) + self.INFORMATION_DECAY_RATE
 
         # Uncertainty at the arrivel
         I_arrival = map_data + self.INFORMATION_DECAY_RATE * tau
         return I_arrival, phi
+
+    def turn_time(self, dx: np.ndarray, dy: np.ndarray, dist: np.ndarray, drone_speed: float,
+                  drone_velocity: Tuple[float, ...]) -> np.ndarray:
+        """
+        Time lost changing the horizontal velocity from drone_velocity to drone_speed pointing at
+        each cell, with the acceleration limit of the mobility handler (DRONE_MAX_ACCELERATION):
+
+            |v_c * u - v_now| / (2 a)
+
+        u is the unit vector from the drone to the cell. Changing the velocity by dv at the limit a
+        takes |dv| / a, and on average the drone covers half of that time at the new velocity, so
+        the loss is |dv| / (2 a). Flying straight at the cell at cruise speed it is 0; from rest it
+        is v_c / (2 a); a U-turn at cruise speed costs 2 v_c / (2 a). The drone's own cell (dist ~ 0)
+        gets 0. Without it a drone that never brakes zig-zags between near cells and rarely reaches
+        cruise speed.
+        """
+        safe_dist = np.maximum(dist, 1e-9)
+        dvx = drone_speed * dx / safe_dist - float(drone_velocity[0])
+        dvy = drone_speed * dy / safe_dist - float(drone_velocity[1])
+        return np.where(dist > 1e-6, np.hypot(dvx, dvy) / (2.0 * self.DRONE_MAX_ACCELERATION), 0.0)
 
     def drone_exclusion_mask(self, shape: Tuple[int, int], drone_position: Tuple[float, float, float],
                              map_center_offset: float) -> np.ndarray:
@@ -526,7 +553,8 @@ class FitnessEvaluator:
 
     def cells_priority(self, map_data: np.array, drone_position: Tuple[float, float, float],
                        recharge_base_positions: List[Tuple[float, float]], current_charge: float,
-                       drone_speed: float, map_center_offset: float) -> list:
+                       drone_speed: float, map_center_offset: float,
+                       drone_velocity: Optional[Tuple[float, ...]] = None) -> list:
         """
         Fitness of every cell of the NUMBER_OF_CELLS_X_Y window around the drone, except its own
         cell: [(fitness, (i, j)), ...], the fitness being the average reward along the trajectory
@@ -540,7 +568,7 @@ class FitnessEvaluator:
         drone_x, drone_y, _ = drone_position
 
         I_at_arrival, phi = self.uncertainty_modified_time_to_travel(map_data, drone_position,
-                                                                    map_center_offset, drone_speed)
+                                                                    map_center_offset, drone_speed, drone_velocity)
 
         # Map modified by the energy
         energy_modified_values = self.energy_effect(map_data, drone_position, recharge_base_positions,
@@ -637,7 +665,9 @@ class FitnessEvaluator:
     def both_cells_priority(self, map_data: np.array, first_drone_pos: Tuple[float, float], second_drone_pos: Tuple[float, float],
                             recharge_base_positions: List[Tuple[float, float]], first_drone_current_charge: float, 
                             second_drone_current_charge: float, drone_speed: float,
-                            map_center_offset: float) -> Optional[Tuple[float, Tuple[int, int], Tuple[int, int], float, float]]:
+                            map_center_offset: float,
+                            first_drone_velocity: Optional[Tuple[float, ...]] = None,
+                            second_drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[float, Tuple[int, int], Tuple[int, int], float, float]]:
         """
         Fully vectorized fuzzy inference for two drones.
 
@@ -646,8 +676,8 @@ class FitnessEvaluator:
         or None if either drone has no candidate cell.
         """
         # Get individual priorities (using the fast method above)
-        list1 = self.cells_priority(map_data, first_drone_pos, recharge_base_positions, first_drone_current_charge, drone_speed, map_center_offset)
-        list2 = self.cells_priority(map_data, second_drone_pos, recharge_base_positions, second_drone_current_charge, drone_speed, map_center_offset)
+        list1 = self.cells_priority(map_data, first_drone_pos, recharge_base_positions, first_drone_current_charge, drone_speed, map_center_offset, drone_velocity=first_drone_velocity)
+        list2 = self.cells_priority(map_data, second_drone_pos, recharge_base_positions, second_drone_current_charge, drone_speed, map_center_offset, drone_velocity=second_drone_velocity)
 
         if not list1 or not list2:
             return None
@@ -710,7 +740,8 @@ class FitnessEvaluator:
                    self.CHARGE_MARGIN + swarm_shift + congestion_shift)
 
     def mean_efficiency(self, map_data: np.array, drone_position: Tuple[float, float, float],
-                        map_center_offset: float, drone_speed: float) -> float:
+                        map_center_offset: float, drone_speed: float,
+                        drone_velocity: Optional[Tuple[float, ...]] = None) -> float:
         """
         Mean of phi = I/tau + decay (see uncertainty_modified_time_to_travel) over the cells that can
         act as sources (drone_exclusion_mask), seen from drone_position. It scales the base utility,
@@ -720,7 +751,7 @@ class FitnessEvaluator:
         I/tau would blow up and set the mean on its own. phi is taken before the energy coefficient,
         so the battery and the bases only enter the base utility through R_safe.
         """
-        _, phi = self.uncertainty_modified_time_to_travel(map_data, drone_position, map_center_offset, drone_speed)
+        _, phi = self.uncertainty_modified_time_to_travel(map_data, drone_position, map_center_offset, drone_speed, drone_velocity)
         valid = self.drone_exclusion_mask(map_data.shape, drone_position, map_center_offset)
         return float(phi[valid].mean())
 
@@ -765,18 +796,19 @@ class FitnessEvaluator:
     def choose_one_cell(self, map_data: np.array, drone_location: Tuple[float, float, float],
                         recharge_base_positions: List[Tuple[float, float]], current_drone_charge: float,
                         drone_speed: float, map_center_offset: float,
-                        mean_battery_value: float, drones_charging: int) -> Optional[Tuple[Tuple[float, float], float, str]]:
+                        mean_battery_value: float, drones_charging: int,
+                        drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[Tuple[float, float], float, str]]:
 
         fitness_scores = self.cells_priority(map_data, drone_location,
                                              recharge_base_positions, current_drone_charge,
-                                             drone_speed, map_center_offset)
+                                             drone_speed, map_center_offset, drone_velocity=drone_velocity)
         if not fitness_scores:
             return None
 
         best_cell = max(fitness_scores, key=lambda x: x[0])
 
         # Check if the fitenss of the best cell is greater than the fitness of the recharge base
-        mean_efficiency = self.mean_efficiency(map_data, drone_location, map_center_offset, drone_speed)
+        mean_efficiency = self.mean_efficiency(map_data, drone_location, map_center_offset, drone_speed, drone_velocity=drone_velocity)
         recharge_base_fitness = self.recharge_base_fitness(drone_location, recharge_base_positions,
                                                           current_drone_charge, drone_speed,
                                                           mean_battery_value, drones_charging,
@@ -793,7 +825,8 @@ class FitnessEvaluator:
                          first_current_drone_charge: float, second_current_drone_charge: float,
                          drone_speed: float, map_center_offset: float,
                          mean_battery_value: float, drones_charging: int,
-                         ) -> Optional[Tuple[Tuple[float, float], float, Tuple[str, str]]]:
+                         first_drone_velocity: Optional[Tuple[float, ...]] = None,
+                         second_drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[Tuple[float, float], float, Tuple[str, str]]]:
 
         best_pair = self.both_cells_priority(
             map_data=map_data,
@@ -803,7 +836,9 @@ class FitnessEvaluator:
             first_drone_current_charge=first_current_drone_charge,
             second_drone_current_charge=second_current_drone_charge,
             drone_speed=drone_speed,
-            map_center_offset=map_center_offset
+            map_center_offset=map_center_offset,
+            first_drone_velocity=first_drone_velocity,
+            second_drone_velocity=second_drone_velocity
         )
 
         if not best_pair:
@@ -815,8 +850,8 @@ class FitnessEvaluator:
 
         # Now, let's check if each drone should go to the recharge base instead of the best cell
         # Fitness for the recharge base for each drone. kappa uses the mean I/tau seen from each drone
-        first_mean_efficiency = self.mean_efficiency(map_data, first_drone_location, map_center_offset, drone_speed)
-        second_mean_efficiency = self.mean_efficiency(map_data, second_drone_location, map_center_offset, drone_speed)
+        first_mean_efficiency = self.mean_efficiency(map_data, first_drone_location, map_center_offset, drone_speed, drone_velocity=first_drone_velocity)
+        second_mean_efficiency = self.mean_efficiency(map_data, second_drone_location, map_center_offset, drone_speed, drone_velocity=second_drone_velocity)
         first_recharge_base_fitness = self.recharge_base_fitness(first_drone_location, recharge_base_positions,
                                                                  first_current_drone_charge, drone_speed,
                                                                  mean_battery_value, drones_charging,

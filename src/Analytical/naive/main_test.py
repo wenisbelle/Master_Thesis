@@ -115,12 +115,14 @@ def make_recorded_drone(recorder_holder: dict, factory, **factory_kwargs):
                 event = "decision"
             elif current == DroneStatus.DEAD:
                 event = "death"
-            elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.CHARGING:
+            elif previous == DroneStatus.GOING_TO_BASE and current in (DroneStatus.CHARGING, DroneStatus.WAITING):
+                ##### Landed on the base, on a free pad or in the waiting room #####
                 event = "arrival"
             elif previous == DroneStatus.GOING_TO_BASE and current == DroneStatus.MAPPING:
                 event = "abort"
             else:
-                ##### CHARGING -> MAPPING, the end of the recharge, is not part of a trip #####
+                ##### WAITING -> CHARGING (a pad freed) and CHARGING -> MAPPING (the end #####
+                ##### of the recharge) are not part of a trip                            #####
                 return
 
             recorder = recorder_holder.get("recorder")
@@ -368,10 +370,23 @@ def report(results: dict, recorder: SimulationRecorder,
     print(format_summary(summarize(recorder.returns)))
     print()
 
+    ##### The base: its pads and its waiting room, see charging_station.py #####
+    station = global_map.charging_station
+    print("=== Base (pads and waiting room) ===")
+    print(station.report(global_map.times[-1] if global_map.times else duration, global_map.charging_drones))
+    print()
+
     ##### Checks. Each one is a claim that has to hold for the run to be #####
     ##### considered healthy, printed so a failure is obvious.           #####
     print("=== Checks ===")
     checks = []
+
+    ##### The pads are a hard limit: a drone that finds them taken waits landed #####
+    most_charging = int(max(global_map.charging_drones, default=0))
+    checks.append((
+        most_charging <= station.pads,
+        f"never more than {station.pads} drone(s) charging at once, the pads of the base "
+        f"(at most {most_charging} were)"))
 
     mapping_drones = [drone_id for drone_id, drone_results in results.items()
                       if drone_results["unvisited_cells"] < total_cells]

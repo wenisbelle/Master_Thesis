@@ -45,7 +45,7 @@ TRIGGER_LABELS = {"own": "own choice (mobility timer)", "encounter": "encounter,
                   "after_recharge": "right after a recharge"}
 BATTERY_COLOR = "0.45"
 BAND_ALPHA = 0.15
-BAND_STATUSES = ("GOING_TO_BASE", "CHARGING", "DEAD")
+BAND_STATUSES = ("GOING_TO_BASE", "WAITING", "CHARGING", "DEAD")
 
 
 def _color(drone_id):

@@ -21,7 +21,8 @@ class FitnessEvaluator:
                  distance_between_drone_norm: float, # tunable - couples the two targets at an encounter
                  kernel_n_sigma: int, # tunable
                  information_decay_rate: float = 0.001,
-                 number_of_cells_x_y: int = 10):
+                 number_of_cells_x_y: int = 10,
+                 drone_max_acceleration: float = 3.0):  # fixed, horizontal acceleration limit, m/s^2 (turn_time)
 
         self.map_width = map_width
         self.map_height = map_height
@@ -34,6 +35,7 @@ class FitnessEvaluator:
         self.alpha_variance_modifier = alpha_variance_modifier
         self.NUMBER_OF_CELLS_X_Y = number_of_cells_x_y
         self.INFORMATION_DECAY_RATE = information_decay_rate
+        self.DRONE_MAX_ACCELERATION = drone_max_acceleration
 
         # Cache of cell centre coordinates, keyed by (rows, cols, map_center_offset)
         self._cell_coords_cache = {}
@@ -199,11 +201,14 @@ class FitnessEvaluator:
         return list(zip(valid_x[mask], valid_y[mask]))
 
     def uncertainty_modified_time_to_travel(self, map_data:np.array, drone_position: Tuple[float, float, float],
-                                            map_center_offset: float, drone_speed: float) -> np.array:
+                                            map_center_offset: float, drone_speed: float,
+                                            drone_velocity: Optional[Tuple[float, ...]] = None) -> np.array:
         """
         Returns the uncertainty modified by the time to travel to each cell in the map.
         U = U(t+theta)/theta, where theta is the time to travel to the specific cell.
-        The time to travel is calculated as the distance to the cell divided by the drone's speed.
+        The time to travel is the distance to the cell divided by the drone's speed, plus the time
+        lost turning the velocity vector towards the cell (turn_time). drone_velocity is the
+        drone's current velocity (world frame, only x/y are used). None leaves dist / speed alone.
         """
         rows, cols = map_data.shape
         drone_x, drone_y, _ = drone_position
@@ -213,13 +218,35 @@ class FitnessEvaluator:
         # Distance from the drone to every cell at once
         dist = np.hypot(x_cell - drone_x, y_cell - drone_y)
 
-        # (U + k*theta)/theta == U/theta + k, with theta = dist/speed
+        # (U + k*theta)/theta == U/theta + k, with theta = dist/speed + turn time
         tau = dist / drone_speed
+        if drone_velocity is not None:
+            tau = tau + self.turn_time(x_cell - drone_x, y_cell - drone_y, dist, drone_speed, drone_velocity)
         phi = map_data / (tau + 10e-5) + self.INFORMATION_DECAY_RATE
 
         # Uncertainty at the arrivel
         I_arrival = map_data + self.INFORMATION_DECAY_RATE * tau
         return I_arrival, phi
+
+    def turn_time(self, dx: np.ndarray, dy: np.ndarray, dist: np.ndarray, drone_speed: float,
+                  drone_velocity: Tuple[float, ...]) -> np.ndarray:
+        """
+        Time lost changing the horizontal velocity from drone_velocity to drone_speed pointing at
+        each cell, with the acceleration limit of the mobility handler (DRONE_MAX_ACCELERATION):
+
+            |v_c * u - v_now| / (2 a)
+
+        u is the unit vector from the drone to the cell. Changing the velocity by dv at the limit a
+        takes |dv| / a, and on average the drone covers half of that time at the new velocity, so
+        the loss is |dv| / (2 a). Flying straight at the cell at cruise speed it is 0; from rest it
+        is v_c / (2 a); a U-turn at cruise speed costs 2 v_c / (2 a). The drone's own cell (dist ~ 0)
+        gets 0. Without it a drone that never brakes zig-zags between near cells and rarely reaches
+        cruise speed.
+        """
+        safe_dist = np.maximum(dist, 1e-9)
+        dvx = drone_speed * dx / safe_dist - float(drone_velocity[0])
+        dvy = drone_speed * dy / safe_dist - float(drone_velocity[1])
+        return np.where(dist > 1e-6, np.hypot(dvx, dvy) / (2.0 * self.DRONE_MAX_ACCELERATION), 0.0)
 
     def drone_exclusion_mask(self, shape: Tuple[int, int], drone_position: Tuple[float, float, float],
                              map_center_offset: float) -> np.ndarray:
@@ -472,7 +499,8 @@ class FitnessEvaluator:
     #     return fitness_scores
 
     def cells_priority(self, map_data: np.array, drone_position: Tuple[float, float, float],
-                       drone_speed: float, map_center_offset: float) -> list:
+                       drone_speed: float, map_center_offset: float,
+                       drone_velocity: Optional[Tuple[float, ...]] = None) -> list:
         """
         Fitness of every cell of the NUMBER_OF_CELLS_X_Y window around the drone, except its own
         cell: [(fitness, (i, j)), ...], the fitness being the average reward along the trajectory
@@ -486,7 +514,7 @@ class FitnessEvaluator:
         drone_x, drone_y, _ = drone_position
 
         I_at_arrival, phi = self.uncertainty_modified_time_to_travel(map_data, drone_position,
-                                                                    map_center_offset, drone_speed)
+                                                                    map_center_offset, drone_speed, drone_velocity)
 
         # Naive: no energy factor, the weights are phi alone
         weights = phi
@@ -578,7 +606,9 @@ class FitnessEvaluator:
         return [(averages[k], (int(candidates_i[k]), int(candidates_j[k]))) for k in np.flatnonzero(in_window)]
 
     def both_cells_priority(self, map_data: np.array, first_drone_pos: Tuple[float, float], second_drone_pos: Tuple[float, float],
-                            drone_speed: float, map_center_offset: float) -> Optional[Tuple[float, Tuple[int, int], Tuple[int, int], float, float]]:
+                            drone_speed: float, map_center_offset: float,
+                            first_drone_velocity: Optional[Tuple[float, ...]] = None,
+                            second_drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[float, Tuple[int, int], Tuple[int, int], float, float]]:
         """
         Fully vectorized fuzzy inference for two drones.
 
@@ -587,8 +617,8 @@ class FitnessEvaluator:
         or None if either drone has no candidate cell.
         """
         # Get individual priorities (using the fast method above)
-        list1 = self.cells_priority(map_data, first_drone_pos, drone_speed, map_center_offset)
-        list2 = self.cells_priority(map_data, second_drone_pos, drone_speed, map_center_offset)
+        list1 = self.cells_priority(map_data, first_drone_pos, drone_speed, map_center_offset, drone_velocity=first_drone_velocity)
+        list2 = self.cells_priority(map_data, second_drone_pos, drone_speed, map_center_offset, drone_velocity=second_drone_velocity)
 
         if not list1 or not list2:
             return None
@@ -637,9 +667,10 @@ class FitnessEvaluator:
     ##### the best cell. The two functions below only choose where to map.                      #####
 
     def choose_one_cell(self, map_data: np.array, drone_location: Tuple[float, float, float],
-                        drone_speed: float, map_center_offset: float) -> Optional[Tuple[Tuple[int, int], float]]:
+                        drone_speed: float, map_center_offset: float,
+                        drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[Tuple[int, int], float]]:
         """The best cell of the window around the drone, as in egocentric, without the comparison with the base."""
-        fitness_scores = self.cells_priority(map_data, drone_location, drone_speed, map_center_offset)
+        fitness_scores = self.cells_priority(map_data, drone_location, drone_speed, map_center_offset, drone_velocity=drone_velocity)
         if not fitness_scores:
             return None
 
@@ -649,7 +680,8 @@ class FitnessEvaluator:
     def choose_two_cells(self, map_data: np.array, first_drone_location: Tuple[float, float, float],
                          second_drone_location: Tuple[float, float, float],
                          drone_speed: float, map_center_offset: float,
-                         ) -> Optional[Tuple[list, float]]:
+                         first_drone_velocity: Optional[Tuple[float, ...]] = None,
+                         second_drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[list, float]]:
         """
         The best pair of cells for two drones that met, with the separation term, as in
         egocentric (both_cells_priority), without the comparison of each drone with the base.
@@ -659,7 +691,9 @@ class FitnessEvaluator:
             first_drone_pos=first_drone_location,
             second_drone_pos=second_drone_location,
             drone_speed=drone_speed,
-            map_center_offset=map_center_offset
+            map_center_offset=map_center_offset,
+            first_drone_velocity=first_drone_velocity,
+            second_drone_velocity=second_drone_velocity
         )
 
         if not best_pair:

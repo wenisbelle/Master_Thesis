@@ -42,7 +42,7 @@ kappa their individuals are not tuned anymore. Until they are tuned again, use
 
 `naive/` is `Analytical/naive` with several bases. The cells are chosen by the
 uncertainty alone. A MAPPING drone goes to the **base nearest to it** when its
-battery drops below `RETURN_BATTERY_THRESHOLD` = 30%, plugs in there like the
+battery drops below `RETURN_BATTERY_THRESHOLD` = 30% (25% for a few hours on 2026-11-24), plugs in there like the
 others, and the bases send nothing to it, as for egocentric. `Nc` is only the
 reference the runs are measured against, because the naive drone never reads it.
 The genes are the 3 coverage genes of `Analytical/naive`.
@@ -73,8 +73,27 @@ others are charging (`aproximate_battery_consumption_model`) is exactly the
 original one.
 
 It is soft: it pushes the drones to stay out longer when the swarm is
-congested, it does not forbid more than `Nc` drones charging at once. The
-report says how much of the time `Nc` was respected.
+congested, it does not forbid more than `Nc` drones charging at once over all
+the bases. The report says how much of the time `Nc` was respected. What is
+hard is the number of pads of each base, see below.
+
+### Pads and waiting room of every base (since 2026-11-24)
+
+Every base has its own pads, as the single base of `Analytical/` has
+(`Analytical/charging_station.py`):
+- **How many.** `PADS_PER_BASE` in each `main.py`; `None`, the default, gives every
+  base `Nc` pads, the capacity of the single base of `Analytical/`.
+- **A full base.** A drone that lands with every pad of that base taken waits on the
+  ground next to it, in that base's waiting room (status WAITING), and takes the first
+  pad that frees there, in the order the drones landed. It does not move on to
+  another base.
+- **The battery on the ground.** Waiting or charging, the motors are off: the battery
+  plugin is stopped from landing to take-off, so the battery does not change and no
+  drone can die at a base.
+- **Kept apart from `Nc`.** The pads are per base, `Nc` is still the soft reference
+  over all the bases. With the default, several bases together have more pads than `Nc`.
+- **Report.** `main_test.py` has a "Pads and waiting rooms of the bases" section and a
+  check that no base ever had more drones charging than its pads.
 
 The occupancy of **each** base is still recorded and reported, to see where
 the drones charge, but it does not enter the decisions.
@@ -85,9 +104,11 @@ Each base is a node of the simulation (`recharge_base.py`), like the drones,
 but it never moves. The bases are added after the drones, so drones keep the
 ids `0..n-1` and base `b` is node `n + b`.
 
-- **Plugging in.** A drone that reaches a base plugs into it
+- **Plugging in.** A drone that gets a pad of a base plugs into it
   (`ChargingRegistry.dock`), and unplugs when its recharge ends. The base always
-  knows who is charging on it.
+  knows who is charging on it. The pads and the waiting room of every base are
+  `ChargingRegistry.stations`. A drone in the waiting room is not plugged in, so the
+  base heartbeats do not list it.
 - **Shared knowledge between bases.** All the bases of a simulation share one
   `ChargingRegistry`. In reality that would be a second radio, long range and
   low bandwidth; here it is a shared variable. Each base therefore knows exactly

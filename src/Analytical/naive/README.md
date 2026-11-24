@@ -32,9 +32,12 @@ the code is right.
 
 `fitness.py` has no `recharge_base_fitness` and no battery inputs. Its `choose_one_cell`
 and `choose_two_cells` only take the map, the positions and the speed, and only return
-cells to map. `Nc` and the measured `DISCHARGE_RATE` are not protocol parameters either:
+cells to map. `Nc` and the measured `DISCHARGE_RATE` are not decision parameters either:
 `main.py` keeps them for the cost and the plots (`charging_base_capacity`, the reference
-line of `plot_returns.py`). `main_test.py` labels a trip to the base as `threshold` in the
+line of `plot_returns.py`). Since 2026-11-24 `Nc` is also the number of pads of the base
+(`charging_station.py`), as in every system: the naive drone does not look at it before
+going, but a drone that lands with every pad taken waits on the ground, battery frozen,
+until one frees. `main_test.py` labels a trip to the base as `threshold` in the
 returns, where swarm's says `own`.
 
 ## The individual

@@ -22,11 +22,12 @@ doesn't explain why it matters.
    charging / dead notifications update it. The newest observation time wins.
 2. **Projection to now.** `estimate_drone_battery` ([protocol.py:416](swarm/protocol.py#L416))
    moves a row forward from its observation time to the current time:
-   - the drone discharges linearly at `DISCHARGE_RATE` (0.00073 per s);
+   - the drone discharges linearly at `DISCHARGE_RATE` (0.00067 per s; 0.00073 before the 2026-11-23 battery plugin fix);
    - a drone seen MAPPING is assumed to fly until its battery reaches
      `MIN_CHARGE_MARGIN` (0.20), then go to the base;
    - a drone seen GOING_TO_BASE reaches the base `EXPECTED_TIME_TO_BASE` after the observation;
-   - at the base it charges for `TIME_TO_RECHARGE` (100 s) with its battery held constant,
+   - at the base it charges for `TIME_TO_RECHARGE` (100 s) with its battery held constant
+     (true since 2026-11-24; a wait for a pad, see `charging_station.py`, is not modelled),
      then leaves with a full battery and the cycle repeats.
 3. **Swarm terms.** `aproximate_battery_consumption_model`
    ([protocol.py:375](swarm/protocol.py#L375)) reduces the projected rows of the other drones
@@ -64,7 +65,9 @@ The genes amplify it. With the default individual in [main.py](swarm/main.py) (t
   about 0.45–0.58, so a recharge the observer did not hear about is missed: it believes the
   drone kept draining while it is really back near full. This biases m̂ low.
 - **Constant discharge rate.** The real battery comes from the physics model of
-  BatteryPowerPlugin, with random air speed (σ = 4 m/s).
+  BatteryPowerPlugin, with random air speed (σ = 4 m/s). Since 2026-11-24 the wind drifts over ~20 min
+  (see Analytical/README.md): the mean drain still matches it (0.000675/s cruising), but over 100 s
+  of flight it is now 0.88-1.41x the mean (1st-99th percentile), against 0.94-1.13x before.
 - **Unknown deaths.** A drone that died without the observer knowing still enters m̂.
 
 ## What is recorded (Step 1)
@@ -99,10 +102,12 @@ compares the drone's status before and after each timer and each packet:
 |---|---|
 | anything → GOING_TO_BASE | `decision` |
 | GOING_TO_BASE → CHARGING | `arrival` |
+| GOING_TO_BASE → WAITING | `arrival` (on a full base, since 2026-11-24) |
 | GOING_TO_BASE → MAPPING | `abort` (sent back to mapping on the way) |
 | anything → DEAD | `death` |
 
-CHARGING → MAPPING (the end of a recharge) is not recorded.
+WAITING → CHARGING (a pad freed) and CHARGING → MAPPING (the end of a recharge) are not
+recorded.
 
 Each event holds the time, the drone's real battery, the distance to the base, the energy to
 reach it, all the swarm terms above, the previous status, and what triggered it:
@@ -252,7 +257,11 @@ Egocentric smoke test (500 m, 4 drones, 3000 s): decisions at 0.23 ± 0.03, arri
    - It is the whole +0.045 bias on charging targets at 2000 m: the estimator assumes a
      constant battery while charging.
    - A fix (e.g. shut the plugin down at arrival and resume it at `recharge_done`) changes
-     behaviour and probably the tuning. Not fixed yet.
+     behaviour and probably the tuning.
+   - **Fixed 2026-11-24**, with the pads and the waiting room of the base
+     (`charging_station.py`): the plugin is shut down at landing and resumed at
+     `recharge_done`, in every system, so the battery is constant on the ground, as the
+     estimator assumes. The numbers above were measured before.
 2. **Aborts by `sent`.** The likely cause is the pair decision (`choose_two_cells`, which uses
    the deciding drone's view of the swarm) disagreeing with the drone's own decision. Not
    investigated.

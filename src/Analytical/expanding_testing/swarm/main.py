@@ -42,15 +42,15 @@ UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 100
 DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility handler
-DRONE_MAX_ACCELERATION = 3.0  # horizontal acceleration limit of the mobility handler, m/s^2
+DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility handler, m/s^2 (3.0 before 2026-11-24)
 
 ##### Fixed protocol parameters, not tuned
-DISCHARGE_RATE = 0.00073  # measured: 0.000725-0.000733 per second, flying at 15 m/s with the random air speed (0.00077 at 10 m/s)
+DISCHARGE_RATE = 0.00067  # measured 2026-11-23 after the battery plugin body-frame fix: 0.000665-0.000667 per second, cruising at 15 m/s with the random air speed, the same along x and y (0.00073 before the fix). Still valid with the air speed held 60 s (2026-11-24, protocol.py): same N(0, 4) distribution, so the same mean drain
 CHARGING_BASE_POSITIONS = [(0.0, 0.0)]  # [(x, y), ...] in metres, one per base
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
-MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
+MIN_CHARGE_MARGIN = 0.15  # fraction of battery for going near the base of recharging. Floor of the swarm margin: 0.10 below the hand-tuned 0.25, so a and c can delay the return (2026-11-24)
 ##### The range of gradysim is 3D. The drones fly, and charge, at the protocol's DRONE_ALTITUDE, so the antenna of #####
 ##### the bases is put at that altitude too: their heartbeats reach as far as the drone-to-drone messages, and as   #####
 ##### far as the ChargingNotificationMessage the drone charging on the base used to send. On the ground a base     #####
@@ -110,6 +110,13 @@ def cell_centre(position) -> tuple:
     return tuple(float(c) for c in cell * DISTANCE_BETWEEN_CELLS - map_center_offset)
 
 
+##### Charging pads of every base (since 2026-11-24, see Analytical/charging_station.py): at most #####
+##### this many drones charge on one base at once, the others wait landed next to it. None gives  #####
+##### every base Nc pads, the capacity of the single base of Analytical. Nc itself stays the soft  #####
+##### limit over all the bases together (charging_capacity).                                       #####
+PADS_PER_BASE = None
+
+
 def default_charging_capacity(number_of_drones: int) -> int:
     """
     Nc when none is given: the capacity of the single base of Analytical/swarm, now over all the
@@ -162,6 +169,9 @@ class GlobalMapMonitor:
         self.visited = None
 
         self.dead_drones = []
+        ##### Drones in the waiting room of a base, over all the bases, see charging_station.py #####
+        self.waiting_drones = []
+        self.accomulated_waiting_time = 0.0
         self.charging_drones = []
         self.charging_drones_per_base = []  # one array of number_of_bases counts per sample
         self.accomulated_dead_time = 0.0
@@ -198,6 +208,9 @@ class GlobalMapMonitor:
 
         self.dead_drones.append(dead)
         self.charging_drones.append(charging)
+        waiting = sum(p.status == DroneStatus.WAITING for p in self._protocols)
+        self.accomulated_waiting_time += waiting * self.sample_interval
+        self.waiting_drones.append(waiting)
         self.charging_drones_per_base.append(charging_per_base)
 
     @property
@@ -323,7 +336,8 @@ def create_and_run_simulation(individual, mode: str = "train",
         builder.add_handler(VisualizationHandler())
 
     ##### Shared by the bases and the drones of this simulation only, see recharge_base.py #####
-    charging_registry = ChargingRegistry(len(charging_base_positions))
+    charging_registry = ChargingRegistry(len(charging_base_positions),
+                                         charging_capacity if PADS_PER_BASE is None else PADS_PER_BASE)
 
     results_aggregator = {}
     ConfiguredDrone = drone_protocol_factory(
@@ -365,6 +379,8 @@ def create_and_run_simulation(individual, mode: str = "train",
     global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval,
                                   number_of_bases=len(charging_base_positions),
                                   nc_charging_base=charging_capacity)
+    ##### For the reports: the pads and the waits of every base #####
+    global_map.charging_registry = charging_registry
     observers = [global_map.sample]
     if observer_factory is not None:
         observers.append(observer_factory(simulation))

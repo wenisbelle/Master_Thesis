@@ -70,6 +70,13 @@ class BatteryPowerConfiguration:
     random_air_speed_sigma: Optional[float] = None
     """Standard deviation of the normal distribution of the air speed, in m/s"""
 
+    random_air_speed_hold: float = 1.0
+    """Seconds each random air speed is kept before a new one is drawn (piecewise constant wind).
+    1.0 draws a new one at every battery step, as before. A value drawn every second averages out
+    over a flight (+-2% of the energy over 100 s); held for a minute it changes the energy of a
+    whole trip, so a constant consumption estimate is no longer exact. Values above 1.0 need the
+    `rng` argument of BatteryPowerPlugin."""
+
 
 
 

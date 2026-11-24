@@ -26,7 +26,7 @@ What is the same as `Analytical/swarm` (copied):
 - the encounter rule: the drone with the highest id decides for both, at most once every
   10 s per pair;
 - the `DynamicVelocity` mobility at 15 m/s and 3 m/s², the braking approach to the base;
-- the gradysim `BatteryPowerPlugin` with random wind, and the death below 10% battery;
+- the gradysim `BatteryPowerPlugin` with random wind (N(0, 4) m/s, each value held for 60 s), and the death below 10% battery;
 - the charging base: 100 s recharge, `CHARGING_NOTIFICATION`, `DEAD_NOTIFICATION`;
 - the battery table of the swarm (`swarm_battery_status`) and its estimation
   (`estimate_drone_battery`, `aproximate_battery_consumption_model`);

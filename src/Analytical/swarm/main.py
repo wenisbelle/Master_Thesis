@@ -9,6 +9,7 @@ from gradysim.simulator.handler.timer import TimerHandler
 from gradysim.simulator.handler.visualization import VisualizationHandler
 from gradysim.simulator.simulation import SimulationConfiguration, SimulationBuilder
 from .protocol import drone_protocol_factory, DroneStatus
+from ..charging_station import ChargingStation
 from gradysim.simulator.handler.communication import CommunicationHandler, CommunicationMedium
 
 from gradysim.simulator.handler.mobility import (
@@ -31,15 +32,15 @@ UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 100
 DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility handler
-DRONE_MAX_ACCELERATION = 3.0  # horizontal acceleration limit of the mobility handler, m/s^2
+DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility handler, m/s^2 (3.0 before 2026-11-24)
 
 ##### Fixed protocol parameters, not tuned 
-DISCHARGE_RATE = 0.00073  # measured: 0.000725-0.000733 per second, flying at 15 m/s with the random air speed (0.00077 at 10 m/s)
+DISCHARGE_RATE = 0.00067  # measured 2026-11-23 after the battery plugin body-frame fix: 0.000665-0.000667 per second, cruising at 15 m/s with the random air speed, the same along x and y (0.00073 before the fix). Still valid with the air speed held 60 s (2026-11-24, protocol.py): same N(0, 4) distribution, so the same mean drain
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
-MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
+MIN_CHARGE_MARGIN = 0.15  # fraction of battery for going near the base of recharging. Floor of the swarm margin: 0.10 below the hand-tuned 0.25, so a and c can delay the return (2026-11-24)
 
 ##### Cost weights, every term is integrated over time.
 ##### UNCERTAINTY_WEIGHT was 0.01 on the 50x50 map at 10 m/s. On 100x100 at 15 m/s the accumulated #####
@@ -168,6 +169,12 @@ class GlobalMapMonitor:
     accomulated_charging_penalty is the integral of congestion_penalty_rate of
     that number, the congestion term of the cost. It is not linear, so it has
     to be accumulated sample by sample.
+
+    Since 2026-11-24 the base has Nc pads (charging_station.py): a drone that lands
+    on a full base waits on the ground, so the drones CHARGING never exceed Nc and
+    the congestion term stays 0 (from 3 drones on). Waiting costs through the map
+    instead, a waiting drone does not map. accomulated_waiting_time is the integral
+    of the drones WAITING, in drone*second, for the reports.
     """
 
     def __init__(self, simulation, number_of_drones: int, sample_interval: float):
@@ -186,6 +193,9 @@ class GlobalMapMonitor:
 
         self.dead_drones = []
         self.charging_drones = []
+        ##### Drones in the waiting room of the base, see charging_station.py #####
+        self.waiting_drones = []
+        self.accomulated_waiting_time = 0.0
         self.accomulated_dead_time = 0.0
         self.accomulated_charging_excess = 0.0
         self.accomulated_charging_penalty = 0.0
@@ -219,6 +229,9 @@ class GlobalMapMonitor:
 
         self.dead_drones.append(dead)
         self.charging_drones.append(charging)
+        waiting = sum(p.status == DroneStatus.WAITING for p in self._protocols)
+        self.accomulated_waiting_time += waiting * self.sample_interval
+        self.waiting_drones.append(waiting)
 
     @property
     def final_uncertainty(self) -> float:
@@ -342,6 +355,8 @@ def create_and_run_simulation(individual, mode: str = "train",
         builder.add_handler(VisualizationHandler())
 
     results_aggregator = {}
+    ##### The pads of the base: at most Nc drones charge at once, the others wait landed #####
+    charging_station = ChargingStation(int(number_of_drones/3))
     ConfiguredDrone = drone_protocol_factory(
         uncertainty_rate=UNCERTAINTY_RATE,
         vanishing_update_time=VANISHING_UPDATE_TIME,
@@ -353,6 +368,7 @@ def create_and_run_simulation(individual, mode: str = "train",
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
         charging_base_position=charging_base_position,
+        charging_station=charging_station,
         min_charge_margin=MIN_CHARGE_MARGIN,  
         Nc_charging_base=int(number_of_drones/3),  
         results_aggregator=results_aggregator,
@@ -371,6 +387,8 @@ def create_and_run_simulation(individual, mode: str = "train",
     simulation = builder.build()
 
     global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval)
+    ##### For the reports: the waits of the run #####
+    global_map.charging_station = charging_station
     observers = [global_map.sample]
     if observer_factory is not None:
         observers.append(observer_factory(simulation))

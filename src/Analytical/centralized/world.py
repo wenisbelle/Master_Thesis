@@ -43,6 +43,7 @@ deadlines. check_centralized.py tests place_slots against an exact solver. The
 README has the references and the measurements behind the constants.
 """
 
+import heapq
 from dataclasses import dataclass
 
 import numpy as np
@@ -57,15 +58,22 @@ class ChargingSlot:
 
 
 def on_base(starts, time: float, length: float) -> int:
-    """How many of the charges starting at starts, each `length` long, are on the base at time."""
+    """
+    Number of drones charging on the base at the instant `time`.
+
+    starts: the start time of each charge. Every charge lasts `length` seconds, so a
+    charge that starts at s occupies the base during [s, s + length).
+    """
     return sum(1 for other in starts if other <= time < other + length)
 
 
 def most_on_base(starts, start: float, length: float) -> int:
     """
-    The most charges of starts on the base at once during [start, start + length). All the
-    charges have the same length, so the count only rises where one of them starts: it is
-    enough to look at `start` and at the starts inside the interval.
+    Peak number of drones charging at the same time during [start, start + length).
+    `starts` and `length` mean the same as in on_base.
+
+    Every charge has the same length, so the count can only go up at the moment a charge
+    begins. Checking `start` itself and every charge start inside the interval is enough.
     """
     end = start + length
     return max([on_base(starts, start, length)]
@@ -73,7 +81,11 @@ def most_on_base(starts, start: float, length: float) -> int:
 
 
 def congestion(starts, start: float, length: float, capacity: int) -> float:
-    """Seconds of [start, start + length) with capacity or more charges of starts already on the base."""
+    """
+    How many seconds of [start, start + length) the base is already full, meaning
+    `capacity` or more of the charges in `starts` are on it. `starts` and `length` mean
+    the same as in on_base.
+    """
     end = start + length
     points = sorted({start, end} | {t for other in starts for t in (other, other + length) if start < t < end})
     return sum(b - a for a, b in zip(points, points[1:]) if on_base(starts, a, length) >= capacity)
@@ -82,27 +94,23 @@ def congestion(starts, start: float, length: float, capacity: int) -> float:
 def latest_slot(starts, earliest: float, latest: float, length: float, capacity: int,
                 tolerance: float) -> tuple:
     """
-    The latest start in [earliest, latest] of a charge of `length` seconds during which
-    fewer than capacity charges of starts are on the base at any moment (a free slot).
+    When a drone should start charging. Returns (start, free).
+    start: the time, in simulated seconds, when the drone should begin charging.
+    start: the time, in simulated seconds, when the drone should begin charging.
 
-    The count only grows, as the start moves later, where the new charge would start to
-    touch one of starts, at other - length. So the latest free start is `latest` itself
-    or one of those points.
+    earliest: arrival if it leaves now. latest: its deadline.
 
-    The drone asks once per mobility tick, so when its time to leave comes it is already
-    late for its slot by up to a tick (and by more if it flew away from the base in the
-    meantime). A free slot at most `tolerance` before `earliest` therefore means "leave
-    now": the guard of the slots absorbs the delay.
+    A free slot is a start where the base stays below `capacity` for the whole charge.
+    The drone gets the latest free slot in [earliest, latest]. A free slot up to
+    `tolerance` before `earliest` also counts, as "leave now".
 
-    When no free slot can be reached the drone still has to arrive by `latest`: it gets
-    the start in [earliest, latest] that adds the fewest seconds above the capacity, the
-    latest one among those. A drone that is already late (latest <= earliest) goes now.
-
-    Returns (start, free): free is False when the start is one of these last two cases.
+    If there is none, free is False and the drone gets the start with the least time
+    over capacity (latest on ties). If latest <= earliest it simply leaves now.
     """
     if latest <= earliest:
         return earliest, most_on_base(starts, earliest, length) < capacity
 
+    ##### The latest free start is `latest` or ends just as another charge begins #####
     candidates = [latest] + [other - length for other in starts if other - length < latest]
     free = [start for start in candidates if most_on_base(starts, start, length) < capacity]
     if free:
@@ -236,10 +244,7 @@ class CentralizedWorld:
 
     ##### Seconds added to every planned charge, see plan_charging #####
     SLOT_GUARD = 15.0
-    ##### Seconds a trip to the base takes on top of distance / speed + speed / (2 a): turning #####
-    ##### towards the base and the last centimetres of the approach. Measured 2026-11-15 over   #####
-    ##### 270 trips (5 and 10 drones, 4000 s, 12 runs): +7.3 s on average, std 2.9 s.         #####
-    APPROACH_EXTRA_TIME = 7.0
+    APPROACH_EXTRA_TIME = 0.0
     ##### The deadlines are planned with a drain this much above DISCHARGE_RATE. DISCHARGE_RATE #####
     ##### is right on average (measured 2026-11-15, 6 runs of 3000 s: 0.999 of it), but over    #####
     ##### 100 s of MAPPING the drain reaches 1.08 of it at the 95th percentile, 1.12 at the     #####
@@ -278,6 +283,8 @@ class CentralizedWorld:
             self.speed = drone.speed_command
             self.braking_time = drone.speed_command / (2 * drone.BASE_APPROACH_DECELERATION)
             self.status_values = {status.name: status for status in type(drone.status)}
+            ##### The pads and the waiting room of the base, see charging_station.py #####
+            self.station = drone.CHARGING_STATION
         self.drones[drone.provider.get_id()] = drone
 
     def others(self, drone_id: int) -> list:
@@ -341,6 +348,25 @@ class CentralizedWorld:
             elif drone.status == going:
                 straight = now + self.flight_time_to_base(drone) - self.APPROACH_EXTRA_TIME
                 starts.append(max(self.planned_arrival.get(drone_id, straight), straight))
+        return starts + self.waiting_room_starts(now)
+
+    def waiting_room_starts(self, now: float) -> list:
+        """
+        When the drones of the waiting room will start charging (since 2026-11-24, see
+        charging_station.py). They take the pads in the order they landed, each one as soon as
+        a pad frees: at the end of a charge on the base, or of a charge of the waiting room
+        before it. A pad is free until it is taken, so the start is never before now.
+        """
+        if not self.station.waiting:
+            return []
+        pads_free_at = [self.drones[i].charging_start_time + self.time_to_recharge for i in self.station.charging]
+        pads_free_at += [now] * max(0, self.station.pads - len(pads_free_at))
+        heapq.heapify(pads_free_at)
+        starts = []
+        for _ in self.station.waiting:
+            start = max(now, heapq.heappop(pads_free_at))
+            starts.append(start)
+            heapq.heappush(pads_free_at, start + self.time_to_recharge)
         return starts
 
     def plan(self, now: float) -> dict:
