@@ -79,8 +79,8 @@ hard is the number of pads of each base, see below.
 
 ### Pads and waiting room of every base (since 2026-11-24)
 
-Every base has its own pads, as the single base of `Analytical/` has
-(`Analytical/charging_station.py`):
+Every base has its own pads and its own waiting room, and manages them alone, as the
+single base of `Analytical/` does (the base node of each system's `recharge_base.py`):
 - **How many.** `PADS_PER_BASE` in each `main.py`; `None`, the default, gives every
   base `Nc` pads, the capacity of the single base of `Analytical/`.
 - **A full base.** A drone that lands with every pad of that base taken waits on the
@@ -100,9 +100,9 @@ the drones charge, but it does not enter the decisions.
 
 ### The recharge base is a node
 
-Each base is a node of the simulation, like the drones, but it never moves. Since
-2026-11-24 it is the node of `Analytical/recharge_base.py`, the same one the
-single-base systems use (the per-system `recharge_base.py` copies were removed; see
+Each base is a node of the simulation, like the drones, but it never moves. It is
+the node of the system's own `recharge_base.py` (`expanding_testing/<system>/`, since
+2026-11-25; from 2026-11-24 one shared `Analytical/recharge_base.py`, see
 `Analytical/base_node.md`). The bases are added after the drones, so drones keep the
 ids `0..n-1` and base `b` is node `n + b` (`base_node_id`).
 
@@ -110,20 +110,23 @@ ids `0..n-1` and base `b` is node `n + b` (`base_node_id`).
   base `LANDED`. The base answers `PAD` at once when a pad is free and nobody waits,
   otherwise when the drone's turn in the waiting room comes. At take-off the drone
   sends `TAKE_OFF`, and the base gives the pad to the first drone of its waiting room
-  at that instant. Each base owns its `ChargingStation`, the drones never touch it.
-- **Shared knowledge between bases.** All the bases of a simulation share the list
-  of the stations, `charging_stations` in `main.py`. In reality that would be a
-  second radio, long range and low bandwidth; here it is a shared variable. Each
-  base writes only its own station, and knows exactly who is on every base.
+  at that instant. Each base owns its pads and its waiting room, the drones never
+  touch them. The reports read them from the nodes (`global_map.recharge_bases`).
+- **No shared knowledge between bases (since 2026-11-25).** A base knows only who is
+  on it. Until 2026-11-25 the bases shared the list of every base's pads (a "second
+  radio" between them, a shared variable in `main.py`) and each one knew who was on
+  every base.
 - **Heartbeat (swarm only, `BROADCAST_BASE` in `main.py`).** Every 1 s, while a drone
-  is on the ground somewhere, each base broadcasts a `BaseHeartbeatMessage` with,
-  for **every** base, its pads, the drones charging (id, time the charge started,
-  battery) and the drones of its waiting room (id, time they landed, battery). It has
+  is on its ground, a base broadcasts a `BaseHeartbeatMessage` with its pads, the
+  drones charging on it (id, time the charge started, battery) and the drones of its
+  waiting room (id, time they landed, battery). It has
   the same range as every other message. A drone in range stores the charging ones as
   CHARGING and the waiting ones as WAITING, with the time their charge will start, in
   its swarm table, and counts both as on a base. When one of them is new to it, it
-  chooses its destination again. Because every base reports all of them, a drone near
-  one base also learns about the drones on the others.
+  chooses its destination again. A drone learns about the drones on the other bases
+  from the drones it meets, which pass on the rows they hold (newest wins). Until
+  2026-11-25 every base reported all of them, so a drone near one base learnt about
+  the others at once.
 - **Egocentric and naive.** The bases are the same nodes at the same places and give
   the pads the same way, but they send no heartbeat. These drones only look at their
   own battery.

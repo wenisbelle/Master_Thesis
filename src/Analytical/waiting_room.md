@@ -21,8 +21,14 @@ reference, the other six systems got the same change (see
 >   charging **and waiting**, and the swarm drones count the waiting ones as on the base;
 > - "Why a shared Python object and not a gradysim node" below is the reasoning that was
 >   reversed;
-> - `expanding_testing` has no `ChargingRegistry` and no `recharge_base.py` per system any
->   more: the stations are a list, the base node is `Analytical/recharge_base.py`.
+> - `expanding_testing` has no `ChargingRegistry` any more. Its bases were the shared node
+>   of `Analytical/recharge_base.py` with a list of stations, and since 2026-11-25 each
+>   system has its own `recharge_base.py` again, one node per base.
+>
+> **Since 2026-11-25 `charging_station.py` no longer exists**: the pads and the waiting
+> room are attributes of the base node itself, and each system has its own
+> `recharge_base.py` (see [`base_node.md`](base_node.md)). The links to
+> `charging_station.py` below point to the file as it was on 2026-11-24.
 
 ## Contents
 
@@ -71,7 +77,7 @@ charging and the others are in the waiting room, landed and not charging.**
 
 ```
                               lands on the base
-MAPPING ──▶ GOING_TO_BASE ─────────┬───────────────▶ CHARGING ──(100 s)──▶ MAPPING
+MAPPING ──▶ GOING_TO_BASE ─────────┬───────────────▶ CHARGING ──(300 s)──▶ MAPPING
    ▲                               │ pad free and         ▲                   (take-off:
    │                               │ nobody waiting       │                    battery full,
    │                               │                      │ first in line      plugin resumed)
@@ -90,7 +96,8 @@ MAPPING ──▶ GOING_TO_BASE ─────────┬──────
   it asks again. It gets a pad when one is free and it is first in line, so the pads go
   in the order the drones landed. A freed pad can stay empty up to 1 s before the next
   drone takes it.
-- **Charging.** 100 s on the pad (`TIME_TO_RECHARGE`, unchanged), whatever the battery.
+- **Charging.** `TIME_TO_RECHARGE` on the pad, whatever the battery: 300 s since 2026-11-25
+  (100 s, unchanged, when the pads were added).
   The swarm drone broadcasts its charging notification every second, as before, with the
   time **its charge started** (not the time it landed) and its battery then.
 - **Take-off.** At the end of the charge the drone frees its pad, gets a full battery,
@@ -190,7 +197,7 @@ while CHARGING.
 moved into a method, because it now runs from two places: the landing on a free pad, and
 the waiting room when a pad frees. It sets CHARGING, `charging_start_time` and
 `battery_at_charging_start` (what the charging notification sends), schedules the
-notification and `recharge_done` 100 s later.
+notification and `recharge_done` `TIME_TO_RECHARGE` later (300 s since 2026-11-25, 100 s before).
 
 **The waiting room timer** ([720–727](swarm/protocol.py#L720-L727)). It is handled before
 the status gate of `handle_timer`, like `recharge_done` and `dead_notification`, because
@@ -243,7 +250,8 @@ def resume(self) -> None:
             self._schedule_next_tick()
 ```
 
-In the protocols the shortest shutdown is a whole charge (100 s), so this never happened.
+In the protocols the shortest shutdown is a whole charge (300 s since 2026-11-25, 100 s
+before), so this never happened.
 The fix makes the plugin safe for any use.
 
 ### 4. The simulation and the monitor: `swarm/main.py`
@@ -312,10 +320,10 @@ Most drones charging at once: 2
 - **The battery estimate of the others.** `estimate_drone_battery`
   ([434](swarm/protocol.py#L434)) has no WAITING case, and needs none: a waiting drone is
   silent, so WAITING never reaches the table of beliefs. The others keep projecting it from
-  the last row they heard, GOING_TO_BASE: charging for 100 s from its expected arrival,
+  the last row they heard, GOING_TO_BASE: charging for `TIME_TO_RECHARGE` (300 s) from its expected arrival,
   then mapping with a full battery. A long wait therefore looks to them like a charge that
   ends too early, until the drone's real charging notifications arrive with the real start.
-- **The charging notification** ([660](swarm/protocol.py#L660)), the recharge time (100 s),
+- **The charging notification** ([660](swarm/protocol.py#L660)), the recharge time (`TIME_TO_RECHARGE`, 300 s since 2026-11-25),
   the arrival tolerances, the encounters.
 
 ## What changes in the numbers

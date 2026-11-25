@@ -40,7 +40,7 @@ from . import main
 from . import main_test
 from .protocol import DroneStatus
 from .world import place_slots, most_on_base, on_base
-from ..recharge_base import BaseMessageType, base_node_id
+from .recharge_base import BaseMessageType, base_node_id
 
 ##### Integer cases of the scheduler check #####
 SCHEDULER_CASES = 150

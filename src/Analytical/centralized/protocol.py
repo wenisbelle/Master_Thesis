@@ -28,7 +28,7 @@ import numpy as np
 
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
-from ..recharge_base import BaseMessageType, base_node_id, send_landed, send_take_off
+from .recharge_base import BaseMessageType, base_node_id, send_landed, send_take_off
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -146,7 +146,7 @@ class Drone(IProtocol):
         self.MOBILITY_UPDATE_TIME = 1.0
         ##### Period of the pair decision check, the heartbeat period of swarm #####
         self.ENCOUNTER_CHECK_TIME = 1.0
-        self.TIME_TO_RECHARGE = 100
+        self.TIME_TO_RECHARGE = 300
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]

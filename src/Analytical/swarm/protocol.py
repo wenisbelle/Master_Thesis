@@ -9,9 +9,8 @@ import base64
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
-from ..recharge_base import (BaseMessageType, BaseHeartbeatMessage, base_node_id,
-                             send_landed, send_take_off)
-from ..charging_station import waiting_room_starts
+from .recharge_base import (BaseMessageType, BaseHeartbeatMessage, base_node_id,
+                            send_landed, send_take_off, waiting_room_starts)
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -179,7 +178,7 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
-        self.TIME_TO_RECHARGE = 100
+        self.TIME_TO_RECHARGE = 300
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -660,41 +659,39 @@ class Drone(IProtocol):
 
     def handle_base_heartbeat(self, base_msg: BaseHeartbeatMessage) -> bool:
         """
-        Stores what the base tells about the drones on the ground (since 2026-11-24, it replaces the
-        ChargingNotificationMessage each charging drone sent). Returns True when a drone is new on the
+        Stores what the base tells about the drones on the ground. Returns True when a drone is new on the
         base: it was not counted there yet, or the stored stay is an older one that already ended.
 
         A drone on a pad gets the row (battery, time its charge started, CHARGING), as before. A drone
         of the waiting room gets (battery at landing, time its charge will start, WAITING): the base
         hands the pads over in landing order the instant they free, so the start is known exactly from
-        the charges on the pads and the place in line (charging_station.waiting_room_starts). Its
+        the charges on the pads and the place in line (recharge_base.waiting_room_starts). Its
         WAITING -> CHARGING row then has the same time, and is not new. Both rows keep a time that
         only grows from one stay on the base to the next, so the gossip (newest row wins) keeps them.
         """
         my_id = self.provider.get_id()
         now = self.provider.current_time()
         is_new = False
-        for station in base_msg['bases']:
-            rows = [(drone_id, start, battery, DroneStatus.CHARGING.value)
-                    for drone_id, start, battery in station['charging']]
-            starts = waiting_room_starts([start for _, start, _ in station['charging']], len(station['waiting']),
-                                         station['pads'], self.TIME_TO_RECHARGE, now)
-            rows += [(drone_id, start, battery, DroneStatus.WAITING.value)
-                     for (drone_id, _, battery), start in zip(station['waiting'], starts)]
+        rows = [(drone_id, start, battery, DroneStatus.CHARGING.value)
+                for drone_id, start, battery in base_msg['charging']]
+        starts = waiting_room_starts([start for _, start, _ in base_msg['charging']], len(base_msg['waiting']),
+                                     base_msg['pads'], self.TIME_TO_RECHARGE, now)
+        rows += [(drone_id, start, battery, DroneStatus.WAITING.value)
+                 for (drone_id, _, battery), start in zip(base_msg['waiting'], starts)]
 
-            for drone_id, start, battery, status in rows:
-                # This drone's own stay, it already knows it
-                if drone_id == my_id:
-                    continue
-                stored_status, stored_time = self.swarm_battery_status[drone_id, 2], self.swarm_battery_status[drone_id, 1]
-                is_new |= (stored_status not in (DroneStatus.CHARGING.value, DroneStatus.WAITING.value)
-                           or stored_time < start)
+        for drone_id, start, battery, status in rows:
+            # This drone's own stay, it already knows it
+            if drone_id == my_id:
+                continue
+            stored_status, stored_time = self.swarm_battery_status[drone_id, 2], self.swarm_battery_status[drone_id, 1]
+            is_new |= (stored_status not in (DroneStatus.CHARGING.value, DroneStatus.WAITING.value)
+                       or stored_time < start)
 
-                # The row keeps the battery and the time the charge starts, not the time it was heard,
-                # so aproximate_battery_consumption_model knows exactly when the charge ends
-                self.swarm_battery_status[drone_id, 0] = battery
-                self.swarm_battery_status[drone_id, 1] = start
-                self.swarm_battery_status[drone_id, 2] = status
+            # The row keeps the battery and the time the charge starts, not the time it was heard,
+            # so aproximate_battery_consumption_model knows exactly when the charge ends
+            self.swarm_battery_status[drone_id, 0] = battery
+            self.swarm_battery_status[drone_id, 1] = start
+            self.swarm_battery_status[drone_id, 2] = status
         return is_new
 
     def updated_map(self, data: dict):

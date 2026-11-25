@@ -9,7 +9,7 @@ import base64
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
-from ..recharge_base import BaseMessageType, base_node_id, send_landed, send_take_off
+from .recharge_base import BaseMessageType, base_node_id, send_landed, send_take_off
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -160,7 +160,7 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
-        self.TIME_TO_RECHARGE = 100
+        self.TIME_TO_RECHARGE = 300
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]

@@ -9,8 +9,7 @@ from gradysim.simulator.handler.timer import TimerHandler
 from gradysim.simulator.handler.visualization import VisualizationHandler
 from gradysim.simulator.simulation import SimulationConfiguration, SimulationBuilder
 from .protocol import drone_protocol_factory, DroneStatus
-from ..charging_station import ChargingStation
-from ..recharge_base import recharge_base_factory, BASE_ANTENNA_ALTITUDE
+from .recharge_base import recharge_base_factory, base_node_id, BASE_ANTENNA_ALTITUDE
 from gradysim.simulator.handler.communication import CommunicationHandler, CommunicationMedium
 
 from gradysim.simulator.handler.mobility import (
@@ -55,10 +54,6 @@ COST_TERMS = ("uncertainty", "dead", "charging")  # the terms summed into the co
 
 ##### How often the global map is assembled and sampled, in simulated seconds. 
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
-
-##### The base node broadcasts the drones charging and waiting every second (recharge_base.py): #####
-##### no drone of this system listens to it, so the base only gives the pads.                   #####
-BROADCAST_BASE = False
 
 ##### GA genome layout: (name, low, high), in the order the individual stores them.
 ##### These bounds are PLACEHOLDERS chosen to be dimensionally sane, they have not
@@ -170,7 +165,7 @@ class GlobalMapMonitor:
     that number, the congestion term of the cost. It is not linear, so it has
     to be accumulated sample by sample.
 
-    Since 2026-11-24 the base has Nc pads (charging_station.py): a drone that lands
+    Since 2026-11-24 the base has Nc pads (recharge_base.py): a drone that lands
     on a full base waits on the ground, so the drones CHARGING never exceed Nc and
     the congestion term stays 0 (from 3 drones on). Waiting costs through the map
     instead, a waiting drone does not map. accomulated_waiting_time is the integral
@@ -193,7 +188,7 @@ class GlobalMapMonitor:
 
         self.dead_drones = []
         self.charging_drones = []
-        ##### Drones in the waiting room of the base, see charging_station.py #####
+        ##### Drones in the waiting room of the base, see recharge_base.py #####
         self.waiting_drones = []
         self.accomulated_waiting_time = 0.0
         self.accomulated_dead_time = 0.0
@@ -355,9 +350,6 @@ def create_and_run_simulation(individual, mode: str = "train",
         builder.add_handler(VisualizationHandler())
 
     results_aggregator = {}
-    ##### The pads of the base: at most Nc drones charge at once, the others wait landed. #####
-    ##### The base node owns it, see recharge_base.py                                     #####
-    charging_station = ChargingStation(int(number_of_drones/3))
     ConfiguredDrone = drone_protocol_factory(
         uncertainty_rate=UNCERTAINTY_RATE,
         vanishing_update_time=VANISHING_UPDATE_TIME,
@@ -384,16 +376,16 @@ def create_and_run_simulation(individual, mode: str = "train",
         builder.add_node(ConfiguredDrone, (charging_base_position[0], charging_base_position[1], 0))
 
     ##### The base is a node (since 2026-11-24), added after the drones so they keep the ids  #####
-    ##### 0..number_of_drones-1. It gives the pads. BROADCAST_BASE: see recharge_base.py      #####
-    builder.add_node(recharge_base_factory([charging_station], broadcast=BROADCAST_BASE, mode=mode),
+    ##### 0..number_of_drones-1. It owns the pads and the waiting room, see recharge_base.py  #####
+    builder.add_node(recharge_base_factory(int(number_of_drones/3), mode=mode),
                      (charging_base_position[0], charging_base_position[1], BASE_ANTENNA_ALTITUDE))
 
     # Building & starting
     simulation = builder.build()
 
     global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval)
-    ##### For the reports: the waits of the run, read from the base's own bookkeeping #####
-    global_map.charging_station = charging_station
+    ##### For the reports: the base node itself, its pads and the waits of the run #####
+    global_map.recharge_base = simulation.get_node(base_node_id(number_of_drones)).protocol_encapsulator.protocol
     observers = [global_map.sample]
     if observer_factory is not None:
         observers.append(observer_factory(simulation))

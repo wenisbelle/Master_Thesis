@@ -9,7 +9,7 @@ import base64
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
-from ...recharge_base import BaseMessageType, base_node_id, send_landed, send_take_off
+from .recharge_base import BaseMessageType, base_node_id, send_landed, send_take_off
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -25,7 +25,7 @@ class DroneStatus(enum.Enum):
     GOING_TO_BASE = 1
     DEAD = 2
     CHARGING = 3
-    ##### Landed on a base, waiting for the base to give it a pad (since 2026-11-24), see Analytical/recharge_base.py #####
+    ##### Landed on a base, waiting for the base to give it a pad (since 2026-11-24), see recharge_base.py #####
     WAITING = 4
 
 class MessageType(enum.Enum):
@@ -180,7 +180,7 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
-        self.TIME_TO_RECHARGE = 100
+        self.TIME_TO_RECHARGE = 300
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -716,7 +716,7 @@ class Drone(IProtocol):
 
                             ##### It waits for a pad until its base gives it one (PAD_MESSAGE): at the #####
                             ##### same instant when one is free, otherwise when its turn comes. Every   #####
-                            ##### base has its pads, see Analytical/recharge_base.py.                  #####
+                            ##### base has its pads, see recharge_base.py.                             #####
                             self.status = DroneStatus.WAITING
                             if self.VERBOSE:
                                 self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} reached base {self.recharge_base_index} and asks for a pad")
@@ -800,7 +800,7 @@ class Drone(IProtocol):
 
 
     def handle_packet(self, message: str) -> None:
-        ##### On the ground the only message the drone acts on is the PAD of its base, see Analytical/recharge_base.py #####
+        ##### On the ground the only message the drone acts on is the PAD of its base, see recharge_base.py #####
         if self.status == DroneStatus.WAITING:
             if json.loads(message).get('message_type') == BaseMessageType.PAD_MESSAGE.value:
                 self.start_charging()

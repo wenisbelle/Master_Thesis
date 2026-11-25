@@ -386,10 +386,10 @@ def report(results: dict, recorder: SimulationRecorder,
     print(format_summary(summarize(recorder.drone_arrays(), recorder.returns, status_values)))
     print()
 
-    ##### The base: its pads and its waiting room, see charging_station.py #####
-    station = global_map.charging_station
+    ##### The base: its pads and its waiting room, see recharge_base.py #####
+    recharge_base = global_map.recharge_base
     print("=== Base (pads and waiting room) ===")
-    print(station.report(global_map.times[-1] if global_map.times else duration, global_map.charging_drones))
+    print(recharge_base.report(global_map.times[-1] if global_map.times else duration, global_map.charging_drones))
     print()
 
     ##### Checks. Each one is a claim that has to hold for the run to be #####
@@ -400,8 +400,8 @@ def report(results: dict, recorder: SimulationRecorder,
     ##### The pads are a hard limit: a drone that finds them taken waits landed #####
     most_charging = int(max(global_map.charging_drones, default=0))
     checks.append((
-        most_charging <= station.pads,
-        f"never more than {station.pads} drone(s) charging at once, the pads of the base "
+        most_charging <= recharge_base.pads,
+        f"never more than {recharge_base.pads} drone(s) charging at once, the pads of the base "
         f"(at most {most_charging} were)"))
 
     mapping_drones = [drone_id for drone_id, drone_results in results.items()
@@ -447,7 +447,7 @@ def report(results: dict, recorder: SimulationRecorder,
 
     ##### The old check "never more than max(1, Nc) drones charging at once" is the pad #####
     ##### check at the top since 2026-11-24: a drone the scheduler sends to a full base  #####
-    ##### (no free slot left before its deadline) now waits landed, see charging_station.py #####
+    ##### (no free slot left before its deadline) now waits landed, see recharge_base.py #####
 
     for passed, description in checks:
         print(f"[{'ok  ' if passed else 'FAIL'}] {description}")

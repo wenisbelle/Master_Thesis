@@ -11,8 +11,9 @@ naive have the same colour, line and marker in both scripts.
   %, run k of each system against run k of the reference (same bases and wind): (a) in
   time, in windows of --uncertainty-window seconds; (b) the mean of each run from
   --steady-state on, a dot per run, with a paired Wilcoxon signed-rank test.
-- More than Nc drones charging, over all the bases together: (a) when, the probability
-  in windows of --window seconds, (b) how much, the share of every run, with the paired
+- Time on the base, over all the bases together: (a) when, the probability of a drone
+  being in the waiting room in windows of --window seconds, (b) how much a drone waits,
+  the share of every run, with the paired
   Wilcoxon signed-rank test when exactly two systems are drawn (run k has the same bases
   and wind on every system), (c) how many at once, the occupancy of the bases.
 - Time between two visits of a cell by the distance from the cell to its nearest base,
@@ -104,7 +105,7 @@ def main() -> int:
                              f"<range>/<scenario> (default: {DEFAULT_LOGS_ROOT}, {HAND_TUNED_LOGS_ROOT} "
                              "with --hand-tuned)")
     parser.add_argument("--window", type=float, default=WINDOW,
-                        help="width of the windows the probability of more than Nc charging is "
+                        help="width of the windows the probability of a drone waiting for a pad is "
                              "estimated in, in s (default: %(default)s)")
     parser.add_argument("--distance-bin", type=float, default=DISTANCE_BIN,
                         help="width of the bins of distance to the nearest base the time between two "
@@ -173,7 +174,7 @@ def main() -> int:
             ##### The titles of plot_multiple_runs.py do not know the scenario #####
             titles = {"uncertainty": "Global uncertainty over the runs",
                       "uncertainty_difference": f"Global uncertainty relative to {reference}",
-                      "charging": "Drones charging above Nc over the runs",
+                      "charging": "Time on the base over the runs",
                       "revisit": "Time between two visits of a cell by distance to the nearest base"}
             for name, fig in figures.items():
                 fig.suptitle(f"{titles[name]}, {label}")

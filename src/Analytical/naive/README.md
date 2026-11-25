@@ -12,7 +12,7 @@ by the simplest rule there is:
 
 Everything else is egocentric's: the maps merged in encounters, the heartbeat and
 gossip, the pair decisions (only between two MAPPING drones), the camera, the
-mobility and braking approach, the battery, wind and seeds, the 100 s recharge, death
+mobility and braking approach, the battery, wind and seeds, the 300 s recharge, death
 at 10%, the cost, the GA, the monitors, the recorder and the plots.
 
 The code as of 2026-11-15 is the source of truth. Where this file and the code disagree,
@@ -35,7 +35,7 @@ and `choose_two_cells` only take the map, the positions and the speed, and only 
 cells to map. `Nc` and the measured `DISCHARGE_RATE` are not decision parameters either:
 `main.py` keeps them for the cost and the plots (`charging_base_capacity`, the reference
 line of `plot_returns.py`). Since 2026-11-24 `Nc` is also the number of pads of the base
-(`charging_station.py`), as in every system: the naive drone does not look at it before
+(the base node, `naive/recharge_base.py`), as in every system: the naive drone does not look at it before
 going, but a drone that lands with every pad taken waits on the ground, battery frozen,
 until one frees. `main_test.py` labels a trip to the base as `threshold` in the
 returns, where swarm's says `own`.

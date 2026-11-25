@@ -337,12 +337,12 @@ def report(results: dict, recorder: SimulationRecorder,
           f"Nc was respected {100.0 * (1.0 - above / max(duration, 1e-9)):.1f}% of the time")
     print()
 
-    ##### The pads of every base and its waiting room, see Analytical/charging_station.py #####
-    stations = global_map.charging_stations
+    ##### The pads of every base and its waiting room, see recharge_base.py #####
+    recharge_bases = global_map.recharge_bases
     end_time = global_map.times[-1] if global_map.times else duration
     print("=== Pads and waiting rooms of the bases ===")
-    for base, station in enumerate(stations):
-        print(f"base {base}: " + station.report(end_time, charging_per_base[:, base]).replace("\n", "\n        "))
+    for base, recharge_base in enumerate(recharge_bases):
+        print(f"base {base}: " + recharge_base.report(end_time, charging_per_base[:, base]).replace("\n", "\n        "))
     print()
 
     ##### The global map is the element-wise minimum of the maps of every drone: #####
@@ -368,10 +368,10 @@ def report(results: dict, recorder: SimulationRecorder,
     ##### The pads are a hard limit on every base: a drone that finds them taken waits landed #####
     most_per_base = [int(charging_per_base[:, base].max()) if len(charging_per_base) else 0
                      for base in range(number_of_bases)]
-    over_pads = {base: most for base, most in enumerate(most_per_base) if most > stations[base].pads}
+    over_pads = {base: most for base, most in enumerate(most_per_base) if most > recharge_bases[base].pads}
     checks.append((
         not over_pads,
-        f"never more drones charging on a base than its {stations[0].pads} pad(s) "
+        f"never more drones charging on a base than its {recharge_bases[0].pads} pad(s) "
         f"(at most {max(most_per_base, default=0)} were)"))
 
     mapping_drones = [drone_id for drone_id, drone_results in results.items()

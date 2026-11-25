@@ -7,6 +7,12 @@ became a **gradysim node**, in all seven Analytical systems. The drones now talk
 with messages, and in swarm **the base, not the charging drones, broadcasts who is on
 the ground**: the drones charging and the drones in the waiting room.
 
+> **Since 2026-11-25 the node holds its pads and its waiting room itself, and every
+> system has its own `recharge_base.py`** (`swarm/`, `egocentric/`, `naive/`,
+> `centralized/` and the three `expanding_testing/` copies). With several bases, each one
+> manages its landings and knows only about itself. See
+> [Since 2026-11-25](#since-2026-11-25-the-pads-inside-the-node-one-copy-per-system).
+
 ## Contents
 
 - [Before and after](#before-and-after)
@@ -15,6 +21,7 @@ the ground**: the drones charging and the drones in the waiting room.
 - [Where in the code](#where-in-the-code)
 - [Swarm: the base heartbeat](#swarm-the-base-heartbeat)
 - [The other systems](#the-other-systems)
+- [Since 2026-11-25: the pads inside the node, one copy per system](#since-2026-11-25-the-pads-inside-the-node-one-copy-per-system)
 - [Checks run on 2026-11-24](#checks-run-on-2026-11-24)
 - [Consequences and open points](#consequences-and-open-points)
 
@@ -46,7 +53,7 @@ the ground**: the drones charging and the drones in the waiting room.
 ```
 drone lands      ── LANDED (its battery) ──▶  base: a pad free and nobody waiting?
                  ◀── PAD ─────────────────    yes: at once. No: when its turn comes
-drone charges 100 s on the pad
+drone charges TIME_TO_RECHARGE (300 s) on the pad
 drone takes off  ── TAKE_OFF ─────────────▶  base: the pad goes to the first drone of
                                               the waiting room, with a PAD, same instant
 
@@ -65,31 +72,37 @@ base ── BASE_HEARTBEAT (pads, charging, waiting) ──▶ every drone in ra
 
 ## Where in the code
 
-**`recharge_base.py` (new, shared by every system):**
-- `BaseMessageType`, and the TypedDicts of the four messages.
+**`<system>/recharge_base.py`** (one copy per system since 2026-11-25, each with only
+what its system uses):
+- `BaseMessageType`, and the TypedDicts of the messages. `BASE_HEARTBEAT` and
+  `BaseHeartbeatMessage` are only in the swarm copies.
 - `base_node_id(number_of_drones, base_index)`: the base is node `n + b`.
 - `send_landed` and `send_take_off`: what the drones call.
+- `waiting_room_starts(...)` gives when each drone of a waiting room will start
+  charging. It is in the swarm copies (the drones, on the heartbeat) and in centralized
+  (the scheduler).
 - `RechargeBase`, the node:
+  - `instantiate` makes its pads and its waiting room: `pads`, `charging` (a dict
+    `{id: (charge start, battery)}`), `waiting` (first landed first), the waits and the
+    landings of the run.
+  - `land(id, now, battery)` and `take_off(id, now)`. `take_off` returns the drones that
+    get a pad now.
+  - `summary` and `report` give the waits of the run to the reports.
   - `handle_packet` answers `LANDED` and `TAKE_OFF` and ignores the drones' broadcasts.
-  - The `base_heartbeat` timer runs only with `broadcast=True`.
-- `recharge_base_factory(stations, base_index, broadcast, mode)`.
+  - Swarm copies: `charging_rows` and `waiting_rows` build the heartbeat, and the
+    `base_heartbeat` timer runs with `broadcast=True`.
+- `recharge_base_factory(pads, base_index, mode)`, plus `broadcast` in the swarm copies.
 - `BASE_ANTENNA_ALTITUDE = 50`.
 
-**`charging_station.py`:**
-- `land(id, now, battery)` also keeps the battery.
-- `take_off(id, now)` returns the drones that get a pad now. There is no `take_pad` any
-  more.
-- `charging` is a dict `{id: (charge start, battery)}`.
-- `charging_rows`, `waiting_rows` and `as_message` build the heartbeat.
-- `waiting_room_starts(...)` gives when each drone of a waiting room will start
-  charging. It is shared by the swarm drones and the centralized scheduler.
-
 **Each `main.py`:**
-- After the drones, `builder.add_node(recharge_base_factory([charging_station],
-  broadcast=BROADCAST_BASE, mode=mode), (x, y, BASE_ANTENNA_ALTITUDE))`.
-- `BROADCAST_BASE` is True in swarm and False elsewhere.
-- The station is no longer passed to the drones. `global_map.charging_station` is kept
-  for the reports.
+- After the drones, `builder.add_node(recharge_base_factory(Nc, mode=mode),
+  (x, y, BASE_ANTENNA_ALTITUDE))`. Swarm adds `broadcast=BROADCAST_BASE` (True, and only
+  the swarm `main.py` files have it). `expanding_testing` adds one node per base, with
+  `PADS_PER_BASE` pads (Nc by default) and its `base_index`.
+- After the build, the node itself goes to what reads it:
+  `global_map.recharge_base = simulation.get_node(base_node_id(n)).protocol_encapsulator.protocol`
+  for the reports (`global_map.recharge_bases`, one per base, in `expanding_testing`).
+  Centralized also sets `world.base` to it.
 
 **Each protocol:**
 - Landing: zero velocity, `battery.shutdown()`, WAITING, `send_landed(...)`.
@@ -111,7 +124,7 @@ charging notification.
   (`waiting_room_starts`):
   - the pads free at the end of the charges on them;
   - the k-th drone in line takes the k-th pad that frees;
-  - each charge takes 100 s.
+  - each charge takes `TIME_TO_RECHARGE`, 300 s since 2026-11-25 (100 s before).
 
   This is exact: no drone can overtake the line, and the pad passes at the take-off
   instant. The base sends the landing time, as asked. The receiver keeps the start
@@ -140,9 +153,40 @@ charging notification.
 | System | Base broadcasts | Notes |
 |---|---|---|
 | egocentric, naive | no | The drones only act on `PAD` while WAITING |
-| centralized | no | `main.py` now adds a `CommunicationHandler` (range `TRANSMISSION_RANGE`) that only carries the messages with the base. `CentralizedWorld(station)` gets the station from `main.py`, not from the first drone, and reads it as the oracle. `check_centralized.py` now checks that the only messages are with the base |
-| expanding swarm | yes, every base about every base | `charging_stations` (one per base) replaces `ChargingRegistry`. A drone sends to `base_node_id(n, recharge_base_index)` |
+| centralized | no | `main.py` now adds a `CommunicationHandler` (range `TRANSMISSION_RANGE`) that only carries the messages with the base. The world reads the pads and the waiting room of the base node as the oracle (`world.base`, set by `main.py` after the build; a `ChargingStation` handed by `main.py` until 2026-11-25). `check_centralized.py` now checks that the only messages are with the base |
+| expanding swarm | yes, each base about itself (every base about every base until 2026-11-25) | One node per base, each with its own pads and waiting room (they replace `ChargingRegistry`). A drone sends to `base_node_id(n, recharge_base_index)` |
 | expanding egocentric, naive | no | as egocentric |
+
+## Since 2026-11-25: the pads inside the node, one copy per system
+
+| | 2026-11-24 | Since 2026-11-25 |
+|---|---|---|
+| Pads and waiting room | A `ChargingStation` (in `charging_station.py`) made by `main.py`, handed to the node and kept by `main.py` | Attributes of the node, made in `RechargeBase.instantiate`. Only the node writes them |
+| Reports (`main_test.py`) | `global_map.charging_station` (`charging_stations`) | `global_map.recharge_base` (`recharge_bases`): the node itself, taken from the simulation after the build |
+| Centralized scheduler | `CentralizedWorld(station)` | `CentralizedWorld()`, then `world.base` = the node after the build |
+| Several bases | A shared list of every station. Each base wrote its own and broadcast all of them, a "second radio" between the bases | Each base knows only itself. The swarm heartbeat tells about its own base. The drones pass on what they heard of the others with the gossip (newest row wins) |
+| Swarm heartbeat | `bases`: a list with one entry per base | `pads`, `charging` and `waiting` of the sending base |
+| The file | `Analytical/recharge_base.py`, shared by every system | `<system>/recharge_base.py`, one per system |
+
+**Why.** Each base manages its landings and its pads on its own, as a real base would.
+This is the basis for several bases. Each system also runs on its own files, as it
+already did with its protocol and its fitness.
+
+**Why the pads are made in `instantiate`.** gradysim creates the protocol of every node
+when it builds the simulation, but it calls `initialize` only on the first step, node by
+node in id order, the drones before the base. Made in `instantiate`, the pads exist from
+the build. So `main.py` can hand the node to its readers before the run, and nothing that
+reads the base before the base's own `initialize` finds it half made.
+
+**Checks (2026-11-25).** Two seeded runs per system, 1,500 s, 6 drones, hand-tuned, 200 m,
+2 bases in `expanding_testing`, before and after:
+- swarm, egocentric, naive, centralized, expanding egocentric and expanding naive: **bit-for-bit
+  identical**;
+- expanding swarm: **different, as expected**, since a base no longer tells about the
+  other one. Mean uncertainty +0.0% and +0.5% in the two runs, waiting 446 → 451 and
+  399 → 358 drone·s. It has not been measured over many runs;
+- the reports of `main_test.py` (swarm, centralized, expanding naive) read the nodes, and
+  `check_centralized.py --only run --duration 1500` passed.
 
 ## Checks run on 2026-11-24
 
@@ -171,6 +215,8 @@ They check the mechanism; they do not compare the systems.
 
 ## Consequences and open points
 
+- **Expanding swarm runs from before 2026-11-25 are not comparable** with later ones:
+  a base now tells only about itself. The other systems did not change.
 - **Runs are not comparable** with runs made earlier on 2026-11-24, or before. There
   is one more node, and adding a node changes the order of the events of an instant
   (see the README). Pads now pass without the 1 s gap. In swarm, `N` now counts the

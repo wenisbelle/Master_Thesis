@@ -9,15 +9,20 @@ Plots the runs multiple_runs.py wrote, for one or more systems, in two figures:
   wind), which removes the spread the base position adds to both. (a) in time, in windows
   of --uncertainty-window seconds; (b) the mean of each run from --steady-state on, a dot
   per run, with a paired Wilcoxon signed-rank test.
-- More than Nc drones charging, in three panels that aggregate the runs, so they read
-  the same with 10 runs or 200:
-  (a) when: the probability of more than Nc drones charging, in windows of --window
-      seconds, the mean over the runs of the share of the window above Nc;
-  (b) how much: the share of every run above Nc, a dot per run over a box plot, and
-      the mean. Two systems seeded alike are compared run by run, run k has the same
-      base(s) and wind on both, with a Wilcoxon signed-rank test;
-  (c) how many at once: the share of the time with k drones charging, on a log scale,
-      everything right of Nc is the congestion, and how deep it goes.
+- Time on the base, in three panels that aggregate the runs, so they read the same with
+  10 runs or 200. Since 2026-11-24 the base has Nc pads and a waiting room
+  (recharge_base.py): more than Nc drones never charge at once, the congestion is the
+  time the drones wait instead.
+  (a) when: the probability of a drone being in the waiting room, the share of the
+      drones waiting for a pad, in windows of --window seconds, mean over the runs. Runs
+      without a waiting room (before 2026-11-24, MARL) are left out;
+  (b) how much a drone waits: the share of its time a drone spends in the waiting room,
+      a dot per run over a box plot, and the mean. Two systems seeded alike are compared
+      run by run, run k has the same base(s) and wind on both, with a Wilcoxon
+      signed-rank test. Runs without a waiting room (before 2026-11-24, MARL) are left out;
+  (c) how many at once: the share of the time with k drones on the base, charging and
+      waiting, on a log scale. Up to Nc they are all on a pad, right of Nc the other k - Nc
+      wait: it shows how often every pad is taken and how long the line gets.
   The intervals are 95% percentile bootstraps of the mean over the runs: they narrow
   as runs are added, the spread between runs (b) does not.
 - Time between two visits of a cell, by the distance from the cell to its nearest base,
@@ -81,7 +86,7 @@ SYSTEM_STYLES = {
 BAND_ALPHA = 0.25
 GRID = {"color": "0.92", "lw": 0.5}
 
-##### Windows of (a), in s. The first recharge wave lasts a few hundred seconds. #####
+##### Windows of (a) of the time on the base, in s. The first recharge wave lasts a few hundred seconds. #####
 WINDOW = 50.0
 ##### Intervals of the means over the runs. Seeded, the figures do not change from call to call. #####
 CONFIDENCE = 95
@@ -137,23 +142,21 @@ def windowed(mask, grid, dt, window):
     return share, np.r_[grid[starts], grid[-1] + dt]
 
 
-def paired_test(loaded):
+def paired_test(values):
     """
-    p-value of the Wilcoxon signed-rank test of the share above Nc, run k of one system
-    against run k of the other, and how many runs were paired. Seeded alike, run k has the
-    same base(s) and wind on both. None unless there are two systems seeded alike, with
-    some run that differs.
+    p-value of the Wilcoxon signed-rank test of a value of the runs, run k of one system
+    against run k of the other, and how many runs were paired. values is {system: (seed,
+    {run: value})}. Seeded alike, run k has the same base(s) and wind on both. None unless
+    there are two systems seeded alike, with some run that differs.
     """
-    if len(loaded) != 2:
+    if len(values) != 2:
         return None
-    first, second = loaded.values()
-    if first["config"]["seed"] != second["config"]["seed"]:
+    (first_seed, first), (second_seed, second) = values.values()
+    if first_seed != second_seed:
         return None
-    shares = [{record["run"]: stats["above_nc"] for record, stats in zip(data["runs"], data["statistics"])}
-              for data in (first, second)]
-    runs = sorted(set(shares[0]) & set(shares[1]))
-    x, y = (np.array([share[run] for run in runs]) for share in shares)
-    if not np.any(x != y):
+    runs = sorted(set(first) & set(second))
+    x, y = (np.array([per_run[run] for run in runs]) for per_run in (first, second))
+    if not len(runs) or not np.any(x != y):
         return None
     return float(wilcoxon(x, y).pvalue), len(runs)
 
@@ -355,48 +358,106 @@ def plot_uncertainty_difference(loaded, reference, window, steady_state):
     return fig
 
 
+def pads(data):
+    """
+    Pads of the runs, over every base: Nc per base. expanding_testing gives every base the
+    capacity it is run with (PADS_PER_BASE is None), so B bases have B * Nc.
+    """
+    return sorted({record["nc_charging_base"] * len(record["base_positions"]) for record in data["runs"]})
+
+
+def has_waiting(data):
+    """Runs written before the waiting room (2026-11-24), and the MARL ones, have no waiting series."""
+    return all("waiting" in series for series in data["series"])
+
+
 def plot_charging(loaded, window):
     ##### When, how much and how many at once: every panel aggregates the runs, so it reads #####
     ##### the same with 10 runs or 200, and the intervals narrow as runs are added.         #####
     fig = plt.figure(figsize=(10, 7.5), constrained_layout=True)
     layout = fig.add_gridspec(2, 2, height_ratios=(1, 1.25), width_ratios=(1, 1.35))
-    plot_charging_in_time(fig.add_subplot(layout[0, :]), loaded, window)
-    plot_charging_per_run(fig.add_subplot(layout[1, 0]), loaded)
-    plot_charging_at_once(fig.add_subplot(layout[1, 1]), loaded)
-    fig.suptitle(f"Drones charging above Nc over the runs, {scenario(loaded)}")
+    plot_waiting_in_time(fig.add_subplot(layout[0, :]), loaded, window)
+    plot_waiting_per_run(fig.add_subplot(layout[1, 0]), loaded)
+    plot_on_base_at_once(fig.add_subplot(layout[1, 1]), loaded)
+    fig.suptitle(f"Time on the base over the runs, {scenario(loaded)}")
     return fig
 
 
-def plot_charging_in_time(ax, loaded, window):
-    """(a) The probability of more than Nc charging, in windows of window seconds."""
+def plot_waiting_in_time(ax, loaded, window):
+    """
+    (a) The probability of a drone waiting in the waiting room, the share of the drones
+    waiting for a pad, in windows of window seconds. Runs without a waiting room are left out.
+    """
+    title = (f"(a) When: probability of a drone in the waiting room, in {window:g} s windows "
+             f"(mean over the runs, {CONFIDENCE}% bootstrap interval)")
+    drawn = False
     for system, data in loaded.items():
+        drones = data["config"]["drones"]
+        ##### Still printed: the panel no longer shows the drones charging #####
+        charging = np.array([series["charging"] / drones for series in data["series"]])
+        whole, whole_low, whole_high = bootstrap_mean(100.0 * charging.mean(axis=1))
+        print(f"{system}: a drone is charging {whole:.2f}% of the time, {CONFIDENCE}% interval "
+              f"[{whole_low:.2f}, {whole_high:.2f}] over {len(charging)} runs")
+        if not has_waiting(data):
+            print(f"{system}: runs without a waiting room (before 2026-11-24, or MARL), "
+                  f"left out of the waiting in time panel")
+            continue
         style = SYSTEM_STYLES[system]
-        above = np.array([series["charging"] > record["nc_charging_base"]
-                          for record, series in zip(data["runs"], data["series"])])
-        share, edges = windowed(above, data["grid"], data["config"]["sample_interval"], window)
+        waiting = np.array([series["waiting"] / drones for series in data["series"]])
+        share, edges = windowed(waiting, data["grid"], data["config"]["sample_interval"], window)
         mean, low, high = bootstrap_mean(100.0 * share)
         ##### The last value is repeated so the step covers the last window too #####
         ax.fill_between(edges, np.r_[low, low[-1]], np.r_[high, high[-1]], step="post",
                         color=style["color"], alpha=BAND_ALPHA, lw=0)
         ax.step(edges, np.r_[mean, mean[-1]], where="post", color=style["color"], ls=style["ls"], lw=1.4,
                 label=f"{system}, {len(data['runs'])} runs")
-    ax.set_title(f"(a) When: probability of more than Nc drones charging, in {window:g} s windows "
-                 f"(mean over the runs, {CONFIDENCE}% bootstrap interval)", loc="left", fontsize=9)
-    ax.set_ylabel(r"$P(\mathrm{charging} > N_c)$ (%)")
+        drawn = True
+
+    ax.set_title(title, loc="left", fontsize=9)
     ax.set_xlabel("time (s)")
     ax.set_xlim(0, max(data["config"]["duration"] for data in loaded.values()))
+    if not drawn:
+        ax.text(0.5, 0.5, "no waiting room in these runs\n(written before 2026-11-24, or MARL)",
+                transform=ax.transAxes, ha="center", va="center", fontsize=8, color="0.35")
+        ax.set_yticks([])
+        return
+    ax.set_ylabel("P(a drone is waiting) (%)")
     ax.set_ylim(0, min(100, ax.get_ylim()[1]))
     ax.grid(True, **GRID)
     ax.legend(loc="upper right", fontsize=8, frameon=False, handlelength=3.5)
 
 
-def plot_charging_per_run(ax, loaded):
-    """(b) The share of each run above Nc: one dot per run over a box plot, and the mean."""
+def plot_waiting_per_run(ax, loaded):
+    """(b) The share of its time a drone waits, each run: one dot per run over a box plot, and the mean."""
+    waiting = {}
+    for system, data in loaded.items():
+        if not has_waiting(data):
+            print(f"{system}: runs without a waiting room (before 2026-11-24, or MARL), "
+                  f"left out of the waiting panel")
+            continue
+        drones = data["config"]["drones"]
+        ##### Share of the drone*time spent waiting, in %: the mean drones waiting over the drones #####
+        waiting[system] = {record["run"]: 100.0 * float(series["waiting"].mean()) / drones
+                           for record, series in zip(data["runs"], data["series"])}
+        ##### The same waits over the time on the ground, charging or waiting: how much of a stop #####
+        ##### at the base goes to the line                                                         #####
+        ground = sum(float(series["waiting"].sum() + series["charging"].sum()) for series in data["series"])
+        on_ground = (100.0 * sum(float(series["waiting"].sum()) for series in data["series"]) / ground
+                     if ground else 0.0)
+        print(f"{system}: waiting is {on_ground:.1f}% of the time on the base")
+
+    if not waiting:
+        ax.text(0.5, 0.5, "no waiting room in these runs\n(written before 2026-11-24, or MARL)",
+                transform=ax.transAxes, ha="center", va="center", fontsize=8, color="0.35")
+        ax.set_xticks([])
+        ax.set_title("(b) How much a drone waits: each run", loc="left", fontsize=9)
+        return
+
     jitter = np.random.default_rng(JITTER_SEED)
-    positions = np.arange(len(loaded))
-    for position, (system, data) in zip(positions, loaded.items()):
+    positions = np.arange(len(waiting))
+    for position, (system, per_run) in zip(positions, waiting.items()):
         style = SYSTEM_STYLES[system]
-        shares = np.array([stats["above_nc"] for stats in data["statistics"]])
+        shares = np.array(list(per_run.values()))
         line = {"color": style["color"], "lw": 1.0}
         ax.boxplot(shares, positions=[position], widths=0.45, showfliers=False, boxprops=line,
                    whiskerprops=line, capprops=line, medianprops={"color": style["color"], "lw": 2.0})
@@ -405,23 +466,23 @@ def plot_charging_per_run(ax, loaded):
         mean, low, high = bootstrap_mean(shares)
         ax.errorbar(position + 0.36, mean, yerr=[[mean - low], [high - mean]], fmt="o", color="black",
                     ms=4, capsize=3, lw=1.0, zorder=4)
-        print(f"{system}: more than Nc charging {mean:.2f}% of the run, {CONFIDENCE}% interval "
-              f"[{low:.2f}, {high:.2f}] over {len(shares)} runs")
+        print(f"{system}: a drone waits {mean:.3f}% of the time, {CONFIDENCE}% interval "
+              f"[{low:.3f}, {high:.3f}] over {len(shares)} runs")
 
-    title = "(b) How much: each run"
-    test = paired_test(loaded)
+    title = "(b) How much a drone waits: each run"
+    test = paired_test({system: (loaded[system]["config"]["seed"], per_run) for system, per_run in waiting.items()})
     if test is not None:
         p_value, pairs = test
         compared = ("paired Wilcoxon signed-rank " + ("p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}")
                     + f", {pairs} runs")
         title += "\n" + compared
-        print(f"{' vs '.join(loaded)}: {compared}")
-    top = max(max(stats["above_nc"] for stats in data["statistics"]) for data in loaded.values())
+        print(f"{' vs '.join(waiting)}, waiting: {compared}")
+    top = max(max(per_run.values()) for per_run in waiting.values())
     ax.set_ylim(0, 1.12 * top if top > 0 else 1.0)
-    ax.set_xlim(-0.6, len(loaded) - 0.4)
+    ax.set_xlim(-0.6, len(waiting) - 0.4)
     ax.set_xticks(positions)
-    ax.set_xticklabels([system.replace("/", "/\n") for system in loaded], fontsize=8)
-    ax.set_ylabel("time with more than Nc charging\n(% of the run)")
+    ax.set_xticklabels([system.replace("/", "/\n") for system in waiting], fontsize=8)
+    ax.set_ylabel("time a drone waits for a pad\n(% of its time)")
     ax.set_title(title, loc="left", fontsize=9)
     ax.grid(True, axis="y", **GRID)
     ax.set_axisbelow(True)
@@ -431,14 +492,19 @@ def plot_charging_per_run(ax, loaded):
               loc="upper left", fontsize=7, frameon=False, handletextpad=0.3)
 
 
-def plot_charging_at_once(ax, loaded):
-    """(c) The share of the time with k drones charging, the occupancy of the base(s)."""
+def plot_on_base_at_once(ax, loaded):
+    """
+    (c) The share of the time with k drones on the base, charging and waiting. Up to Nc
+    they all charge, right of Nc the other k - Nc wait. Runs without a waiting room only
+    count the drones charging, which then could go above Nc.
+    """
     drones = max(data["config"]["drones"] for data in loaded.values())
     counts = np.arange(drones + 1)
     for index, (system, data) in enumerate(loaded.items()):
         style = SYSTEM_STYLES[system]
-        occupancy = 100.0 * np.array([np.bincount(series["charging"].astype(int), minlength=drones + 1)
-                                      for series in data["series"]]) / len(data["grid"])
+        on_base = [(series["charging"] + series["waiting"] if "waiting" in series else series["charging"]).astype(int)
+                   for series in data["series"]]
+        occupancy = 100.0 * np.array([np.bincount(count, minlength=drones + 1) for count in on_base]) / len(data["grid"])
         mean, low, high = bootstrap_mean(occupancy)
         ##### Never seen in any run: nothing to draw on a log scale #####
         seen = mean > 0
@@ -447,20 +513,23 @@ def plot_charging_at_once(ax, loaded):
         ax.errorbar(counts[seen] + offset, mean[seen], yerr=[(mean - low)[seen], (high - mean)[seen]],
                     marker=style["marker"], ls=style["ls"], color=style["color"], ms=5, lw=1.2, capsize=2,
                     label=system)
+        full = min(pads(data))
+        print(f"{system}: every pad taken {mean[full:].sum():.2f}% of the time, "
+              f"some drone waiting {mean[full + 1:].sum():.2f}%")
 
-    nc = sorted({record["nc_charging_base"] for data in loaded.values() for record in data["runs"]})
+    nc = sorted({count for data in loaded.values() for count in pads(data)})
     ax.axvspan(nc[0] + 0.5, drones + 0.5, color=OVER_CAPACITY_COLOR, lw=0, zorder=0)
     for value in nc:
         ax.axvline(value + 0.5, color="0.35", ls=":", lw=1.0)
-        ax.text(value + 0.58, 0.03, f"more than Nc = {value}", transform=ax.get_xaxis_transform(),
+        ax.text(value + 0.58, 0.03, f"{value} pads taken, the rest wait", transform=ax.get_xaxis_transform(),
                 ha="left", va="bottom", fontsize=7)
     ax.set_yscale("log")
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
     ax.set_xticks(counts)
     ax.set_xlim(-0.5, drones + 0.5)
-    ax.set_xlabel("drones charging at once (k)")
-    ax.set_ylabel("time with k charging\n(% of the run, log scale)")
-    ax.set_title("(c) How many at once: occupancy of the base", loc="left", fontsize=9)
+    ax.set_xlabel("drones on the base at once (k), charging and waiting")
+    ax.set_ylabel("time with k on the base\n(% of the run, log scale)")
+    ax.set_title("(c) How many at once: occupancy of the base and its line", loc="left", fontsize=9)
     ax.grid(True, axis="y", which="major", **GRID)
     ax.set_axisbelow(True)
     ax.legend(loc="upper right", fontsize=8, frameon=False, handlelength=3.5)
@@ -723,7 +792,7 @@ def plot_revisit_difference(loaded, reference, distance_bin):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Global uncertainty (mean and std deviation), drones charging above Nc and time between "
+        description="Global uncertainty (mean and std deviation), time charging and waiting on the base and time between "
                     "two visits of a cell by distance to the base, over many runs")
     parser.add_argument("--system", choices=SYSTEMS + MARL_SYSTEMS, nargs="+", required=True,
                         help="system(s) to plot, several are drawn on the same figures")
@@ -735,7 +804,7 @@ if __name__ == "__main__":
                         help="directory of the runs, relative to each system directory "
                              "(default: multiple_runs/<range>/<drones>)")
     parser.add_argument("--window", type=float, default=WINDOW,
-                        help="width of the windows the probability of more than Nc charging is "
+                        help="width of the windows the probability of a drone waiting for a pad is "
                              "estimated in, in s (default: %(default)s)")
     parser.add_argument("--distance-bin", type=float, default=DISTANCE_BIN,
                         help="width of the bins of distance to the base the time between two visits "

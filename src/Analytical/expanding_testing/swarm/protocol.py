@@ -9,9 +9,8 @@ import base64
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
-from ...recharge_base import (BaseMessageType, BaseHeartbeatMessage, base_node_id,
-                              send_landed, send_take_off)
-from ...charging_station import waiting_room_starts
+from .recharge_base import (BaseMessageType, BaseHeartbeatMessage, base_node_id,
+                            send_landed, send_take_off, waiting_room_starts)
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -27,7 +26,7 @@ class DroneStatus(enum.Enum):
     GOING_TO_BASE = 1
     DEAD = 2
     CHARGING = 3
-    ##### Landed on a base, waiting for the base to give it a pad (since 2026-11-24), see Analytical/recharge_base.py #####
+    ##### Landed on a base, waiting for the base to give it a pad (since 2026-11-24), see recharge_base.py #####
     WAITING = 4
 
 class MessageType(enum.Enum):
@@ -35,8 +34,8 @@ class MessageType(enum.Enum):
     GOSSIPING_MESSAGE = 1
     SHARE_GOTO_POSITION_MESSAGE = 2
     DEAD_NOTIFICATION_MESSAGE = 3
-    ##### 4 was the BASE_HEARTBEAT_MESSAGE of the bases. Since 2026-11-24 the bases are the shared node #####
-    ##### of Analytical/recharge_base.py, with its own message types                                  #####
+    ##### 4 was the BASE_HEARTBEAT_MESSAGE of the bases. Since 2026-11-24 the bases are nodes         #####
+    ##### (recharge_base.py), with their own message types                                            #####
 
 class HeartBeatMessage(TypedDict):
     message_type: int
@@ -187,7 +186,7 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
-        self.TIME_TO_RECHARGE = 100
+        self.TIME_TO_RECHARGE = 300
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -693,42 +692,42 @@ class Drone(IProtocol):
         
     def handle_base_heartbeat(self, base_msg: BaseHeartbeatMessage) -> bool:
         """
-        Stores what a base tells about the drones on the ground of every base (since 2026-11-24 it
-        lists the waiting rooms too). Returns True when a drone is new on a base: it was not counted
-        there yet, or the stored stay is an older one that already ended. The congestion is counted
-        over all the bases together, so which base a drone is on does not matter here.
+        Stores what a base tells about the drones on its ground, its pads and its waiting room. A
+        base tells only about itself (since 2026-11-25): the other bases are known from the rows the
+        drones met pass on. Returns True when a drone is new on a base: it was not counted there yet,
+        or the stored stay is an older one that already ended. The congestion is counted over all the
+        bases together, so which base a drone is on does not matter here.
 
         A drone on a pad gets the row (battery, time its charge started, CHARGING), as before. A drone
         of a waiting room gets (battery at landing, time its charge will start, WAITING): its base
         hands the pads over in landing order the instant they free, so the start is known exactly from
-        the charges on its pads and the place in line (charging_station.waiting_room_starts). Its
+        the charges on its pads and the place in line (recharge_base.waiting_room_starts). Its
         WAITING -> CHARGING row then has the same time, and is not new. Both rows keep a time that
         only grows from one stay on the base to the next, so the gossip (newest row wins) keeps them.
         """
         my_id = self.provider.get_id()
         now = self.provider.current_time()
         is_new = False
-        for station in base_msg['bases']:
-            rows = [(drone_id, start, battery, DroneStatus.CHARGING.value)
-                    for drone_id, start, battery in station['charging']]
-            starts = waiting_room_starts([start for _, start, _ in station['charging']], len(station['waiting']),
-                                         station['pads'], self.TIME_TO_RECHARGE, now)
-            rows += [(drone_id, start, battery, DroneStatus.WAITING.value)
-                     for (drone_id, _, battery), start in zip(station['waiting'], starts)]
+        rows = [(drone_id, start, battery, DroneStatus.CHARGING.value)
+                for drone_id, start, battery in base_msg['charging']]
+        starts = waiting_room_starts([start for _, start, _ in base_msg['charging']], len(base_msg['waiting']),
+                                     base_msg['pads'], self.TIME_TO_RECHARGE, now)
+        rows += [(drone_id, start, battery, DroneStatus.WAITING.value)
+                 for (drone_id, _, battery), start in zip(base_msg['waiting'], starts)]
 
-            for drone_id, start, battery, status in rows:
-                # This drone's own stay, it already knows it
-                if drone_id == my_id:
-                    continue
-                stored_status, stored_time = self.swarm_battery_status[drone_id, 2], self.swarm_battery_status[drone_id, 1]
-                is_new |= (stored_status not in (DroneStatus.CHARGING.value, DroneStatus.WAITING.value)
-                           or stored_time < start)
+        for drone_id, start, battery, status in rows:
+            # This drone's own stay, it already knows it
+            if drone_id == my_id:
+                continue
+            stored_status, stored_time = self.swarm_battery_status[drone_id, 2], self.swarm_battery_status[drone_id, 1]
+            is_new |= (stored_status not in (DroneStatus.CHARGING.value, DroneStatus.WAITING.value)
+                       or stored_time < start)
 
-                # The row keeps the battery and the time the charge starts, not the time it was heard,
-                # so aproximate_battery_consumption_model knows exactly when the charge ends
-                self.swarm_battery_status[drone_id, 0] = battery
-                self.swarm_battery_status[drone_id, 1] = start
-                self.swarm_battery_status[drone_id, 2] = status
+            # The row keeps the battery and the time the charge starts, not the time it was heard,
+            # so aproximate_battery_consumption_model knows exactly when the charge ends
+            self.swarm_battery_status[drone_id, 0] = battery
+            self.swarm_battery_status[drone_id, 1] = start
+            self.swarm_battery_status[drone_id, 2] = status
         return is_new
 
     def start_charging(self) -> None:
@@ -837,7 +836,7 @@ class Drone(IProtocol):
 
                             ##### It waits for a pad until its base gives it one (PAD_MESSAGE): at the #####
                             ##### same instant when one is free, otherwise when its turn comes. Every   #####
-                            ##### base has its pads, see Analytical/recharge_base.py.                  #####
+                            ##### base has its pads, see recharge_base.py.                             #####
                             self.status = DroneStatus.WAITING
                             if self.VERBOSE:
                                 self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} reached base {self.recharge_base_index} and asks for a pad")
@@ -937,8 +936,8 @@ class Drone(IProtocol):
             return
 
         if msg_type == BaseMessageType.BASE_HEARTBEAT_MESSAGE.value:
-            # Every base sends the drones on the ground of every base (see Analytical/recharge_base.py), so any
-            # base in range tells about all of them. It is repeated every second while a drone is on the ground.
+            # A base sends the drones on its own ground (see recharge_base.py), the other bases are known from
+            # the drones met. It is repeated every second while a drone is on the ground.
             # When a drone is new there, the number of drones on the bases changed, so the destination is chosen
             # again with it. A drone on the ground or DEAD only stores it, it has no destination to change
             is_new_on_base = self.handle_base_heartbeat(data)

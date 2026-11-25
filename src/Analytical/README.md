@@ -30,8 +30,7 @@ the two disagree, the code is right and this file is out of date.
 |---|---|
 | `swarm/`, `egocentric/` | One system each. `main.py` holds the scenario and the GA (`--mode train`). `main_test.py` runs one recorded simulation with a report. Also `protocol.py`, `fitness.py` (the decisions), `recorder.py`, `estimation_metrics.py` and `plots/` (plots of one recorded run) |
 | `centralized/` | The same files for the centralized reference, plus `world.py` (global map, true state, charging scheduler) and `check_centralized.py`. See [Centralized](#centralized) |
-| `charging_station.py` | The pads and the waiting room of a recharge base, the bookkeeping of the base node (since 2026-11-24). See [Battery, recharge and death](#battery-recharge-and-death) |
-| `recharge_base.py` | The recharge base as a gradysim node, shared by every system and by `expanding_testing`: it gives the pads, and in swarm broadcasts who is on the ground (since 2026-11-24). See `base_node.md` |
+| `<system>/recharge_base.py` | The recharge base as a gradysim node (since 2026-11-24), one copy per system since 2026-11-25 (`expanding_testing` included): it owns its pads and its waiting room, gives the pads, and in swarm broadcasts who is on the ground. See `base_node.md` and [Battery, recharge and death](#battery-recharge-and-death) |
 | `naive/` | The same files for the naive baseline (no energy model, back to the base below 30%). See [Naive](#naive) |
 | `<system>/ga_logs/` | GA logbooks, one per communication range. The `Parameters:` line is the tuned individual |
 | `<system>/test_logs/<range>/<drones>/` | Single test runs, written by `all_tests_distance.py` |
@@ -101,13 +100,13 @@ nothing runs untuned. There are two exceptions:
 | Flight | 50 m altitude, 15 m/s cruise, 10 m/s² max acceleration (3 m/s² before 2026-11-24) | `DRONE_SPEED`, `DRONE_MAX_ACCELERATION` |
 | Communication range | 100 m by default, 100–2000 m swept | `TRANSMISSION_RANGE`, `--range` |
 | Base | Gaussian around the map centre, σ = 333 m (3σ reaches the border), snapped to a cell centre, drawn again if off the map | `sample_base_position` |
-| Charging capacity `Nc` | `int(drones / 3)` pads, at least 1. Hard since 2026-11-24: a drone that lands with every pad taken waits on the ground until one frees. Before, it was soft: it changed decisions, nothing forbade more | `charging_station.py`, `main.py` |
+| Charging capacity `Nc` | `int(drones / 3)` pads, at least 1. Hard since 2026-11-24: a drone that lands with every pad taken waits on the ground until one frees. Before, it was soft: it changed decisions, nothing forbade more | `<system>/recharge_base.py`, `main.py` |
 | Uncertainty growth | +0.001 per cell every second | `UNCERTAINTY_RATE`, `VANISHING_UPDATE_TIME` |
 | Initial uncertainty | swarm 1.0, egocentric 0.5 (see [Known issues](#known-issues-2026-11-15)) | `INITIAL_UNCERTAINTY` |
 | Wind | Random air speed N(0, 4) m/s along the heading, each drone keeps a value for 60 s (piecewise constant). Same mean drain as before, but over 100 s of cruise 0.77–1.70× of it (p1–p99, 0.86–1.25× over 1000 s) instead of 0.94–1.08×. Until 2026-11-24 a new value every second | `SHARED_BATTERY_CONFIG`, gradysim `BatteryPowerConfiguration.random_air_speed_hold` |
 | Discharge assumed by the decisions | 0.00067 of the battery per second (measured cruising at 15 m/s with the wind, after the 2026-11-23 battery plugin fix; 0.00073 before) | `DISCHARGE_RATE` |
 | Dead | battery ≤ 10% | `DEAD_BATTERY_THRESHOLD` |
-| Recharge | 100 s on a pad, then full. On the ground, waiting or charging, the battery does not change (the battery plugin is stopped from landing to take-off, since 2026-11-24) | `TIME_TO_RECHARGE` |
+| Recharge | 300 s on a pad, then full (100 s until 2026-11-25). On the ground, waiting or charging, the battery does not change (the battery plugin is stopped from landing to take-off, since 2026-11-24) | `TIME_TO_RECHARGE` |
 
 The drones take off from the base. The real battery drain comes from gradysim's
 `BatteryPowerPlugin`. `DISCHARGE_RATE` is only what the decisions assume. At
@@ -203,7 +202,7 @@ Who takes part in step 4 differs:
   routine stops: camera, heartbeat, mobility. The motors are off, so its battery
   plugin stops too: the battery does not change on the ground and no drone can die
   there. Before 2026-11-24 the plugin kept billing hover power during the charge.
-- **Pads and waiting room** (since 2026-11-24, `charging_station.py`): the base has
+- **Pads and waiting room** (since 2026-11-24, the base node of `<system>/recharge_base.py`): the base has
   `Nc` pads. So at most `Nc` drones charge at once, and the others at the base wait,
   landed. Before, any number of drones charged at once and the capacity was only a
   penalty of the cost, which let a system that ignored it get its drones back to mapping
@@ -214,7 +213,7 @@ Who takes part in step 4 differs:
   CHARGING. Otherwise the drone stays in the waiting room until the base sends it `PAD`:
   at take-off a drone sends `TAKE_OFF`, and the base gives its pad to the first drone in
   line, at that instant. The pads go in the order the drones landed.
-- **Charging:** 100 s on the pad. In swarm the base broadcasts every second, while a
+- **Charging:** 300 s on the pad (100 s until 2026-11-25). In swarm the base broadcasts every second, while a
   drone is on the ground, the drones charging (id, time the charge started, battery) and
   the drones of the waiting room (id, time they landed, battery). Before, each charging
   swarm drone broadcast its own charging notification.
@@ -227,7 +226,7 @@ about each drone, a swarm drone projects that drone forward. It assumes the dron
 - flies at `DISCHARGE_RATE`;
 - goes to the base when it reaches `MIN_CHARGE_MARGIN` (if it was MAPPING), or after the mean
   flight time to the base (if it was GOING_TO_BASE);
-- charges for 100 s and comes back full, with the same cycle repeating.
+- charges for `TIME_TO_RECHARGE` (300 s) and comes back full, with the same cycle repeating.
 
 A drone the base lists in its waiting room gets a WAITING row: its battery at landing,
 and the time its charge will start. The drone works that time out from the heartbeat
@@ -277,7 +276,7 @@ description, the checks and the references are in
   the base at once. It works backwards from the latest deadline, with a repair for drones
   whose window is narrow. A drone leaves when its slot minus its flight time has come.
   The reserve is the fixed 0.25 (`MIN_CHARGE_MARGIN`, 0.20 before 2026-11-24). A
-  recharge always takes 100 s whatever the battery, so returning late is the right goal.
+  recharge always takes 300 s whatever the battery, so returning late is the right goal.
   The pads are hard here too: a drone sent to a full base (no free slot before its
   deadline) waits landed, and the scheduler books the drones of the waiting room at the
   moment a pad frees for them (`world.waiting_room_starts`). The world reads the pads

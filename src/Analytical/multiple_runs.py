@@ -101,7 +101,7 @@ SUMMARY_FILE = "summary.txt"
 RUN_PATTERN = re.compile(r"run_(\d+)\.pkl$")
 ##### Series of GlobalMapMonitor kept on every sample, under the names the runs store them #####
 SERIES = {"global_uncertainty": "uncertainty", "charging": "charging_drones", "dead": "dead_drones",
-          ##### Drones in the waiting room of the base (since 2026-11-24, see charging_station.py). #####
+          ##### Drones in the waiting room of the base (since 2026-11-24, see recharge_base.py).    #####
           ##### Older runs and the MARL ones do not have it.                                       #####
           "waiting": "waiting_drones"}
 

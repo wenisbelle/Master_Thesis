@@ -26,8 +26,8 @@ doesn't explain why it matters.
    - a drone seen MAPPING is assumed to fly until its battery reaches
      `MIN_CHARGE_MARGIN` (0.20), then go to the base;
    - a drone seen GOING_TO_BASE reaches the base `EXPECTED_TIME_TO_BASE` after the observation;
-   - at the base it charges for `TIME_TO_RECHARGE` (100 s) with its battery held constant
-     (true since 2026-11-24; a wait for a pad, see `charging_station.py`, is not modelled),
+   - at the base it charges for `TIME_TO_RECHARGE` (300 s since 2026-11-25, 100 s before) with its battery held constant
+     (true since 2026-11-24; a wait for a pad, see the base node in `swarm/recharge_base.py`, is not modelled),
      then leaves with a full battery and the cycle repeats.
 3. **Swarm terms.** `aproximate_battery_consumption_model`
    ([protocol.py:375](swarm/protocol.py#L375)) reduces the projected rows of the other drones
@@ -259,7 +259,7 @@ Egocentric smoke test (500 m, 4 drones, 3000 s): decisions at 0.23 ± 0.03, arri
    - A fix (e.g. shut the plugin down at arrival and resume it at `recharge_done`) changes
      behaviour and probably the tuning.
    - **Fixed 2026-11-24**, with the pads and the waiting room of the base
-     (`charging_station.py`): the plugin is shut down at landing and resumed at
+     (the base node, `<system>/recharge_base.py` since 2026-11-25): the plugin is shut down at landing and resumed at
      `recharge_done`, in every system, so the battery is constant on the ground, as the
      estimator assumes. The numbers above were measured before.
 2. **Aborts by `sent`.** The likely cause is the pair decision (`choose_two_cells`, which uses

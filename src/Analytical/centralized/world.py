@@ -6,7 +6,7 @@ One CentralizedWorld is built per simulation (main.create_and_run_simulation) an
 given to every drone through the protocol factory, the way results_aggregator is.
 It is a plain Python object, not a gradysim node: the oracle needs no radio, the
 drones read it directly. It also reads the pads and the waiting room of the base
-node (charging_station.py), the truth no drone has.
+node (recharge_base.py), the truth no drone has.
 
 It holds:
 - **The global map.** One map shared by every drone: each drone's `map` and
@@ -47,7 +47,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..charging_station import ChargingStation, waiting_room_starts
+from .recharge_base import waiting_room_starts
 
 
 @dataclass(frozen=True)
@@ -257,9 +257,10 @@ class CentralizedWorld:
     ##### battery at the arrival, about 0.01.                                                   #####
     PLANNING_DRAIN_FACTOR = 1.15
 
-    def __init__(self, station: ChargingStation):
-        ##### The pads and the waiting room of the base, written by the base node, see recharge_base.py #####
-        self.station = station
+    def __init__(self):
+        ##### The base node, whose pads and waiting room the scheduler reads. main.py sets it once the  #####
+        ##### simulation is built, before it starts, see recharge_base.py                              #####
+        self.base = None
         self.drones = {}
         self.map = None
         self.is_cell_visited = None
@@ -354,12 +355,12 @@ class CentralizedWorld:
     def waiting_room_starts(self, now: float) -> list:
         """
         When the drones of the waiting room will start charging (since 2026-11-24, see
-        charging_station.py). They take the pads in the order they landed, each one as soon as
+        recharge_base.py). They take the pads in the order they landed, each one as soon as
         a pad frees: at the end of a charge on the base, or of a charge of the waiting room
         before it. The start is never before now.
         """
-        charging_starts = [start for start, _ in self.station.charging.values()]
-        return waiting_room_starts(charging_starts, len(self.station.waiting), self.station.pads,
+        charging_starts = [start for start, _ in self.base.charging.values()]
+        return waiting_room_starts(charging_starts, len(self.base.waiting), self.base.pads,
                                    self.time_to_recharge, now)
 
     def plan(self, now: float) -> dict:

@@ -46,7 +46,7 @@ the code is right.
 | Genes | 9 | **4**: `base_variance`, `alpha_variance_modifier`, `energy_gamma`, `distance_between_drone_norm` |
 
 Everything else is swarm's code, copied with its comments: the camera, the mobility and
-the braking approach to the base, the battery plugin and the wind, the 100 s recharge,
+the braking approach to the base, the battery plugin and the wind, the 300 s recharge,
 death at 10%, the take-off from the base, the random streams from `(seed, drone id)`,
 `INITIAL_UNCERTAINTY` = 1.0, the cost, the GA and its bounds, the monitors.
 
@@ -65,12 +65,15 @@ Two changes to the per-drone results are needed because the map is shared:
 
 ## The charging scheduler (`world.py`)
 
-A full recharge always takes 100 s and fills the battery, whatever was left. A drone
+A full recharge always takes `TIME_TO_RECHARGE` (300 s since 2026-11-25, 100 s before) and
+fills the battery, whatever was left. A drone
 that recharges early therefore only wastes battery. The best policy is to return **as
 late as is safe**, staggered so that no more than `Nc` drones are on the base at once.
-The base has plenty of capacity on average: a drone charges for 100 s about every
-1,100–1,300 s, against `Nc = int(n/3)`. Congestion comes from the drones being in phase,
-because they all take off full at t = 0.
+The base is busy: a drone charges for 300 s after about every 1,100–1,300 s of flight,
+against `Nc = int(n/3)`, so with n a multiple of 3 each pad is in use about 60% of the
+time (about 24% with the 100 s charge before 2026-11-25). With other n it is more: 5
+drones share a single pad, about 100%. Congestion also comes from the drones being in
+phase, because they all take off full at t = 0.
 
 The scheduler is computed again from the true state every time a MAPPING drone asks, once
 per mobility tick (1 s):
@@ -86,7 +89,7 @@ per mobility tick (1 s):
    The flight time to the base cancels out of this formula.
 3. **Slots.** The drones are taken from the latest deadline to the earliest. Each gets
    the latest charging slot that starts no later than its deadline, during which fewer
-   than `max(1, Nc)` other charges are on the base. A slot is 100 s + `SLOT_GUARD` (15 s)
+   than `max(1, Nc)` other charges are on the base. A slot is `TIME_TO_RECHARGE` (300 s) + `SLOT_GUARD` (15 s)
    long. This is backward earliest-deadline-first.
 4. **Repair.** A drone with a narrow window (near its deadline and far from the base) can
    find every slot it can reach taken by a drone placed earlier that had room to go
@@ -103,7 +106,7 @@ The flight time is `distance / 15 + 15 / (2 · 0.4a) + APPROACH_EXTRA_TIME` (0 s
 `EXPECTED_TIME_TO_BASE` formula (cruise plus braking).
 
 **The pads are hard (since 2026-11-24).** As in every system, the base has `max(1, Nc)`
-pads (`charging_station.py`). A drone that lands with every pad taken waits on the
+pads (the base node, `centralized/recharge_base.py`). A drone that lands with every pad taken waits on the
 ground, with its battery frozen, until one frees. So what used to be an overrun of the
 capacity (step 5, or a drain above the planning factor) is now a short wait, and it can
 no longer exceed the capacity or kill a drone on the base.
@@ -327,10 +330,10 @@ instance of it:
 
 | Simons | This scheduler |
 |---|---|
-| A job, all of equal length | One charge: `TIME_TO_RECHARGE` + `SLOT_GUARD` = 115 s |
+| A job, all of equal length | One charge: `TIME_TO_RECHARGE` + `SLOT_GUARD` = 315 s |
 | The identical machines | The `max(1, Nc)` places on the base |
 | Release time | The earliest arrival: `now` + the flight time to the base |
-| Deadline | The latest safe arrival, `now + (battery − 0.20) / (1.15 · DISCHARGE_RATE)`. This bounds the start of the charge, so Simons' deadline (on the end of the job) is this plus 115 s |
+| Deadline | The latest safe arrival, `now + (battery − 0.20) / (1.15 · DISCHARGE_RATE)`. This bounds the start of the charge, so Simons' deadline (on the end of the job) is this plus 315 s |
 | (no equivalent) | Booked charges: the drones CHARGING or GOING_TO_BASE. They are fixed, and act as machines that are busy for a while |
 
 How it is used:
@@ -397,7 +400,7 @@ low, so that a persistent task never stops. Their goal is the same as this sched
 keep the task going while drones leave to recharge.
 
 - **The difference.** This system has no spares. A drone that charges leaves the map for
-  100 s and the others keep mapping. The scheduler only staggers the charges so the base
+  300 s and the others keep mapping. The scheduler only staggers the charges so the base
   is never over capacity, and keeps each drone in the air as long as is safe.
 - **Not used in the code.** It is related work only.
 
