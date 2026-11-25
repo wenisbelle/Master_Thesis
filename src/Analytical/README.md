@@ -30,7 +30,8 @@ the two disagree, the code is right and this file is out of date.
 |---|---|
 | `swarm/`, `egocentric/` | One system each. `main.py` holds the scenario and the GA (`--mode train`). `main_test.py` runs one recorded simulation with a report. Also `protocol.py`, `fitness.py` (the decisions), `recorder.py`, `estimation_metrics.py` and `plots/` (plots of one recorded run) |
 | `centralized/` | The same files for the centralized reference, plus `world.py` (global map, true state, charging scheduler) and `check_centralized.py`. See [Centralized](#centralized) |
-| `charging_station.py` | The pads and the waiting room of a recharge base, used by every system (since 2026-11-24). See [Battery, recharge and death](#battery-recharge-and-death) |
+| `charging_station.py` | The pads and the waiting room of a recharge base, the bookkeeping of the base node (since 2026-11-24). See [Battery, recharge and death](#battery-recharge-and-death) |
+| `recharge_base.py` | The recharge base as a gradysim node, shared by every system and by `expanding_testing`: it gives the pads, and in swarm broadcasts who is on the ground (since 2026-11-24). See `base_node.md` |
 | `naive/` | The same files for the naive baseline (no energy model, back to the base below 30%). See [Naive](#naive) |
 | `<system>/ga_logs/` | GA logbooks, one per communication range. The `Parameters:` line is the tuned individual |
 | `<system>/test_logs/<range>/<drones>/` | Single test runs, written by `all_tests_distance.py` |
@@ -44,6 +45,7 @@ the two disagree, the code is right and this file is out of date.
 | `plot_multiple_runs.py` | The figures over many runs: uncertainty, charging, time between visits |
 | `estimation_decision.md` | Plan and pilot results: how good the swarm battery estimate is |
 | `waiting_room.md` | The hard base capacity and the waiting room of 2026-11-24: what changed, why, and where in the code (swarm first) |
+| `base_node.md` | The base as a node of the simulation, later the same day: the messages between the drones and the base, the base heartbeat of swarm |
 | `variance_explained.md` | What `base_variance` and `alpha_variance_modifier` do (in Portuguese) |
 
 ## Running
@@ -202,15 +204,20 @@ Who takes part in step 4 differs:
   plugin stops too: the battery does not change on the ground and no drone can die
   there. Before 2026-11-24 the plugin kept billing hover power during the charge.
 - **Pads and waiting room** (since 2026-11-24, `charging_station.py`): the base has
-  `Nc` pads. With a pad free and nobody waiting, the drone takes it and is CHARGING
-  at once. Otherwise it is WAITING, landed in the waiting room next to the base, and
-  asks for a pad every second; the pads go to the drones in the order they landed.
-  So at most `Nc` drones charge at once, and the others at the base wait, landed. Before,
-  any number of drones charged at once and the capacity was only a penalty of the cost,
-  which let a system that ignored it get its drones back to mapping sooner.
-- **Charging:** 100 s on the pad. Swarm drones broadcast a charging notification
-  every second, with the time the charge started and their battery then. A WAITING
-  drone sends nothing.
+  `Nc` pads. So at most `Nc` drones charge at once, and the others at the base wait,
+  landed. Before, any number of drones charged at once and the capacity was only a
+  penalty of the cost, which let a system that ignored it get its drones back to mapping
+  sooner.
+- **The base is a node** (`recharge_base.py`, see `base_node.md`), added after the
+  drones. The drone that lands is WAITING and sends the base `LANDED`. With a pad free
+  and nobody waiting, the base answers `PAD` at the same instant and the drone is
+  CHARGING. Otherwise the drone stays in the waiting room until the base sends it `PAD`:
+  at take-off a drone sends `TAKE_OFF`, and the base gives its pad to the first drone in
+  line, at that instant. The pads go in the order the drones landed.
+- **Charging:** 100 s on the pad. In swarm the base broadcasts every second, while a
+  drone is on the ground, the drones charging (id, time the charge started, battery) and
+  the drones of the waiting room (id, time they landed, battery). Before, each charging
+  swarm drone broadcast its own charging notification.
 - **After the charge:** full battery, MAPPING, and the drone chooses a cell.
 - **Death:** at ≤ 10% the drone is DEAD. It stops where it is and from then on only
   broadcasts that it is dead, every 5 s.
@@ -222,12 +229,15 @@ about each drone, a swarm drone projects that drone forward. It assumes the dron
   flight time to the base (if it was GOING_TO_BASE);
 - charges for 100 s and comes back full, with the same cycle repeating.
 
-A drone in the waiting room is silent. The others keep projecting it from the last row
-they heard (GOING_TO_BASE: charging from its expected arrival on) until its charging
-notifications start, so a long wait shows up as a charge that seems to end too early.
+A drone the base lists in its waiting room gets a WAITING row: its battery at landing,
+and the time its charge will start. The drone works that time out from the heartbeat
+(the charges on the pads, the place in line, the number of pads), and it is exact,
+because the base hands the pads over in landing order the instant they free. Until
+then the waiting drone's battery is constant.
 
-This gives the mean battery of the others and how many are charging. Known-dead
-drones are left out. `estimation_decision.md` measures how far off this estimate is.
+This gives the mean battery of the others and how many are on the base, charging or
+waiting (the `N` of the congestion term, so `N + 1 − Nc` is the waiting room the drone
+would make). Known-dead drones are left out. `estimation_decision.md` measures how far off this estimate is.
 
 ### Swarm vs egocentric, in one table
 
@@ -235,7 +245,7 @@ drones are left out. `estimation_decision.md` measures how far off this estimate
 |---|---|---|
 | Genes | 9: the 6 below plus `a`, `b`, `c` | 6: `base_variance`, `alpha_variance_modifier`, `energy_gamma`, `charging_base_multiplier`, `distance_between_drone_norm`, `charge_margin` |
 | Charge margin | moved by the swarm battery and congestion | fixed |
-| Charging notification | sent and used | none |
+| Base heartbeat (drones charging and waiting) | broadcast by the base and used | not broadcast |
 | Re-routed in encounters while GOING_TO_BASE | yes | no |
 
 Everything else is meant to be the same. A change to one that is not about energy
@@ -256,8 +266,9 @@ description, the checks and the references are in
 - **The truth about the others.** Every drone reads the true battery, position and
   status of the others from a shared Python object, `world.CentralizedWorld`. It is not a
   gradysim node, so the node set is the same as swarm's.
-- **No radio.** No heartbeat, gossip or notification is sent, and `main.py` builds no
-  communication handler.
+- **No radio between the drones.** No heartbeat, gossip or notification is sent. The
+  only messages are a landed drone's with the base node (asks for a pad, gets it, frees
+  it), as in every system.
 - **Pair decisions by distance.** Two MAPPING drones within `ENCOUNTER_RADIUS` (200 m,
   fixed) choose their cells together, with swarm's `choose_two_cells`, as an encounter
   would.
@@ -269,7 +280,8 @@ description, the checks and the references are in
   recharge always takes 100 s whatever the battery, so returning late is the right goal.
   The pads are hard here too: a drone sent to a full base (no free slot before its
   deadline) waits landed, and the scheduler books the drones of the waiting room at the
-  moment a pad frees for them (`world.waiting_room_starts`).
+  moment a pad frees for them (`world.waiting_room_starts`). The world reads the pads
+  from the base node's own bookkeeping, as the oracle it is.
 - **4 genes.** The coverage genes are kept. The base attraction `κ`, the genes `a`, `b`,
   `c` and `charge_margin` are gone.
 
@@ -574,6 +586,8 @@ width, and a moving average would only call it something else.
 - [`naive/README.md`](naive/README.md): the naive baseline.
 - [`waiting_room.md`](waiting_room.md): the hard base capacity (pads and waiting room) of
   2026-11-24, what changed and where in the code.
+- [`base_node.md`](base_node.md): the base as a node of the simulation, its messages
+  with the drones and the base heartbeat of swarm.
 - [`estimation_decision.md`](estimation_decision.md): the battery estimate against
   the real battery.
 - [`variance_explained.md`](variance_explained.md): the Gaussian width genes.

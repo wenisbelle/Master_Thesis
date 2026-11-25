@@ -10,6 +10,20 @@ This file explains the change and where it is in the code. The swarm system is t
 reference, the other six systems got the same change (see
 [The other systems](#the-other-systems)). The line numbers are those of 2026-11-24.
 
+> **Later the same day the base became a node of the simulation**, see
+> [`base_node.md`](base_node.md). The pads, the waiting room and the frozen battery
+> below still hold. What no longer holds:
+> - the drones do not call the `ChargingStation` any more: they send the base node
+>   `LANDED` and `TAKE_OFF`, and the base answers `PAD`. Only the base writes the station;
+> - a waiting drone does not ask for a pad every second (`waiting_room` timer and
+>   `WAITING_CHECK_INTERVAL` are gone): the base hands a freed pad over at that instant;
+> - swarm drones no longer send a charging notification: the base broadcasts the drones
+>   charging **and waiting**, and the swarm drones count the waiting ones as on the base;
+> - "Why a shared Python object and not a gradysim node" below is the reasoning that was
+>   reversed;
+> - `expanding_testing` has no `ChargingRegistry` and no `recharge_base.py` per system any
+>   more: the stations are a list, the base node is `Analytical/recharge_base.py`.
+
 ## Contents
 
 - [Before and after](#before-and-after)

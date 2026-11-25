@@ -77,14 +77,16 @@ class SimulationRecorder:
     ##### itself does when it decides. Stored as (T, N) per drone i, one column per j,     #####
     ##### NaN on j == i (a drone never estimates itself, it reads its own battery).        #####
     #####   belief_battery   estimated battery of j                                        #####
-    #####   belief_charging  1 when j is estimated to be charging at the base              #####
+    #####   belief_charging  1 when j is estimated to be on the base, charging or waiting   #####
     #####   belief_age       time since the row was written. For a CHARGING row that is    #####
-    #####                    the time since j reached the base, the row keeps that time    #####
+    #####                    the time since j's charge started, the row keeps that time.   #####
+    #####                    Negative for a WAITING row: the time left until it starts     #####
     #####   belief_status    status of j in the row (DroneStatus value), DEAD included      #####
     BELIEFS = ("belief_battery", "belief_charging", "belief_age", "belief_status")
 
     ##### Inputs of the swarm and congestion terms of charge_margin, (T,) per drone: the  #####
-    ##### mean battery of the other drones alive and how many of them are charging, as  #####
+    ##### mean battery of the other drones alive and how many of them are on the base   #####
+    ##### (charging or waiting, since 2026-11-24), as                                    #####
     ##### the drone estimates them (what it decides with) and as they really are, and   #####
     ##### the margin each pair gives. The true values are computed like               #####
     ##### aproximate_battery_consumption_model does, from the real state of the drones. #####
@@ -112,7 +114,8 @@ class SimulationRecorder:
         ##### the labels no drone counts as dead or charging.                        #####
         status_values = {name: value for value, name in self.status_labels.items()}
         self._dead = status_values.get("DEAD", np.nan)
-        self._charging = status_values.get("CHARGING", np.nan)
+        ##### On the base: charging, or in the waiting room (since 2026-11-24) #####
+        self._on_base = [status_values.get("CHARGING", np.nan), status_values.get("WAITING", np.nan)]
         ##### Swarm level, one entry per snapshot, aligned with self.times #####
         self.global_maps = []                                 # min over the drones, per cell
         self.global_uncertainty = []
@@ -168,7 +171,7 @@ class SimulationRecorder:
         alive_others = (np.arange(self.N) != drone_id) & (status != self._dead)
         if alive_others.any():
             mean_true = float(np.mean(battery[alive_others]))
-            charging_true = int(np.sum(status[alive_others] == self._charging))
+            charging_true = int(np.sum(np.isin(status[alive_others], self._on_base)))
         else:
             mean_true, charging_true = float(battery[drone_id]), 0
 

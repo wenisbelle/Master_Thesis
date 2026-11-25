@@ -100,31 +100,33 @@ the drones charge, but it does not enter the decisions.
 
 ### The recharge base is a node
 
-Each base is a node of the simulation (`recharge_base.py`), like the drones,
-but it never moves. The bases are added after the drones, so drones keep the
-ids `0..n-1` and base `b` is node `n + b`.
+Each base is a node of the simulation, like the drones, but it never moves. Since
+2026-11-24 it is the node of `Analytical/recharge_base.py`, the same one the
+single-base systems use (the per-system `recharge_base.py` copies were removed; see
+`Analytical/base_node.md`). The bases are added after the drones, so drones keep the
+ids `0..n-1` and base `b` is node `n + b` (`base_node_id`).
 
-- **Plugging in.** A drone that gets a pad of a base plugs into it
-  (`ChargingRegistry.dock`), and unplugs when its recharge ends. The base always
-  knows who is charging on it. The pads and the waiting room of every base are
-  `ChargingRegistry.stations`. A drone in the waiting room is not plugged in, so the
-  base heartbeats do not list it.
-- **Shared knowledge between bases.** All the bases of a simulation share one
-  `ChargingRegistry`. In reality that would be a second radio, long range and
-  low bandwidth; here it is a shared variable. Each base therefore knows exactly
-  how many drones charge on every base.
-- **Heartbeat (swarm only).** Every 1 s each base broadcasts a
-  `BaseHeartbeatMessage` with the drones charging on **every** base: drone id,
-  time it reached the base, battery then. It has the same range as every other
-  message. It replaces the `ChargingNotificationMessage` the charging drone sent
-  itself in `Analytical/swarm`. A drone in range stores those drones as CHARGING
-  in its swarm table. When one of them is new to it, it chooses its destination
-  again, the same as on the old notification. Because every base reports all of
-  them, a drone near one base also learns about the drones charging on the
-  others.
-- **Egocentric.** The bases are the same nodes at the same places, and drones
-  plug in the same way, but the bases send nothing. The egocentric drone only
-  looks at its own battery.
+- **The pads, by messages.** A drone that lands on a base is WAITING and sends that
+  base `LANDED`. The base answers `PAD` at once when a pad is free and nobody waits,
+  otherwise when the drone's turn in the waiting room comes. At take-off the drone
+  sends `TAKE_OFF`, and the base gives the pad to the first drone of its waiting room
+  at that instant. Each base owns its `ChargingStation`, the drones never touch it.
+- **Shared knowledge between bases.** All the bases of a simulation share the list
+  of the stations, `charging_stations` in `main.py`. In reality that would be a
+  second radio, long range and low bandwidth; here it is a shared variable. Each
+  base writes only its own station, and knows exactly who is on every base.
+- **Heartbeat (swarm only, `BROADCAST_BASE` in `main.py`).** Every 1 s, while a drone
+  is on the ground somewhere, each base broadcasts a `BaseHeartbeatMessage` with,
+  for **every** base, its pads, the drones charging (id, time the charge started,
+  battery) and the drones of its waiting room (id, time they landed, battery). It has
+  the same range as every other message. A drone in range stores the charging ones as
+  CHARGING and the waiting ones as WAITING, with the time their charge will start, in
+  its swarm table, and counts both as on a base. When one of them is new to it, it
+  chooses its destination again. Because every base reports all of them, a drone near
+  one base also learns about the drones on the others.
+- **Egocentric and naive.** The bases are the same nodes at the same places and give
+  the pads the same way, but they send no heartbeat. These drones only look at their
+  own battery.
 - **Antenna altitude.** gradysim checks the range in 3D. The drones fly and
   charge at 50 m, so the base nodes sit at 50 m too (`BASE_ANTENNA_ALTITUDE` in
   `main.py`). That way a base heartbeat reaches exactly as far as a
@@ -156,7 +158,6 @@ expanding_testing/
 │   ├── main.py            scenario and simulation (no GA, no cost)
 │   ├── main_test.py       single simulation, with checks, log and recording
 │   ├── protocol.py        drone
-│   ├── recharge_base.py   base node and ChargingRegistry
 │   ├── fitness.py
 │   ├── recorder.py        writes the recording the plots read
 │   ├── visualization.py

@@ -7,7 +7,7 @@ GlobalMapMonitor, the global uncertainty and the drones charging and dead over t
 
 Differences with Analytical/egocentric/main.py:
 - CHARGING_BASE_POSITIONS is a list, every base is a node of the simulation
-  (recharge_base.py), added after the drones.
+  (Analytical/recharge_base.py), added after the drones.
 - The drones take off from the bases in turn, see protocol.take_off_base.
 - The congestion is counted over all the bases together: Nc is the most drones
   charging at once, on any base, before the protocol reacts to it. The
@@ -23,7 +23,8 @@ from gradysim.simulator.handler.timer import TimerHandler
 from gradysim.simulator.handler.visualization import VisualizationHandler
 from gradysim.simulator.simulation import SimulationConfiguration, SimulationBuilder
 from .protocol import drone_protocol_factory, DroneStatus, take_off_base
-from .recharge_base import ChargingRegistry, recharge_base_factory
+from ...charging_station import ChargingStation
+from ...recharge_base import recharge_base_factory
 from gradysim.simulator.handler.communication import CommunicationHandler, CommunicationMedium
 
 from gradysim.simulator.handler.mobility import (
@@ -51,10 +52,14 @@ DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed t
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
 MIN_CHARGE_MARGIN = 0.20  # fraction of battery for going near the base of recharging
-##### The egocentric bases send nothing, they are placed exactly as in the swarm system so both run the same nodes. #####
+##### The egocentric bases send no heartbeat, they are placed exactly as in the swarm system so both run the same nodes. #####
 ##### There the range of gradysim is 3D, and the antenna is at the drones' DRONE_ALTITUDE so the base heartbeats    #####
 ##### reach as far as the drone-to-drone messages.                                                                  #####
 BASE_ANTENNA_ALTITUDE = 50.0
+
+##### Every base broadcasts the drones charging and waiting on every base each second              #####
+##### (Analytical/recharge_base.py): no drone of this system listens to it, so the bases only give the pads.          #####
+BROADCAST_BASE = False
 
 ##### How often the global map is assembled and sampled, in simulated seconds.
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
@@ -328,9 +333,10 @@ def create_and_run_simulation(individual, mode: str = "train",
     if enable_simulation_plot:
         builder.add_handler(VisualizationHandler())
 
-    ##### Shared by the bases and the drones of this simulation only, see recharge_base.py #####
-    charging_registry = ChargingRegistry(len(charging_base_positions),
-                                         charging_capacity if PADS_PER_BASE is None else PADS_PER_BASE)
+    ##### The pads of every base, new for every simulation. Base b writes charging_stations[b] only, and   #####
+    ##### every base reads all of them for its heartbeat (the bases' second radio), see recharge_base.py #####
+    charging_stations = [ChargingStation(charging_capacity if PADS_PER_BASE is None else PADS_PER_BASE)
+                         for _ in charging_base_positions]
 
     results_aggregator = {}
     ConfiguredDrone = drone_protocol_factory(
@@ -344,7 +350,6 @@ def create_and_run_simulation(individual, mode: str = "train",
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
         charging_base_positions=charging_base_positions,
-        charging_registry=charging_registry,
         min_charge_margin=MIN_CHARGE_MARGIN,
         Nc_charging_base=charging_capacity,
         results_aggregator=results_aggregator,
@@ -363,7 +368,7 @@ def create_and_run_simulation(individual, mode: str = "train",
     ##### The bases are added after the drones, so the drones keep the ids 0..number_of_drones-1 #####
     ##### the protocol indexes its swarm arrays with. Base b is node number_of_drones + b.         #####
     for base_index, (x, y) in enumerate(charging_base_positions):
-        builder.add_node(recharge_base_factory(base_index, charging_registry, mode=mode),
+        builder.add_node(recharge_base_factory(charging_stations, base_index, broadcast=BROADCAST_BASE, mode=mode),
                          (x, y, BASE_ANTENNA_ALTITUDE))
 
     # Building & starting
@@ -373,7 +378,7 @@ def create_and_run_simulation(individual, mode: str = "train",
                                   number_of_bases=len(charging_base_positions),
                                   nc_charging_base=charging_capacity)
     ##### For the reports: the pads and the waits of every base #####
-    global_map.charging_registry = charging_registry
+    global_map.charging_stations = charging_stations
     observers = [global_map.sample]
     if observer_factory is not None:
         observers.append(observer_factory(simulation))

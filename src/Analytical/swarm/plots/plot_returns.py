@@ -41,7 +41,7 @@ TRIGGER_MARKERS = {"own": "o", "encounter": "D", "sent": "s",
                    "charging_notification": "^", "after_recharge": "P"}
 TRIGGER_LABELS = {"own": "own choice (mobility timer)", "encounter": "encounter, decided by it",
                   "sent": "encounter, decided by the other drone",
-                  "charging_notification": "heard a drone start charging",
+                  "charging_notification": "heard a drone start charging (from the base since 2026-11-24)",
                   "after_recharge": "right after a recharge"}
 BATTERY_COLOR = "0.45"
 BAND_ALPHA = 0.15

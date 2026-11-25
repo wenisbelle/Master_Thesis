@@ -1,8 +1,9 @@
 """
 The centralized system: the scenario, the cost and the GA of swarm/main.py, with the
 drones of centralized/protocol.py. Every simulation gets a new CentralizedWorld (the
-global map, the true state of every drone and the charging scheduler, see world.py),
-and there is no communication handler: nothing is ever sent. See README.md.
+global map, the true state of every drone and the charging scheduler, see world.py).
+The drones send nothing to each other: the only messages are the ones of a landed drone
+with the base node (since 2026-11-24, recharge_base.py). See README.md.
 
     python3 -m Analytical.centralized.main --mode train        # GA over the 4 coverage genes
     python3 -m Analytical.centralized.main --mode test
@@ -21,7 +22,9 @@ from gradysim.simulator.handler.visualization import VisualizationHandler
 from gradysim.simulator.simulation import SimulationConfiguration, SimulationBuilder
 from .protocol import drone_protocol_factory, DroneStatus
 from ..charging_station import ChargingStation
+from ..recharge_base import recharge_base_factory, BASE_ANTENNA_ALTITUDE
 from .world import CentralizedWorld
+from gradysim.simulator.handler.communication import CommunicationHandler, CommunicationMedium
 
 from gradysim.simulator.handler.mobility import (
     DynamicVelocityMobilityConfiguration,
@@ -41,8 +44,9 @@ MAP_HEIGHT = 100
 NUMBER_OF_DRONES = 3  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
 UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
-##### No radio in centralized: nothing reads it. Kept so the scripts shared with swarm and egocentric #####
-##### (multiple_runs.py) can set it the same way and file the runs under multiple_runs/<range>/.     #####
+##### No radio between the drones in centralized: only the messages of a drone landed on the base with  #####
+##### the base node use it, at a distance of 0. Kept so the scripts shared with swarm and egocentric     #####
+##### (multiple_runs.py) can set it the same way and file the runs under multiple_runs/<range>/.         #####
 TRANSMISSION_RANGE = 200
 ##### Two MAPPING drones closer than this make a pair decision, the encounter of swarm (README.md). #####
 ##### Fixed, so the centralized system is the same at every range of the swarm sweep.             #####
@@ -70,6 +74,10 @@ COST_TERMS = ("uncertainty", "dead", "charging")  # the terms summed into the co
 
 ##### How often the global map is assembled and sampled, in simulated seconds. 
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
+
+##### The base node broadcasts the drones charging and waiting every second (recharge_base.py): #####
+##### no drone of this system listens to it, so the base only gives the pads.                   #####
+BROADCAST_BASE = False
 
 ##### GA genome layout: (name, low, high), in the order the individual stores them.
 ##### The genes of swarm that choose where to map, with the same bounds. The energy genes
@@ -392,16 +400,22 @@ def create_and_run_simulation(individual, mode: str = "train",
         send_telemetry=True,
     )
     builder.add_handler(DynamicVelocityMobilityHandler(mobility_config))
-    ##### No CommunicationHandler: the drones send nothing, they read the world #####
+    ##### The drones send nothing to each other, they read the world. The handler only carries the  #####
+    ##### messages of a landed drone with the base node (since 2026-11-24), see recharge_base.py     #####
+    builder.add_handler(CommunicationHandler(CommunicationMedium(
+        transmission_range=TRANSMISSION_RANGE
+    )))
 
     if enable_simulation_plot:
         builder.add_handler(VisualizationHandler())
 
     results_aggregator = {}
-    ##### The global map, the true state of every drone and the scheduler, new for every run #####
-    world = CentralizedWorld()
-    ##### The pads of the base: at most Nc drones charge at once, the others wait landed #####
+    ##### The pads of the base: at most Nc drones charge at once, the others wait landed. #####
+    ##### The base node owns it, see recharge_base.py                                     #####
     charging_station = ChargingStation(int(number_of_drones/3))
+    ##### The global map, the true state of every drone and the scheduler, new for every run. #####
+    ##### The scheduler also reads the pads and the waiting room of the base.                  #####
+    world = CentralizedWorld(charging_station)
     ConfiguredDrone = drone_protocol_factory(
         uncertainty_rate=UNCERTAINTY_RATE,
         vanishing_update_time=VANISHING_UPDATE_TIME,
@@ -413,7 +427,6 @@ def create_and_run_simulation(individual, mode: str = "train",
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
         charging_base_position=charging_base_position,
-        charging_station=charging_station,
         min_charge_margin=MIN_CHARGE_MARGIN,
         Nc_charging_base=int(number_of_drones/3),
         results_aggregator=results_aggregator,
@@ -430,11 +443,16 @@ def create_and_run_simulation(individual, mode: str = "train",
     for _ in range(number_of_drones):
         builder.add_node(ConfiguredDrone, (charging_base_position[0], charging_base_position[1], 0))
 
+    ##### The base is a node (since 2026-11-24), added after the drones so they keep the ids  #####
+    ##### 0..number_of_drones-1. It gives the pads. BROADCAST_BASE: see recharge_base.py      #####
+    builder.add_node(recharge_base_factory([charging_station], broadcast=BROADCAST_BASE, mode=mode),
+                     (charging_base_position[0], charging_base_position[1], BASE_ANTENNA_ALTITUDE))
+
     # Building & starting
     simulation = builder.build()
 
     global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval)
-    ##### For the reports: the waits of the run #####
+    ##### For the reports: the waits of the run, read from the base's own bookkeeping #####
     global_map.charging_station = charging_station
     ##### Kept with the monitor, so the caller can read what the scheduler did #####
     global_map.world = world

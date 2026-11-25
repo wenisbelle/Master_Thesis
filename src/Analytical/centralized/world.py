@@ -4,9 +4,9 @@ egocentric has.
 
 One CentralizedWorld is built per simulation (main.create_and_run_simulation) and
 given to every drone through the protocol factory, the way results_aggregator is.
-It is a plain Python object, not a gradysim node. Adding a node changes the order
-gradysim runs the events of one instant in (see the README of Analytical), and the
-oracle needs no radio: the drones read it directly.
+It is a plain Python object, not a gradysim node: the oracle needs no radio, the
+drones read it directly. It also reads the pads and the waiting room of the base
+node (charging_station.py), the truth no drone has.
 
 It holds:
 - **The global map.** One map shared by every drone: each drone's `map` and
@@ -43,10 +43,11 @@ deadlines. check_centralized.py tests place_slots against an exact solver. The
 README has the references and the measurements behind the constants.
 """
 
-import heapq
 from dataclasses import dataclass
 
 import numpy as np
+
+from ..charging_station import ChargingStation, waiting_room_starts
 
 
 @dataclass(frozen=True)
@@ -256,7 +257,9 @@ class CentralizedWorld:
     ##### battery at the arrival, about 0.01.                                                   #####
     PLANNING_DRAIN_FACTOR = 1.15
 
-    def __init__(self):
+    def __init__(self, station: ChargingStation):
+        ##### The pads and the waiting room of the base, written by the base node, see recharge_base.py #####
+        self.station = station
         self.drones = {}
         self.map = None
         self.is_cell_visited = None
@@ -283,8 +286,6 @@ class CentralizedWorld:
             self.speed = drone.speed_command
             self.braking_time = drone.speed_command / (2 * drone.BASE_APPROACH_DECELERATION)
             self.status_values = {status.name: status for status in type(drone.status)}
-            ##### The pads and the waiting room of the base, see charging_station.py #####
-            self.station = drone.CHARGING_STATION
         self.drones[drone.provider.get_id()] = drone
 
     def others(self, drone_id: int) -> list:
@@ -355,19 +356,11 @@ class CentralizedWorld:
         When the drones of the waiting room will start charging (since 2026-11-24, see
         charging_station.py). They take the pads in the order they landed, each one as soon as
         a pad frees: at the end of a charge on the base, or of a charge of the waiting room
-        before it. A pad is free until it is taken, so the start is never before now.
+        before it. The start is never before now.
         """
-        if not self.station.waiting:
-            return []
-        pads_free_at = [self.drones[i].charging_start_time + self.time_to_recharge for i in self.station.charging]
-        pads_free_at += [now] * max(0, self.station.pads - len(pads_free_at))
-        heapq.heapify(pads_free_at)
-        starts = []
-        for _ in self.station.waiting:
-            start = max(now, heapq.heappop(pads_free_at))
-            starts.append(start)
-            heapq.heappush(pads_free_at, start + self.time_to_recharge)
-        return starts
+        charging_starts = [start for start, _ in self.station.charging.values()]
+        return waiting_room_starts(charging_starts, len(self.station.waiting), self.station.pads,
+                                   self.time_to_recharge, now)
 
     def plan(self, now: float) -> dict:
         """The ChargingSlot of every MAPPING drone, from the true state at now, see plan_charging."""

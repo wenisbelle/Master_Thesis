@@ -9,6 +9,7 @@ import base64
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
+from ..recharge_base import BaseMessageType, base_node_id, send_landed, send_take_off
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -24,7 +25,7 @@ class DroneStatus(enum.Enum):
     GOING_TO_BASE = 1
     DEAD = 2
     CHARGING = 3
-    ##### Landed on the base with every pad taken, waiting for one (since 2026-11-24), see charging_station.py #####
+    ##### Landed on the base, waiting for the base to give it a pad (since 2026-11-24), see recharge_base.py #####
     WAITING = 4
 
 class MessageType(enum.Enum):
@@ -151,8 +152,6 @@ class Drone(IProtocol):
         'Nc_charging_base': 2,
         'discharge_rate': 0.001,
         'charging_base_position': (0.0, 0.0),
-        ##### The pads of the base, shared by every drone of the simulation, see charging_station.py #####
-        'charging_station': None,
         ##### "train" runs silent and fast, "test" logs every routine #####
         "mode": "train",
         "enable_map_plot": False,
@@ -174,8 +173,6 @@ class Drone(IProtocol):
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
         self.TIME_TO_RECHARGE = 100
-        ##### A drone in the waiting room asks the base for a free pad this often #####
-        self.WAITING_CHECK_INTERVAL = 1.0
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -190,9 +187,8 @@ class Drone(IProtocol):
         self.KERNEL_N_SIGMA = self._config["kernel_n_sigma"]
         self.DISCHARGE_RATE = self._config["discharge_rate"]
         self.CHARGING_BASE_POSITION = self._config["charging_base_position"]
-        self.CHARGING_STATION = self._config["charging_station"]
-        if self.CHARGING_STATION is None:
-            raise ValueError("the protocol factory needs the charging_station of the base, see charging_station.py")
+        ##### The base is a node, added after the drones, see recharge_base.py #####
+        self.BASE_NODE_ID = base_node_id(self.NUMBER_OF_DRONES)
         self.CHARGE_MARGIN = self._config["chage_margin"]
         self.MIN_CHARGE_MARGIN = self._config["min_charge_margin"]
         self.Nc_CHARGING_BASE = self._config["Nc_charging_base"]
@@ -597,7 +593,8 @@ class Drone(IProtocol):
     def start_charging(self) -> None:
         """
         The drone is on a pad: it charges for TIME_TO_RECHARGE, then "recharge_done" takes it
-        off. Called when it lands on a free pad, or when it gets one in the waiting room.
+        off. Called when the base gives it a pad (PAD_MESSAGE): at once on a free pad, or when
+        its turn in the waiting room comes.
         """
         self.status = DroneStatus.CHARGING
 
@@ -628,20 +625,11 @@ class Drone(IProtocol):
             self.provider.schedule_timer("dead_notification", self.provider.current_time() + self.DEAD_NOTIFICATION_INTERVAL)
             return
 
-        ##### Handled outside of the status gate below, the drone is WAITING when it fires #####
-        if timer == "waiting_room":
-            if self.status == DroneStatus.WAITING:
-                if self.CHARGING_STATION.take_pad(self.provider.get_id(), self.provider.current_time()):
-                    self.start_charging()
-                else:
-                    self.provider.schedule_timer("waiting_room", self.provider.current_time() + self.WAITING_CHECK_INTERVAL)
-            return
-
         ##### Handled outside of the status gate below, the drone is CHARGING when it fires #####
         if timer == "recharge_done":
-            ##### The drone takes off: its pad is free for the first drone of the waiting room, #####
-            ##### and the battery plugin bills the flight again.                                 #####
-            self.CHARGING_STATION.take_off(self.provider.get_id())
+            ##### The drone takes off: it tells the base, which gives its pad to the first drone #####
+            ##### of the waiting room, and the battery plugin bills the flight again.             #####
+            send_take_off(self.provider, self.BASE_NODE_ID)
             self.battery.charge_battery_to_full()
             self.battery.resume()
             self.status = DroneStatus.MAPPING
@@ -700,15 +688,13 @@ class Drone(IProtocol):
                             self.provider.send_mobility_command(SetVelocityMobilityCommand(0.0, 0.0, 0.0))
                             self.battery.shutdown()
 
-                            ##### At most Nc drones charge at once. With every pad taken the drone waits #####
-                            ##### in the waiting room and asks for a pad every WAITING_CHECK_INTERVAL.    #####
-                            if self.CHARGING_STATION.land(self.provider.get_id(), self.provider.current_time()):
-                                self.start_charging()
-                            else:
-                                self.status = DroneStatus.WAITING
-                                if self.VERBOSE:
-                                    self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} reached the base, every pad is taken: waiting")
-                                self.provider.schedule_timer("waiting_room", self.provider.current_time() + self.WAITING_CHECK_INTERVAL)
+                            ##### It waits for a pad until the base gives it one (PAD_MESSAGE): at the  #####
+                            ##### same instant when one is free, otherwise when its turn comes. At most #####
+                            ##### Nc drones charge at once, see recharge_base.py.                       #####
+                            self.status = DroneStatus.WAITING
+                            if self.VERBOSE:
+                                self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} reached the base and asks for a pad")
+                            send_landed(self.provider, self.BASE_NODE_ID, self.battery.battery_status)
                             return
                         else:
                             ##### Same refresh as in the MAPPING branch, and for the same  #####
@@ -786,6 +772,12 @@ class Drone(IProtocol):
 
 
     def handle_packet(self, message: str) -> None:
+        ##### On the ground the only message the drone acts on is the PAD of its base, see recharge_base.py #####
+        if self.status == DroneStatus.WAITING:
+            if json.loads(message).get('message_type') == BaseMessageType.PAD_MESSAGE.value:
+                self.start_charging()
+            return
+
         if self.status == DroneStatus.MAPPING or self.status == DroneStatus.GOING_TO_BASE:
             data: dict = json.loads(message)
 
@@ -903,7 +895,6 @@ def drone_protocol_factory(
     Nc_charging_base: int,               # fixed
     discharge_rate: float,               # fixed
     charging_base_position: tuple,       # fixed    
-    charging_station,                    # charging_station.ChargingStation of the base, one per simulation
     results_aggregator: dict,
     mode: str = "train",
     enable_map_plot: bool = False,
@@ -940,7 +931,6 @@ def drone_protocol_factory(
         'Nc_charging_base': Nc_charging_base,
         "discharge_rate": discharge_rate,
         "charging_base_position": charging_base_position,        
-        "charging_station": charging_station,
         "results_aggregator": results_aggregator,
         "mode": mode,
         "enable_map_plot": enable_map_plot,

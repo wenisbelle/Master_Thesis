@@ -31,6 +31,7 @@ from . import main
 from .main import BEST_INDIVIDUAL, GENE_BOUNDS
 from .recorder import SimulationRecorder
 from .protocol import DroneStatus, Drone, MessageType, drone_protocol_factory
+from ..recharge_base import BaseMessageType
 from .estimation_metrics import summarize, format_summary
 
 
@@ -69,18 +70,24 @@ RECORDING_FILE = "test_recording.pkl"
 ##### What made a drone choose the base, abort or die, from the event the protocol was #####
 ##### handling when its status changed. See SimulationRecorder.record_return_event.     #####
 TIMER_TRIGGERS = {"mobility": "own", "recharge_done": "after_recharge", "battery_check": "battery"}
+##### Since 2026-11-24 the base broadcasts who is on the ground, in place of the charging drones' own  #####
+##### notification: the trigger keeps its name, so the older recordings plot the same                 #####
 MESSAGE_TRIGGERS = {"GOSSIPING_MESSAGE": "encounter",
                     "SHARE_GOTO_POSITION_MESSAGE": "sent",
-                    "CHARGING_NOTIFICATION_MESSAGE": "charging_notification"}
+                    "CHARGING_NOTIFICATION_MESSAGE": "charging_notification",
+                    "BASE_HEARTBEAT_MESSAGE": "charging_notification"}
 
 
 def message_trigger(message: str) -> tuple:
     """(trigger, sender) of a packet, see MESSAGE_TRIGGERS."""
     data = json.loads(message)
-    try:
-        name = MessageType(data.get("message_type")).name
-    except ValueError:
-        name = str(data.get("message_type"))
+    name = str(data.get("message_type"))
+    for message_types in (MessageType, BaseMessageType):
+        try:
+            name = message_types(data.get("message_type")).name
+            break
+        except ValueError:
+            pass
     return MESSAGE_TRIGGERS.get(name, name.lower()), data.get("sender")
 
 

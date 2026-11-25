@@ -74,6 +74,11 @@ SRC_DIR = os.path.dirname(ANALYTICAL_DIR)
 ##### The systems are imported as packages, Analytical.<system>.main, so src has to be on the path #####
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
+##### The customized gradysim of the repo, ahead of any gradysim installed in a venv: an older #####
+##### installed copy would run the runs silently with an older battery plugin #####
+GRADYSIM_DIR = os.path.join(SRC_DIR, "gradys-sim-nextgen")
+if GRADYSIM_DIR not in sys.path:
+    sys.path.insert(0, GRADYSIM_DIR)
 
 ##### Defaults of main_test.py and main.py, the scenario the single tests run #####
 NUMBER_OF_RUNS = 50

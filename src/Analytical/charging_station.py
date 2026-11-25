@@ -14,16 +14,15 @@ charge at once, so a system that ignored Nc got its drones back to mapping soone
 looked better on uncertainty than one that respected it. Now waiting costs mapping time,
 for every system.
 
-One station is built per base and per simulation (main.py) and given to every drone
-through the protocol factory, the way results_aggregator is. It is the bookkeeping of
-the base itself: which pads are free, who landed first. The drones do not decide with
-it. A drone only learns that it has to wait once it lands, and swarm still estimates the
-congestion from what it hears (aproximate_battery_consumption_model).
-
-A waiting drone asks for a pad once per protocol tick (take_pad), so a freed pad can stay
-empty for up to that tick before the first drone in line takes it.
+This is the bookkeeping of the base node (recharge_base.RechargeBase, since 2026-11-24),
+and only the base writes to it: a drone tells the base it landed or took off with a
+message, and the base answers with the pad. The base hands a freed pad to the first
+drone of the waiting room at the instant the other one takes off, so a pad is never
+empty while a drone waits. main.py keeps a reference to it for the reports, and the
+centralized world reads it, as the oracle it is.
 """
 
+import heapq
 from collections import deque
 
 
@@ -31,39 +30,61 @@ class ChargingStation:
     def __init__(self, pads: int):
         ##### Nc is int(drones / 3): below 3 drones the base still has one pad #####
         self.pads = max(1, int(pads))
-        self.charging = []        # ids of the drones on a pad
+        ##### {drone id: (time its charge started, its battery then)} of the drones on a pad, #####
+        ##### in the order they took it                                                       #####
+        self.charging = {}
         self.waiting = deque()    # ids of the drones in the waiting room, the first landed first
-        self._landed_at = {}      # landing time of every drone on the ground
+        ##### {drone id: (landing time, battery at landing)} of every drone on the ground. The #####
+        ##### battery does not change on the ground, so it is also the one its charge starts with #####
+        self._landed = {}
         ##### (drone id, time it landed, time it took a pad) of every drone that had to wait #####
         self.waits = []
         self.landings = 0
 
-    def land(self, drone_id: int, now: float) -> bool:
+    def land(self, drone_id: int, now: float, battery: float) -> bool:
         """
         The drone landed on the base. True: it takes a pad now. False: it goes to the
         waiting room, because every pad is taken or other drones are already waiting.
         """
+        if drone_id in self._landed:
+            ##### Already on the ground: the base answers the same again #####
+            return drone_id in self.charging
         self.landings += 1
-        self._landed_at[drone_id] = float(now)
+        self._landed[drone_id] = (float(now), float(battery))
         if not self.waiting and len(self.charging) < self.pads:
-            self.charging.append(drone_id)
+            self.charging[drone_id] = (float(now), float(battery))
             return True
         self.waiting.append(drone_id)
         return False
 
-    def take_pad(self, drone_id: int, now: float) -> bool:
-        """A drone of the waiting room asks for a pad. It gets one when a pad is free and it is first in line."""
-        if self.waiting and self.waiting[0] == drone_id and len(self.charging) < self.pads:
-            self.waiting.popleft()
-            self.charging.append(drone_id)
-            self.waits.append((drone_id, self._landed_at[drone_id], float(now)))
-            return True
-        return False
+    def take_off(self, drone_id: int, now: float) -> list:
+        """
+        The drone finished charging and took off: its pad is free. Returns the drones of
+        the waiting room that take a pad now, first in line first (one at most, unless a
+        pad was already free).
+        """
+        self.charging.pop(drone_id, None)
+        self._landed.pop(drone_id, None)
+        granted = []
+        while self.waiting and len(self.charging) < self.pads:
+            next_drone = self.waiting.popleft()
+            landed_at, battery = self._landed[next_drone]
+            self.charging[next_drone] = (float(now), battery)
+            self.waits.append((next_drone, landed_at, float(now)))
+            granted.append(next_drone)
+        return granted
 
-    def take_off(self, drone_id: int) -> None:
-        """The drone finished charging and took off: its pad is free."""
-        self.charging.remove(drone_id)
-        self._landed_at.pop(drone_id, None)
+    def charging_rows(self) -> list:
+        """[drone id, time its charge started, battery then] of every drone on a pad."""
+        return [[drone_id, start, battery] for drone_id, (start, battery) in self.charging.items()]
+
+    def waiting_rows(self) -> list:
+        """[drone id, landing time, battery then] of every drone of the waiting room, first in line first."""
+        return [[drone_id, *self._landed[drone_id]] for drone_id in self.waiting]
+
+    def as_message(self) -> dict:
+        """What the base broadcasts about this station, see recharge_base.BaseHeartbeatMessage."""
+        return {"pads": self.pads, "charging": self.charging_rows(), "waiting": self.waiting_rows()}
 
     def summary(self, end_time: float = None) -> dict:
         """
@@ -72,7 +93,7 @@ class ChargingStation:
         """
         durations = [took - landed for _, landed, took in self.waits]
         if end_time is not None:
-            durations += [float(end_time) - self._landed_at[drone_id] for drone_id in self.waiting]
+            durations += [float(end_time) - self._landed[drone_id][0] for drone_id in self.waiting]
         return {
             "pads": self.pads,
             "landings": self.landings,
@@ -97,3 +118,28 @@ class ChargingStation:
         if charging_counts is not None and len(charging_counts):
             lines.append(f"Most drones charging at once: {int(max(charging_counts))}")
         return "\n".join(lines)
+
+
+def waiting_room_starts(charging_starts, waiting_count: int, pads: int, time_to_recharge: float,
+                        now: float) -> list:
+    """
+    When the drones of a waiting room start charging, first in line first. Every charge
+    lasts time_to_recharge and the base hands a pad over the instant it frees, so the
+    k-th drone in line takes the k-th pad that frees: at the end of a charge on the base,
+    or of a charge of the waiting room before it. A pad already free is taken now.
+
+    charging_starts are the start times of the charges on the pads. Exact as long as no
+    drone lands ahead of the line, and none can (first landed, first served). Used by the
+    swarm drones on the base heartbeat and by the centralized scheduler.
+    """
+    if waiting_count <= 0:
+        return []
+    pads_free_at = [float(start) + time_to_recharge for start in charging_starts]
+    pads_free_at += [float(now)] * max(0, int(pads) - len(pads_free_at))
+    heapq.heapify(pads_free_at)
+    starts = []
+    for _ in range(waiting_count):
+        start = max(float(now), heapq.heappop(pads_free_at))
+        starts.append(start)
+        heapq.heappush(pads_free_at, start + time_to_recharge)
+    return starts

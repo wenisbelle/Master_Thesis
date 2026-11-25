@@ -18,7 +18,7 @@ import numpy as np
 
 DECIDING = ("MAPPING", "GOING_TO_BASE")
 ##### True status of the target, for the error split by state #####
-TARGET_STATUSES = ("MAPPING", "GOING_TO_BASE", "CHARGING")
+TARGET_STATUSES = ("MAPPING", "GOING_TO_BASE", "WAITING", "CHARGING")
 ##### Difference of the effective margin, with the estimate or the truth, counted as #####
 ##### "the estimate changed the margin". 0.05 of a battery is ~70 s of flight.          #####
 MARGIN_TOLERANCE = 0.05
@@ -45,7 +45,9 @@ def pair_samples(states, status_values) -> dict:
     true_battery = np.stack([states[j]["battery"] for j in range(N)], axis=1)   # (T, N)
     true_status = np.stack([states[j]["status"] for j in range(N)], axis=1)     # (T, N)
     dead = status_values.get("DEAD", np.nan)
-    charging = status_values.get("CHARGING", np.nan)
+    ##### "Charging" is on the base: on a pad or in the waiting room (since 2026-11-24), as the #####
+    ##### drones count it, see estimate_drone_battery                                         #####
+    on_base = [status_values.get("CHARGING", np.nan), status_values.get("WAITING", np.nan)]
 
     names = ("estimate", "true", "age", "believed_charging", "true_charging",
              "true_status", "observer", "target", "sample")
@@ -62,7 +64,7 @@ def pair_samples(states, status_values) -> dict:
         columns["true"].append(true_battery[sample, target])
         columns["age"].append(states[i]["belief_age"][sample, target])
         columns["believed_charging"].append(states[i]["belief_charging"][sample, target] > 0.5)
-        columns["true_charging"].append(true_status[sample, target] == charging)
+        columns["true_charging"].append(np.isin(true_status[sample, target], on_base))
         columns["true_status"].append(true_status[sample, target])
         columns["observer"].append(np.full(len(sample), i))
         columns["target"].append(target)

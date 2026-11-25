@@ -17,7 +17,8 @@ run        One seeded run, and the properties that make it the centralized syste
            - every drone holds the same map arrays as the world (one global map);
            - the map grows once per second, not once per drone: every cell's uncertainty
              is the rate times the time since it was last seen;
-           - nothing is sent (no communication handler, no packet received);
+           - the drones send nothing to each other: the only messages are a landed
+             drone's with the base node (landed, took off, the pad it gets);
            - the same seed gives the same run, recorded (main_test.py) or not;
            - the same seed gives the same first destinations as swarm (same scenario).
 sweep      Many seeded runs, every swarm size, the base at the centre and drawn as in
@@ -28,6 +29,7 @@ sweep      Many seeded runs, every swarm size, the base at the centre and drawn 
 
 import os
 import sys
+import json
 import time
 import argparse
 import multiprocessing
@@ -38,6 +40,7 @@ from . import main
 from . import main_test
 from .protocol import DroneStatus
 from .world import place_slots, most_on_base, on_base
+from ..recharge_base import BaseMessageType, base_node_id
 
 ##### Integer cases of the scheduler check #####
 SCHEDULER_CASES = 150
@@ -208,7 +211,6 @@ def check_run(duration: int, number_of_drones: int, seed: int) -> bool:
     main.SIMULATION_DURATION = duration
     packets, sent = [], []
     shared = []
-    handlers = set()
 
     ##### Every packet received and every communication command sent, counted by a subclass #####
     original_factory = main.drone_protocol_factory
@@ -226,7 +228,6 @@ def check_run(duration: int, number_of_drones: int, seed: int) -> bool:
         return CountingDrone
 
     def observer(simulation):
-        handlers.update(simulation._handlers)
         protocols = [simulation.get_node(i).protocol_encapsulator.protocol for i in range(number_of_drones)]
 
         def observe(_time):
@@ -259,9 +260,15 @@ def check_run(duration: int, number_of_drones: int, seed: int) -> bool:
                    f"{error.max() / main.UNCERTAINTY_RATE:.2f} growth steps, never-seen cells: "
                    f"{int(np.sum(seen == 0))})"))
 
-    checks.append(("communication" not in handlers and not packets and not sent,
-                   f"no communication handler ({', '.join(sorted(handlers))}), nothing sent and nothing "
-                   f"received ({len(sent)} sent, {len(packets)} received)"))
+    ##### Since 2026-11-24 the base is a node: the only messages are a landed drone's with it #####
+    base_types = {BaseMessageType.LANDED_MESSAGE.value, BaseMessageType.TAKE_OFF_MESSAGE.value}
+    only_base = (all(command.destination == base_node_id(number_of_drones)
+                     and json.loads(command.message).get("message_type") in base_types for command in sent)
+                 and all(json.loads(message).get("message_type") == BaseMessageType.PAD_MESSAGE.value
+                         for message in packets))
+    checks.append((only_base,
+                   f"the drones send nothing to each other, only to the base (landed, took off), and receive "
+                   f"only the pads it gives ({len(sent)} sent, {len(packets)} received)"))
 
     ##### Determinism, and the recorder does not change the run #####
     _, again = main.create_and_run_simulation(main.BEST_INDIVIDUAL, number_of_drones=number_of_drones,
