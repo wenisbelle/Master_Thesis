@@ -59,7 +59,7 @@ TIME_TO_RECHARGE = 300  # s a drone charges on a pad, given to the drones
 CHARGING_BASE_CAPACITY = 2  # Nc, over all the bases together. None: int(number_of_drones / 3), see default_charging_capacity
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
-INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
+INITIAL_UNCERTAINTY = 1.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
 ##### The naive return rule (A1.md): a MAPPING drone goes to the nearest base below this battery #####
 RETURN_BATTERY_THRESHOLD = 0.30  # hand-tuned 2026-11-24: 0.30, above the 0.25 margin of egocentric/swarm/centralized because the naive return ignores the distance to the base (0.25 landed at 0.113 with the base at (800, 800))
 ##### The naive bases send no heartbeat, like the egocentric ones. They are placed exactly as in the swarm system so all three #####

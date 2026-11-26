@@ -102,7 +102,7 @@ nothing runs untuned. There are two exceptions:
 | Base | Gaussian around the map centre, σ = 333 m (3σ reaches the border), snapped to a cell centre, drawn again if off the map | `sample_base_position` |
 | Charging capacity `Nc` | `int(drones / 3)` pads, at least 1. Hard since 2026-11-24: a drone that lands with every pad taken waits on the ground until one frees. Before, it was soft: it changed decisions, nothing forbade more | `<system>/recharge_base.py`, `main.py` |
 | Uncertainty growth | +0.001 per cell every second | `UNCERTAINTY_RATE`, `VANISHING_UPDATE_TIME` |
-| Initial uncertainty | swarm 1.0, egocentric 0.5 (see [Known issues](#known-issues-2026-11-15)) | `INITIAL_UNCERTAINTY` |
+| Initial uncertainty | 1.0 in every system, `expanding_testing` included (since 2026-11-26) | `INITIAL_UNCERTAINTY` |
 | Wind | Random air speed N(0, 4) m/s along the heading, each drone keeps a value for 60 s (piecewise constant). Same mean drain as before, but over 100 s of cruise 0.77–1.70× of it (p1–p99, 0.86–1.25× over 1000 s) instead of 0.94–1.08×. Until 2026-11-24 a new value every second | `SHARED_BATTERY_CONFIG`, gradysim `BatteryPowerConfiguration.random_air_speed_hold` |
 | Discharge assumed by the decisions | 0.00067 of the battery per second (measured cruising at 15 m/s with the wind, after the 2026-11-23 battery plugin fix; 0.00073 before) | `DISCHARGE_RATE` |
 | Dead | battery ≤ 10% | `DEAD_BATTERY_THRESHOLD` |
@@ -566,9 +566,9 @@ width, and a moving average would only call it something else.
 - **Revisit data in old runs:** run files written before 2026-11-15 have no
   revisit data, and neither do the MARL runs. The revisit figure leaves them out
   and says so. Run them again with `--overwrite`, or into a new directory, to get it.
-- **Initial uncertainty:** `INITIAL_UNCERTAINTY` is 1.0 in swarm and 0.5 in
-  egocentric, here and in `expanding_testing`. It is not about energy, so the two
-  systems start the global uncertainty at different values (10,000 against 5,000).
+- **Initial uncertainty (fixed 2026-11-26):** `INITIAL_UNCERTAINTY` is 1.0 in
+  every system, here and in `expanding_testing`. Runs from before mixed 0.5, 1.0
+  and 10.0, so their global uncertainty does not start from the same value.
 - **The egocentric 200 m individual:** it goes back to the base too late. In 6
   test runs of 3000 s with 5 drones, all 5 drones died in every run, though some
   had recharged before. `BEST_INDIVIDUAL` in `egocentric/main.py` is still the one

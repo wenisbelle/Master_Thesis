@@ -44,7 +44,7 @@ NUMBER_OF_DRONES = 9
 ##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
 ##### runs back with --hand-tuned too). It starts as BEST_INDIVIDUAL of main.py.                 #####
 HAND_TUNED_INDIVIDUAL = [
-    1.0,    # base_variance, between 0.25 and 100. Same kernel in every system so they compare fairly (2026-11-24)
+    4.0,    # base_variance, between 0.25 and 100. Same kernel in every system so they compare fairly (2026-11-24)
     1.0,    # alpha_variance_modifier, between 0 and 100. Same kernel in every system so they compare fairly (2026-11-24)
     100.0,  # energy_gamma, between 0.1 and 100
     200.0,  # distance_between_drone_norm, between 10 and 1000

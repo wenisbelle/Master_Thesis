@@ -6,8 +6,8 @@ Plots the runs multiple_runs.py wrote, for one or more systems, in two figures:
 - Global uncertainty relative to a reference system (--reference, naive by default), in %,
   when there are several systems: the absolute figure hides differences of a few %. Seeded
   alike, run k of each system is compared with run k of the reference (same base(s) and
-  wind), which removes the spread the base position adds to both. (a) in time, in windows
-  of --uncertainty-window seconds; (b) the mean of each run from --steady-state on, a dot
+  wind), which removes the spread the base position adds to both. (a) in time, a moving
+  average over --uncertainty-window seconds; (b) the mean of each run from --steady-state on, a dot
   per run, with a paired Wilcoxon signed-rank test.
 - Time on the base, in three panels that aggregate the runs, so they read the same with
   10 runs or 200. Since 2026-11-24 the base has Nc pads and a waiting room
@@ -95,13 +95,15 @@ BOOTSTRAP_SEED = 0
 JITTER_SEED = 0
 OVER_CAPACITY_COLOR = "0.95"
 
-##### Windows the difference of uncertainty to the reference is averaged in, in s. Long #####
-##### enough to smooth the recharge waves, short enough to show the first sweep apart.  #####
+##### Width of the moving average of the difference of uncertainty to the reference, in s. #####
+##### Long enough to smooth the recharge waves, short enough to show the first sweep apart. #####
 UNCERTAINTY_WINDOW = 1000.0
+##### The moving average is read this many times per window, so the line looks continuous #####
+MOVING_AVERAGE_POINTS = 20
 REFERENCE_SYSTEM = "naive"
 
 ##### Distance bins of the revisit figure, in m: 5 cells #####
-DISTANCE_BIN = 100.0
+DISTANCE_BIN = 10.0
 ##### A distance is drawn where at least this share of the runs revisited a cell there. The far #####
 ##### ones only exist in the runs with a base near a corner, a few runs would decide them.       #####
 MIN_RUN_SHARE = 0.5
@@ -140,6 +142,22 @@ def windowed(mask, grid, dt, window):
     lengths = np.diff(np.r_[starts, mask.shape[1]])
     share = np.add.reduceat(mask.astype(float), starts, axis=1) / lengths
     return share, np.r_[grid[starts], grid[-1] + dt]
+
+
+def moving_average(values, grid, dt, window):
+    """
+    Mean of every run (values has a row per run) over a window of window seconds centred
+    on each instant, read every window / MOVING_AVERAGE_POINTS seconds, and those instants.
+    Near the start and the end the window is cut to what the run has.
+    """
+    samples = values.shape[1]
+    half = max(1, int(round(window / dt))) // 2
+    centres = np.arange(0, samples, max(1, int(round(window / MOVING_AVERAGE_POINTS / dt))))
+    if centres[-1] != samples - 1:
+        centres = np.r_[centres, samples - 1]
+    low, high = np.maximum(centres - half, 0), np.minimum(centres + half + 1, samples)
+    cumulative = np.concatenate([np.zeros((len(values), 1)), np.cumsum(values, axis=1)], axis=1)
+    return (cumulative[:, high] - cumulative[:, low]) / (high - low), grid[centres]
 
 
 def paired_test(values):
@@ -260,7 +278,7 @@ def plot_uncertainty_difference(loaded, reference, window, steady_state):
     """
     The uncertainty of every system relative to the reference, in %, so differences of a
     few % that the absolute figure hides become readable:
-      (a) in time, averaged in windows of window seconds, mean and bootstrap interval;
+      (a) in time, a moving average over window seconds, mean and bootstrap interval;
       (b) the mean over each run from steady_state on, a dot per run, box plot and mean.
     Seeded alike, run k of a system is compared with run k of the reference (same base(s)
     and wind), which removes the spread the base position adds to both. None with a
@@ -295,13 +313,12 @@ def plot_uncertainty_difference(loaded, reference, window, steady_state):
         reference_uncertainty = np.array([reference_data["series"][row]["global_uncertainty"][:samples]
                                           for row in reference_rows])
 
-        ##### (a) In time #####
-        windows, edges = windowed(uncertainty, grid, dt, window)
-        reference_windows, _ = windowed(reference_uncertainty, grid, dt, window)
-        mean, low, high = bootstrap_relative_difference(windows, reference_windows, paired)
-        ax_time.fill_between(edges, np.r_[low, low[-1]], np.r_[high, high[-1]], step="post",
-                             color=style["color"], alpha=BAND_ALPHA, lw=0)
-        ax_time.step(edges, np.r_[mean, mean[-1]], where="post", color=style["color"], ls=style["ls"], lw=1.6,
+        ##### (a) In time, a moving average of each run #####
+        smoothed, instants = moving_average(uncertainty, grid, dt, window)
+        reference_smoothed, _ = moving_average(reference_uncertainty, grid, dt, window)
+        mean, low, high = bootstrap_relative_difference(smoothed, reference_smoothed, paired)
+        ax_time.fill_between(instants, low, high, color=style["color"], alpha=BAND_ALPHA, lw=0)
+        ax_time.plot(instants, mean, color=style["color"], ls=style["ls"], lw=1.6,
                      label=f"{system}, {len(rows)} runs" + (" paired" if paired else ""))
 
         ##### (b) Each run, from steady_state on #####
@@ -340,7 +357,7 @@ def plot_uncertainty_difference(loaded, reference, window, steady_state):
     ax_time.set_xlim(0, reference_data["grid"][-1] + dt)
     ax_time.set_xlabel("time (s)")
     ax_time.set_ylabel(f"global uncertainty relative\nto {reference} (%)")
-    ax_time.set_title(f"(a) In time, {window:g} s windows: mean over the runs, {CONFIDENCE}% bootstrap interval. "
+    ax_time.set_title(f"(a) In time, {window:g} s moving average: mean over the runs, {CONFIDENCE}% bootstrap interval. "
                       f"Below 0: less uncertainty than {reference}", loc="left", fontsize=9)
     ax_time.legend(loc="best", fontsize=8, frameon=False, handlelength=3.5)
 
@@ -816,7 +833,7 @@ if __name__ == "__main__":
                         help="system the others are compared to in the difference of uncertainty figure "
                              f"(default: {REFERENCE_SYSTEM} when plotted, otherwise the first --system)")
     parser.add_argument("--uncertainty-window", type=float, default=UNCERTAINTY_WINDOW,
-                        help="width of the windows the difference of uncertainty is averaged in, in s "
+                        help="width of the moving average of the difference of uncertainty, in s "
                              "(default: %(default)s)")
     parser.add_argument("--steady-state", type=float, default=0.0,
                         help="the per-run panel of the difference figure only averages from this time on, "

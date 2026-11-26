@@ -2,7 +2,7 @@
   "system": "swarm",
   "drones": 12,
   "transmission_range": 200.0,
-  "duration": 50000,
+  "duration": 30000,
   "sample_interval": 1.0,
   "seed": 0,
   "individual": [
@@ -11,10 +11,14 @@
     100.0,
     1.0,
     200.0,
+    0.3,
     0.2,
     0.3,
     0.05,
-    0.25
+    0.25,
+    0.2,
+    0.3,
+    0.05
   ],
   "map_size": 100,
   "bases": 1,

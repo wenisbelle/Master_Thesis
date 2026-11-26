@@ -143,7 +143,7 @@ class Drone(IProtocol):
         "time_to_recharge": 300.0,  # s a charge lasts on a pad, TIME_TO_RECHARGE of main.py
         ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this #####
         ##### is in cells^2: 1.0 == one cell spacing, not one metre.               #####
-        'base_variance': 1.0,
+        'base_variance': 4.0,
         'alpha_variance_modifier': 1.0,
         'energy_gamma': 1.0,
         'charging_base_multiplier': 1.0,

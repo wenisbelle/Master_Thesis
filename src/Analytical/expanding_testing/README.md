@@ -32,7 +32,8 @@ the base node adds events of its own (see [Checks](#checks)).
 ported then:
 - **Base utility, Eq. (15).** kappa = K · mean(I/tau) (`fitness.mean_efficiency`),
   no longer the constant K.
-- **`INITIAL_UNCERTAINTY = 10.0`.** It was 1.0 in swarm and 0.5 in egocentric.
+- **`INITIAL_UNCERTAINTY = 1.0`.** It was 1.0 in swarm and 0.5 in egocentric, then
+  10.0 in all three; since 2026-11-26 it is 1.0 in every Analytical system.
 
 GA logbooks written before 2026-11-17 hold K in the old units, so with the new
 kappa their individuals are not tuned anymore. Until they are tuned again, use

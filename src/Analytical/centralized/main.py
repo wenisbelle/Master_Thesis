@@ -60,7 +60,7 @@ TIME_TO_RECHARGE = 300  # s a drone charges on a pad. Given to the drones and to
 CHARGING_BASE_CAPACITY = 2  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
-INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
+INITIAL_UNCERTAINTY = 1.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
 MIN_CHARGE_MARGIN = 0.25  # fraction of battery for going near the base of recharging. The reserve of the scheduler. 0.25 since 2026-11-24 (was 0.20), the same as the egocentric and swarm hand-tuned charge_margin
 
 ##### Cost weights, every term is integrated over time.

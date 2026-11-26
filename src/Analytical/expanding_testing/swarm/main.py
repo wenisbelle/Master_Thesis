@@ -51,7 +51,7 @@ TIME_TO_RECHARGE = 300  # s a drone charges on a pad. Given to the drones and to
 CHARGING_BASE_CAPACITY = 2  # Nc, over all the bases together. None: int(number_of_drones / 3), see default_charging_capacity
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
-INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
+INITIAL_UNCERTAINTY = 1.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
 MIN_CHARGE_MARGIN = 0.15  # fraction of battery for going near the base of recharging. Floor of the swarm margin: 0.10 below the hand-tuned 0.25, so a and c can delay the return (2026-11-24)
 ##### The range of gradysim is 3D. The drones fly, and charge, at the protocol's DRONE_ALTITUDE, so the antenna of #####
 ##### the bases is put at that altitude too: their heartbeats reach as far as the drone-to-drone messages, and as   #####

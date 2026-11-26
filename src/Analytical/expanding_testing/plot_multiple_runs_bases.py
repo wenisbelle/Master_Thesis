@@ -9,7 +9,7 @@ naive have the same colour, line and marker in both scripts.
   deviation around it (band).
 - Global uncertainty relative to a reference system (--reference, naive by default), in
   %, run k of each system against run k of the reference (same bases and wind): (a) in
-  time, in windows of --uncertainty-window seconds; (b) the mean of each run from
+  time, a moving average over --uncertainty-window seconds; (b) the mean of each run from
   --steady-state on, a dot per run, with a paired Wilcoxon signed-rank test.
 - Time on the base, over all the bases together: (a) when, the probability of a drone
   being in the waiting room in windows of --window seconds, (b) how much a drone waits,
@@ -114,7 +114,7 @@ def main() -> int:
                         help="system the others are compared to in the difference of uncertainty figure "
                              f"(default: {REFERENCE_SYSTEM} when plotted, otherwise the first --system)")
     parser.add_argument("--uncertainty-window", type=float, default=UNCERTAINTY_WINDOW,
-                        help="width of the windows the difference of uncertainty is averaged in, in s "
+                        help="width of the moving average of the difference of uncertainty, in s "
                              "(default: %(default)s)")
     parser.add_argument("--steady-state", type=float, default=0.0,
                         help="the per-run panel of the difference figure only averages from this time on, "

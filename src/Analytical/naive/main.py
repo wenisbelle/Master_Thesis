@@ -54,7 +54,7 @@ CHARGING_BASE_CAPACITY = 2  # Nc, the pads of the base. None: int(number_of_dron
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 ##### 1.0 as swarm and centralized. egocentric still has 0.5 (Analytical/README.md, known issues) #####
-INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
+INITIAL_UNCERTAINTY = 1.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
 ##### The naive return rule (A1.md): a MAPPING drone goes to the base below this battery #####
 RETURN_BATTERY_THRESHOLD = 0.30  # hand-tuned 2026-11-24: 0.30, above the 0.25 margin of egocentric/swarm/centralized because the naive return ignores the distance to the base (0.25 landed at 0.113 with the base at (800, 800))
 
