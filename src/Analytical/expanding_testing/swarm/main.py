@@ -34,7 +34,7 @@ from gradysim.simulator.handler.mobility import (
 import numpy as np
 
 ##### Scenario. main_test.py overrides MAP_WIDTH/MAP_HEIGHT and TRANSMISSION_RANGE from its command line
-SIMULATION_DURATION = 10000
+SIMULATION_DURATION = 30000
 MAP_WIDTH = 100   # cells, 20 m apart: 2000 m x 2000 m centred on (0, 0). The protocol needs a square map
 MAP_HEIGHT = 100
 NUMBER_OF_DRONES = 3
@@ -48,6 +48,7 @@ DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility h
 DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 battery_capacity is doubled to 10000 mAh (protocol.py) with the mass unchanged, so it is half of the 0.00067 measured cruising at 15 m/s with the random air speed (battery plugin body-frame fix, 2026-11-23)
 CHARGING_BASE_POSITIONS = [(0.0, 0.0)]  # [(x, y), ...] in metres, one per base
 TIME_TO_RECHARGE = 300  # s a drone charges on a pad. Given to the drones and to the bases, so both use the same
+CHARGING_BASE_CAPACITY = 2  # Nc, over all the bases together. None: int(number_of_drones / 3), see default_charging_capacity
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
@@ -74,10 +75,14 @@ GENE_NAMES = [
     "energy_gamma",                # gamma of Eqs. (14)/(15)
     "charging_base_multiplier",    # K of Eq. (15), kappa = K * mean(I/tau)
     "distance_between_drone_norm",
-    "a_battery_modifier",
-    "b_battery_modifier",
-    "c_battery_modifier",
-    "charge_margin",
+    "cells_charge_margin",         # cells genes: stored, not used by the protocol yet
+    "a_cells_modifier",
+    "b_cells_modifier",
+    "c_cells_modifier",
+    "base_charge_margin",          # base genes: the margin and a, b, c of the return decision
+    "a_base_modifier",
+    "b_base_modifier",
+    "c_base_modifier",
 ]
 
 ##### No individual is kept here. main_test.py and multiple_runs.py take the one the GA tuned for the range, #####
@@ -89,18 +94,23 @@ def unpack_individual(individual):
     Maps the flat GA genome onto the protocol's tunable parameters, in the
     order declared by GENE_NAMES.
     """
-    base_variance, alpha, gamma, kappa, drone_norm, a_modifier, b_modifier, c_modifier, charge_margin = individual
+    (base_variance, alpha, gamma, kappa, drone_norm,
+     cells_margin, a_cells_modifier, b_cells_modifier, c_cells_modifier,
+     base_margin, a_base_modifier, b_base_modifier, c_base_modifier) = individual
     return dict(
         base_variance=base_variance,
         alpha_variance_modifier=alpha,
         energy_gamma=gamma,
         charging_base_multiplier=kappa,
         distance_between_drone_norm=drone_norm,
-        a_battery_modifier=a_modifier,
-        b_battery_modifier=b_modifier,
-        c_battery_modifier=c_modifier,
-        chage_margin=charge_margin
-
+        cells_charge_margin=cells_margin,
+        a_cells_modifier=a_cells_modifier,
+        b_cells_modifier=b_cells_modifier,
+        c_cells_modifier=c_cells_modifier,
+        base_charge_margin=base_margin,
+        a_base_modifier=a_base_modifier,
+        b_base_modifier=b_base_modifier,
+        c_base_modifier=c_base_modifier,
     )
 
 
@@ -127,7 +137,10 @@ def default_charging_capacity(number_of_drones: int) -> int:
     """
     Nc when none is given: the capacity of the single base of Analytical/swarm, now over all the
     bases together. At least number_of_drones - Nc drones are meant to be mapping at any time.
+    CHARGING_BASE_CAPACITY when set, else int(number_of_drones / 3).
     """
+    if CHARGING_BASE_CAPACITY is not None:
+        return CHARGING_BASE_CAPACITY
     return int(number_of_drones/3)
 
 

@@ -40,7 +40,7 @@ from gradysim.simulator.handler.mobility import (
 import numpy as np
 
 ##### Scenario. main_test.py overrides MAP_WIDTH/MAP_HEIGHT and TRANSMISSION_RANGE from its command line
-SIMULATION_DURATION = 10000
+SIMULATION_DURATION = 30000
 MAP_WIDTH = 100   # cells, 20 m apart: 2000 m x 2000 m centred on (0, 0). The protocol needs a square map
 MAP_HEIGHT = 100
 NUMBER_OF_DRONES = 3
@@ -56,6 +56,7 @@ DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 batte
 ##### Fixed protocol parameters, not tuned
 CHARGING_BASE_POSITIONS = [(0.0, 0.0)]  # [(x, y), ...] in metres, one per base
 TIME_TO_RECHARGE = 300  # s a drone charges on a pad, given to the drones
+CHARGING_BASE_CAPACITY = 2  # Nc, over all the bases together. None: int(number_of_drones / 3), see default_charging_capacity
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
@@ -126,7 +127,10 @@ def default_charging_capacity(number_of_drones: int) -> int:
     """
     Nc when none is given: the capacity of the single base of Analytical/naive, now over all the
     bases together. The naive drone does not react to it, the runs are measured against it.
+    CHARGING_BASE_CAPACITY when set, else int(number_of_drones / 3).
     """
+    if CHARGING_BASE_CAPACITY is not None:
+        return CHARGING_BASE_CAPACITY
     return int(number_of_drones/3)
 
 

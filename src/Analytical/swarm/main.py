@@ -37,7 +37,7 @@ DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility h
 ##### Fixed protocol parameters, not tuned 
 DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 battery_capacity is doubled to 10000 mAh (protocol.py) with the mass unchanged, so it is half of the 0.00067 measured cruising at 15 m/s with the random air speed (battery plugin body-frame fix, 2026-11-23)
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning and other tests draws one per run, see sample_base_position
-TIME_TO_RECHARGE = 500  # s a drone charges on a pad. Given to the drones and to the base, so both use the same
+TIME_TO_RECHARGE = 300  # s a drone charges on a pad. Given to the drones and to the base, so both use the same
 CHARGING_BASE_CAPACITY = 2  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
@@ -67,10 +67,14 @@ GENE_BOUNDS = [
     ("energy_gamma",             10.0,  200.0),   # gamma of Eqs. (14)/(15)
     ("charging_base_multiplier", 0.10,  10.0),   # K of Eq. (15), kappa = K * mean(I/tau). Bounds not recalibrated for it yet
     ("distance_between_drone_norm", 10.0, 1000.0),
-    ("a_battery_modifier", 0.0, 2.0),
-    ("b_battery_modifier", 0.0, 2.0),
-    ("c_battery_modifier", 0.0, 1.0),
-    ("charge_margin", MIN_CHARGE_MARGIN, 0.5),  
+    ("cells_charge_margin", MIN_CHARGE_MARGIN, 0.5),
+    ("a_cells_modifier", 0.0, 2.0),
+    ("b_cells_modifier", 0.0, 2.0),
+    ("c_cells_modifier", 0.0, 1.0),
+    ("base_charge_margin", MIN_CHARGE_MARGIN, 0.5),
+    ("a_base_modifier", 0.0, 2.0),
+    ("b_base_modifier", 0.0, 2.0),
+    ("c_base_modifier", 0.0, 1.0),  
 ]
 
 ##### GA parameters (mode "train")
@@ -86,7 +90,11 @@ BASE_POSITION_SIGMA = 333.0  # std deviation of the base around the map centre, 
 GA_LOGBOOK_FILE = "ga_logbook.txt"
 
 ##### Test parameters (mode "test") 
-BEST_INDIVIDUAL =  [94.15, 93.66, 30.95, 0.02, 292.09, 3.42, 8.16, 4.82, 0.49]
+##### The old 9-gene individual (a 3.42, b 8.16, c 4.82, margin 0.49) in the 13-gene layout: its energy genes go
+##### to the base slots and are copied into the cells slots, which the protocol does not use yet
+BEST_INDIVIDUAL =  [94.15, 93.66, 30.95, 0.02, 292.09,
+                    0.49, 3.42, 8.16, 4.82,   # cells: margin, a, b, c
+                    0.49, 3.42, 8.16, 4.82]   # base: margin, a, b, c
 
 
 NUMBER_OF_TEST_RUNS = 10
@@ -101,18 +109,21 @@ def unpack_individual(individual):
     Maps the flat GA genome onto the protocol's tunable parameters, in the
     order declared by GENE_BOUNDS.
     """
-    base_variance, alpha, gamma, kappa, drone_norm, a_modifier, b_modifier, c_modifier, charge_margin = individual
+    base_variance, alpha, gamma, kappa, drone_norm, cells_margin, a_cells_modifier, b_cells_modifier, c_cells_modifier,  base_margin, a_base_modifier, b_base_modifier, c_base_modifier = individual
     return dict(
         base_variance=base_variance,
         alpha_variance_modifier=alpha,
         energy_gamma=gamma,
         charging_base_multiplier=kappa,
         distance_between_drone_norm=drone_norm,
-        a_battery_modifier=a_modifier,
-        b_battery_modifier=b_modifier,
-        c_battery_modifier=c_modifier,
-        chage_margin=charge_margin
-
+        cells_charge_margin = cells_margin,
+        a_cells_modifier = a_cells_modifier,
+        b_cells_modifier = b_cells_modifier,
+        c_cells_modifier = c_cells_modifier,
+        base_charge_margin = base_margin,
+        a_base_modifier = a_base_modifier,
+        b_base_modifier = b_base_modifier,
+        c_base_modifier = c_base_modifier,     
     )
 
 

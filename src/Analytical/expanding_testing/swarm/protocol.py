@@ -160,10 +160,14 @@ class Drone(IProtocol):
         'initial_uncertainty': 0.5,
         ##### Seed of the drone's own random streams, see initialize. None is random #####
         'seed': None,
-        'a_battery_modifier': 1.0,
-        'b_battery_modifier': 1.0,
-        'c_battery_modifier': 1.0,
-        'chage_margin': 0.25, # default charge margin, tunable
+        'cells_charge_margin': 0.25, # default charge margin, tunable
+        'a_cells_modifier': 1.0,
+        'b_cells_modifier': 1.0,
+        'c_cells_modifier': 1.0,
+        'base_charge_margin': 0.25, # default charge margin, tunable
+        'a_base_modifier': 1.0,
+        'b_base_modifier': 1.0,
+        'c_base_modifier': 1.0,
         'min_charge_margin': 0.20, # minimum charge margin, fixed
         'Nc_charging_base': 2,  # drones charging at once over all the bases before the congestion term starts
         'discharge_rate': 0.001,
@@ -204,12 +208,17 @@ class Drone(IProtocol):
         self.KERNEL_N_SIGMA = self._config["kernel_n_sigma"]
         self.DISCHARGE_RATE = self._config["discharge_rate"]
         self.CHARGING_BASE_POSITIONS = [tuple(position) for position in self._config["charging_base_positions"]]
-        self.CHARGE_MARGIN = self._config["chage_margin"]
+        ##### Cells and base energy genes, as in Analytical/swarm. Only the base ones are used for now #####
+        self.CELLS_CHARGE_MARGIN = self._config["cells_charge_margin"]
+        self.A_CELLS_MODIFIER = self._config["a_cells_modifier"]
+        self.B_CELLS_MODIFIER = self._config["b_cells_modifier"]
+        self.C_CELLS_MODIFIER = self._config["c_cells_modifier"]
+        self.BASE_CHARGE_MARGIN = self._config["base_charge_margin"]
+        self.A_BASE_MODIFIER = self._config["a_base_modifier"]
+        self.B_BASE_MODIFIER = self._config["b_base_modifier"]
+        self.C_BASE_MODIFIER = self._config["c_base_modifier"]
         self.MIN_CHARGE_MARGIN = self._config["min_charge_margin"]
         self.Nc_CHARGING_BASE = self._config["Nc_charging_base"]
-        self.A_BATTERY_MODIFIER = self._config["a_battery_modifier"]
-        self.B_BATTERY_MODIFIER = self._config["b_battery_modifier"]
-        self.C_BATTERY_MODIFIER = self._config["c_battery_modifier"] 
         self.results_aggregator = self._config.get("results_aggregator", {})
         
         self.DRONE_ALTITUDE = 50.0
@@ -279,11 +288,11 @@ class Drone(IProtocol):
                                         charging_base_multiplier=self.CHARGING_BASE_MULTIPLIER,
                                         distance_between_drone_norm=self.DISTANCE_BETWEEN_DRONE_NORM,
                                         kernel_n_sigma=self.KERNEL_N_SIGMA,
-                                        a_battery_modifier=self.A_BATTERY_MODIFIER,
-                                        b_battery_modifier=self.B_BATTERY_MODIFIER,
-                                        c_battery_modifier=self.C_BATTERY_MODIFIER,
+                                        a_battery_modifier=self.A_BASE_MODIFIER,
+                                        b_battery_modifier=self.B_BASE_MODIFIER,
+                                        c_battery_modifier=self.C_BASE_MODIFIER,
                                         discharge_rate=self.DISCHARGE_RATE,
-                                        charge_margin =self.CHARGE_MARGIN,
+                                        charge_margin =self.BASE_CHARGE_MARGIN,
                                         Nc_charging_base=self.Nc_CHARGING_BASE,
                                         number_of_cells_x_y =self.CELLS_EVALUETED_FOR_PRIORITY,
                                         drone_max_acceleration=self._config["drone_max_acceleration"])
@@ -1043,11 +1052,15 @@ def drone_protocol_factory(
     charging_base_multiplier: float,     # tunable
     distance_between_drone_norm: float,  # tunable
     kernel_n_sigma: int,                 # fixed
-    a_battery_modifier: float,           # tunable
-    b_battery_modifier: float,           # tunable
-    c_battery_modifier: float,           # tunable
-    chage_margin: float,                 # tunable
-    min_charge_margin: float,            # fixed 
+    cells_charge_margin: float,          # tunable
+    a_cells_modifier: float,             # tunable
+    b_cells_modifier: float,             # tunable
+    c_cells_modifier: float,             # tunable
+    base_charge_margin: float,           # tunable
+    a_base_modifier: float,              # tunable
+    b_base_modifier: float,              # tunable
+    c_base_modifier: float,              # tunable
+    min_charge_margin: float,            # fixed
     Nc_charging_base: int,               # fixed, over all the bases together
     discharge_rate: float,               # fixed
     charging_base_positions: list,       # fixed, [(x, y), ...] in metres
@@ -1083,10 +1096,14 @@ def drone_protocol_factory(
         "charging_base_multiplier": charging_base_multiplier,
         "distance_between_drone_norm": distance_between_drone_norm,
         "kernel_n_sigma": kernel_n_sigma,
-        "a_battery_modifier": a_battery_modifier,
-        "b_battery_modifier": b_battery_modifier,
-        "c_battery_modifier": c_battery_modifier,
-        "chage_margin": chage_margin,
+        "cells_charge_margin": cells_charge_margin,
+        "a_cells_modifier": a_cells_modifier,
+        "b_cells_modifier": b_cells_modifier,
+        "c_cells_modifier": c_cells_modifier,
+        "base_charge_margin": base_charge_margin,
+        "a_base_modifier": a_base_modifier,
+        "b_base_modifier": b_base_modifier,
+        "c_base_modifier": c_base_modifier,
         "min_charge_margin": min_charge_margin,
         'Nc_charging_base': Nc_charging_base,
         "discharge_rate": discharge_rate,

@@ -47,10 +47,14 @@ HAND_TUNED_INDIVIDUAL = [
     100.0, # energy_gamma, between 0.1 and 100. Paper: 0.5 per distance unit x C_max 200 units = 100 per battery fraction
     1.0,   # charging_base_multiplier, between 0 and 100
     200.0, # distance_between_drone_norm, between 10 and 1000
-    0.20,  # a_battery_modifier, between 0 and 10. Applies ABOVE the swarm mean: above it by 0.2 -> margin -0.04 (return later)
-    0.30,  # b_battery_modifier, between 0 and 10. Applies BELOW the swarm mean: below it by 0.2 -> margin +0.06 (return earlier)
-    0.05,  # c_battery_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.05 (~75 s later)
-    0.25,  # charge_margin, between MIN_CHARGE_MARGIN (0.15) and 0.5. Same as egocentric and the centralized reserve; naive returns at 0.30 
+    0.3,   # cells margin
+    0.2,   # a_cells_modifier
+    0.3,   # b_cells_modifier
+    0.05,  # c_cells_modifier
+    0.25,  # base_margin
+    0.20,  # a_base_modifier, between 0 and 10. Applies ABOVE the swarm mean: above it by 0.2 -> margin -0.04 (return later)
+    0.30,  # b_base_modifier, between 0 and 10. Applies BELOW the swarm mean: below it by 0.2 -> margin +0.06 (return earlier)
+    0.05,  # c_base_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.05 (~75 s later)
 ]
 
 ##### How often the drone state is sampled.

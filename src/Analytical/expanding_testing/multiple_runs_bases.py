@@ -20,7 +20,7 @@ The scenario is set by three flags, one run of the script is one scenario:
     --drones N   drones of the swarm
     --bases N    recharge bases, 1 to 4 (one per quadrant, see below). --base works too
 Its name is <cells>x<cells>_<drones>drones_<bases>bases, the directory the runs go to.
-Nc is default_charging_capacity of main.py, int(drones / 3), over all the bases together.
+Nc is default_charging_capacity of main.py: CHARGING_BASE_CAPACITY (2), else int(drones / 3), over all the bases together.
 
 Base placement. The map is split into its 4 quadrants. Each base takes a quadrant of
 its own, drawn at random among the ones still free, and its position is drawn from a

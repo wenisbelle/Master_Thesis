@@ -24,7 +24,7 @@ how_many_simulations = 0
 CORES_TO_USE = 16
 
 ##### Scenario, shared by the tuning and the test runs 
-SIMULATION_DURATION = 10000
+SIMULATION_DURATION = 30000
 MAP_WIDTH = 100   # cells, 20 m apart: 2000 m x 2000 m centred on (0, 0)
 MAP_HEIGHT = 100
 NUMBER_OF_DRONES = 3  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
@@ -38,7 +38,7 @@ DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility h
 DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 battery_capacity is doubled to 10000 mAh (protocol.py) with the mass unchanged, so it is half of the 0.00067 measured cruising at 15 m/s with the random air speed (battery plugin body-frame fix, 2026-11-23)
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
 TIME_TO_RECHARGE = 300  # s a drone charges on a pad, given to the drones
-CHARGING_BASE_CAPACITY = None  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
+CHARGING_BASE_CAPACITY = 2  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
