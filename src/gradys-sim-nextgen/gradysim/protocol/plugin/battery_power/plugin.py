@@ -78,12 +78,12 @@ class BatteryPowerPlugin:
         )
         self._wind_rng = rng if configuration.random_air_speed else None
         self._wind = np.empty(0)
-        ##### Battery ticks each air speed is kept for #####
+
         self._wind_hold_ticks = max(1, int(round(configuration.random_air_speed_hold
                                                  / self._battery_model.TIME_STEP)))
         self.velocity = [0.0, 0.0]  # Initialize velocity to zero
         self._active = True
-        ##### Whether a control timer is scheduled and has not fired yet, see resume #####
+
         self._tick_pending = False
         self._initialize_telemetry_handling()
         self._initialize_battery_loop()
@@ -100,8 +100,7 @@ class BatteryPowerPlugin:
             # The power model works in the body frame: (forward speed, vertical speed). The
             # handler reports the velocity in the world frame (vx, vy, vz), and a multirotor
             # flies with its body x axis along its horizontal velocity, so the forward speed
-            # is the norm of (vx, vy). Taking vx alone made a drone flying along y pay hover
-            # power, about 34% more than the same flight along x.
+            # is the norm of (vx, vy). 
             vx, vy, vz = telemetry.current_velocity
             self.velocity = [float(np.hypot(vx, vy)), vz]
             return DispatchReturn.CONTINUE
@@ -138,7 +137,6 @@ class BatteryPowerPlugin:
 
     def _air_speed_at_current_tick(self) -> float:
         tick = int(round(self._protocol.provider.current_time() / self._battery_model.TIME_STEP))
-        ##### One value per hold period: ticks [k*hold, (k+1)*hold) share the k-th draw #####
         period = tick // self._wind_hold_ticks
         if period >= len(self._wind):
             # Extended in blocks, so the value of a period never depends on when it was asked
