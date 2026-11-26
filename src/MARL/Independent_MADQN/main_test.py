@@ -57,6 +57,11 @@ MONITOR_INTERVAL = 10.0
 ##### Cell spacing of the protocol, needed to turn metres into cells #####
 DISTANCE_BETWEEN_CELLS = config.DISTANCE_BETWEEN_CELLS
 
+##### Nc, the pads of the base in the test runs, fixed whatever the number of drones.      #####
+##### Only the command line uses it: run_simulation defaults to None, int(drones / 3), so  #####
+##### multiple_runs.py stays on the Nc of Analytical/multiple_runs.py.                     #####
+CHARGING_BASE_CAPACITY = 2
+
 ##### Each run is written into a logs directory next to this file, so runs can #####
 ##### be kept apart. The file names are fixed, plots/*.py look them up there.   #####
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -201,11 +206,13 @@ def run_simulation(duration: int, number_of_drones: int,
                    charging_base_position: tuple = config.CHARGING_BASE_POSITION,
                    transmission_range: float = config.TRANSMISSION_RANGE,
                    seed: int = None,
-                   record: bool = True):
+                   record: bool = True,
+                   charging_capacity: int = None):
     """
     Runs a single simulation with the given policy and recharge base, recording
     the state of every drone every monitor_interval seconds (when record is set).
     seed fixes the wind and the initial destinations, None is a random run.
+    charging_capacity is Nc, the pads of the base. None: int(number_of_drones / 3).
 
     Returns (results, recorder, monitor, env): the per drone results filled in by
     finish(), the SimulationRecorder (None without record), the SwarmMonitor of the
@@ -255,6 +262,7 @@ def run_simulation(duration: int, number_of_drones: int,
         charging_base_position=tuple(charging_base_position),
         max_episode_length=duration,
         communication_range=transmission_range,
+        charging_capacity=charging_capacity,
         end_when_all_dead=False,
         decision_backend="analytical" if policy == "analytical" else "policy",
         analytical_parameters=config.unpack_individual(individual) if policy == "analytical" else None,
@@ -558,6 +566,7 @@ def main_test() -> int:
         charging_base_position=charging_base_position,
         transmission_range=args.transmission_range,
         seed=args.seed,
+        charging_capacity=CHARGING_BASE_CAPACITY,
     )
 
     recorder.save(recording_file, results)

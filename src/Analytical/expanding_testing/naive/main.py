@@ -51,7 +51,7 @@ DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility ha
 DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility handler, m/s^2 (3.0 before 2026-11-24)
 
 ##### Measured, not used by the naive drone. Only the reference line of the plots of Analytical/naive #####
-DISCHARGE_RATE = 0.00067  # measured 2026-11-23 after the battery plugin body-frame fix: 0.000665-0.000667 per second, cruising at 15 m/s with the random air speed, the same along x and y (0.00073 before the fix). Still valid with the air speed held 60 s (2026-11-24, protocol.py): same N(0, 4) distribution, so the same mean drain
+DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 battery_capacity is doubled to 10000 mAh (protocol.py) with the mass unchanged, so it is half of the 0.00067 measured cruising at 15 m/s with the random air speed (battery plugin body-frame fix, 2026-11-23)
 
 ##### Fixed protocol parameters, not tuned
 CHARGING_BASE_POSITIONS = [(0.0, 0.0)]  # [(x, y), ...] in metres, one per base

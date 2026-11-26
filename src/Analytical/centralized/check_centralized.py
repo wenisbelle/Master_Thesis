@@ -207,6 +207,17 @@ def first_destinations(system_main, seed: int, number_of_drones: int, base) -> n
 
 
 def check_run(duration: int, number_of_drones: int, seed: int) -> bool:
+    ##### main_test.py runs with a fixed Nc (CHARGING_BASE_CAPACITY), the unrecorded runs take the #####
+    ##### same one so the recorded run compares with them. Restored for the sweep after it.         #####
+    original_capacity = main.CHARGING_BASE_CAPACITY
+    main.CHARGING_BASE_CAPACITY = main_test.CHARGING_BASE_CAPACITY
+    try:
+        return run_checks(duration, number_of_drones, seed)
+    finally:
+        main.CHARGING_BASE_CAPACITY = original_capacity
+
+
+def run_checks(duration: int, number_of_drones: int, seed: int) -> bool:
     base = main.sample_base_position(seed)
     main.SIMULATION_DURATION = duration
     packets, sent = [], []

@@ -24,7 +24,7 @@ how_many_simulations = 0
 CORES_TO_USE = 16
 
 ##### Scenario, shared by the tuning and the test runs 
-SIMULATION_DURATION = 10000
+SIMULATION_DURATION = 30000
 MAP_WIDTH = 100   # cells, 20 m apart: 2000 m x 2000 m centred on (0, 0)
 MAP_HEIGHT = 100
 NUMBER_OF_DRONES = 3  # used by the test runs, the GA tuning uses TRAINING_DRONE_COUNTS
@@ -32,12 +32,13 @@ UNCERTAINTY_RATE = 0.001
 VANISHING_UPDATE_TIME = 1.0
 TRANSMISSION_RANGE = 100
 DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility handler
-DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility handler, m/s^2 (3.0 before 2026-11-24)
+DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility handler, m/s^2 
 
 ##### Fixed protocol parameters, not tuned 
-DISCHARGE_RATE = 0.00067  # measured after the battery plugin body-frame fix: 0.000665-0.000667 per second, cruising at 15 m/s with the random air speed,
+DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 battery_capacity is doubled to 10000 mAh (protocol.py) with the mass unchanged, so it is half of the 0.00067 measured cruising at 15 m/s with the random air speed (battery plugin body-frame fix, 2026-11-23)
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning and other tests draws one per run, see sample_base_position
-TIME_TO_RECHARGE = 300  # s a drone charges on a pad. Given to the drones and to the base, so both use the same
+TIME_TO_RECHARGE = 500  # s a drone charges on a pad. Given to the drones and to the base, so both use the same
+CHARGING_BASE_CAPACITY = 2  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
@@ -48,7 +49,8 @@ UNCERTAINTY_WEIGHT = 0.00072          # cost per unit of global uncertainty per 
 DEAD_DRONE_PENALTY = 1000.0           # cost per dead drone per simulated second
 CHARGING_CONGESTION_PENALTY = 30.0    # K of congestion_penalty_rate, cost per simulated second
 CHARGING_CONGESTION_STEEPNESS = 5.0   # beta of congestion_penalty_rate, how fast the cost grows with the share of the swarm above Nc
-COST_TERMS = ("uncertainty", "dead", "charging")  # the terms summed into the cost, see simulation_cost_terms
+#COST_TERMS = ("uncertainty", "dead", "charging")  # the terms summed into the cost, see simulation_cost_terms
+COST_TERMS = ("uncertainty", "dead")
 
 ##### How often the global map is assembled and sampled, in simulated seconds. 
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
@@ -60,14 +62,14 @@ BROADCAST_BASE = True
 ##### These bounds are PLACEHOLDERS chosen to be dimensionally sane, they have not
 ##### been calibrated against the scenario yet.
 GENE_BOUNDS = [
-    ("base_variance",            0.25,  100.0),   # sigma_0^2 of Eq. (11), in cells^2
-    ("alpha_variance_modifier",  0.0,   100.0),   # alpha of Eq. (11)
-    ("energy_gamma",             0.10,  100.0),   # gamma of Eqs. (14)/(15)
-    ("charging_base_multiplier", 0.0,  100.0),   # K of Eq. (15), kappa = K * mean(I/tau). Bounds not recalibrated for it yet
+    ("base_variance",            0.25,  200.0),   # sigma_0^2 of Eq. (11), in cells^2
+    ("alpha_variance_modifier",  0.0,   10.0),   # alpha of Eq. (11)
+    ("energy_gamma",             10.0,  200.0),   # gamma of Eqs. (14)/(15)
+    ("charging_base_multiplier", 0.10,  10.0),   # K of Eq. (15), kappa = K * mean(I/tau). Bounds not recalibrated for it yet
     ("distance_between_drone_norm", 10.0, 1000.0),
-    ("a_battery_modifier", 0.0, 10.0),
-    ("b_battery_modifier", 0.0, 10.0),
-    ("c_battery_modifier", 0.0, 10.0),
+    ("a_battery_modifier", 0.0, 2.0),
+    ("b_battery_modifier", 0.0, 2.0),
+    ("c_battery_modifier", 0.0, 1.0),
     ("charge_margin", MIN_CHARGE_MARGIN, 0.5),  
 ]
 
@@ -78,7 +80,8 @@ CROSSOVER_PROBABILITY = 0.8
 MUTATION_PROBABILITY = 0.30
 ELITE_SIZE = 1  # best individuals copied unchanged into the next generation
 RUNS_PER_EVALUATION = 5  # the simulation is stochastic, each individual is the average of this many runs, each one with its own base
-TRAINING_DRONE_COUNTS = (3, 5, 7, 10)  # swarm sizes each individual is evaluated on, the cost is the sum over them
+#TRAINING_DRONE_COUNTS = (3, 6, 9, 12)  # swarm sizes each individual is evaluated on, the cost is the sum over them
+TRAINING_DRONE_COUNTS = (6, 9)
 BASE_POSITION_SIGMA = 333.0  # std deviation of the base around the map centre, m. 3 sigma reaches the map border
 GA_LOGBOOK_FILE = "ga_logbook.txt"
 
@@ -145,6 +148,16 @@ def congestion_penalty_rate(excess: int, number_of_drones: int) -> float:
         np.exp(CHARGING_CONGESTION_STEEPNESS * excess / number_of_drones) - 1.0)
 
 
+def charging_base_capacity(number_of_drones: int) -> int:
+    """
+    Nc, the pads of the base: the drones that can charge at once, the others wait
+    landed. CHARGING_BASE_CAPACITY when set (main_test.py), else int(number_of_drones / 3).
+    """
+    if CHARGING_BASE_CAPACITY is not None:
+        return CHARGING_BASE_CAPACITY
+    return int(number_of_drones/3)
+
+
 class GlobalMapMonitor:
     """
     Assembles and samples the global map of the swarm while the simulation runs.
@@ -169,7 +182,7 @@ class GlobalMapMonitor:
     that number, the congestion term of the cost. It is not linear, so it has
     to be accumulated sample by sample.
 
-    Since 2026-11-24 the base has Nc pads (recharge_base.py): a drone that lands
+    The base has Nc pads (recharge_base.py): a drone that lands
     on a full base waits on the ground, so the drones CHARGING never exceed Nc and
     the congestion term stays 0 (from 3 drones on). Waiting costs through the map
     instead, a waiting drone does not map. accomulated_waiting_time is the integral
@@ -180,7 +193,7 @@ class GlobalMapMonitor:
         self.sim = simulation
         self.number_of_drones = number_of_drones
         self.sample_interval = sample_interval
-        self.nc_charging_base = int(number_of_drones/3)
+        self.nc_charging_base = charging_base_capacity(number_of_drones)
         self._protocols = None
 
         self.times = []
@@ -188,6 +201,8 @@ class GlobalMapMonitor:
         self.unvisited = []
         self.accomulated_uncertainty = 0.0
         self.map = None
+        self.delta_uncertainty = 0.0
+        self.last_uncertainty = 0.0
         self.visited = None
 
         self.dead_drones = []
@@ -212,9 +227,13 @@ class GlobalMapMonitor:
         uncertainty = float(self.map.sum())
         self.accomulated_uncertainty += uncertainty * self.sample_interval
 
+        self.delta_uncertainty = uncertainty - self.last_uncertainty        
+
         self.times.append(float(time))
         self.uncertainty.append(uncertainty)
         self.unvisited.append(int(self.visited.size - self.visited.sum()))
+
+        self.last_uncertainty = uncertainty
 
         ##### Penalties. A dead drone counts for every sample until the end of #####
         ##### the run, so the earlier it dies the more it costs.                #####
@@ -367,7 +386,7 @@ def create_and_run_simulation(individual, mode: str = "train",
         discharge_rate=DISCHARGE_RATE,
         charging_base_position=charging_base_position,
         min_charge_margin=MIN_CHARGE_MARGIN,  
-        Nc_charging_base=int(number_of_drones/3),  
+        Nc_charging_base=charging_base_capacity(number_of_drones),  
         results_aggregator=results_aggregator,
         mode=mode,
         enable_map_plot=enable_map_plot,
@@ -382,7 +401,7 @@ def create_and_run_simulation(individual, mode: str = "train",
 
     ##### The base is also a node, added after the drones so they keep the ids     
     ##### 0..number_of_drones-1. It owns the pads and the waiting room.
-    builder.add_node(recharge_base_factory(int(number_of_drones/3), TIME_TO_RECHARGE, broadcast=BROADCAST_BASE, mode=mode),
+    builder.add_node(recharge_base_factory(charging_base_capacity(number_of_drones), TIME_TO_RECHARGE, broadcast=BROADCAST_BASE, mode=mode),
                      (charging_base_position[0], charging_base_position[1], BASE_ANTENNA_ALTITUDE))
 
     # Building & starting
@@ -406,11 +425,15 @@ def simulation_cost_terms(global_map: GlobalMapMonitor) -> dict:
     sum is the value minimized, they are kept apart so the GA can log which one
     drives it.
     """
+    #return dict(
+    #    uncertainty=UNCERTAINTY_WEIGHT * global_map.accomulated_uncertainty,
+    #    dead=DEAD_DRONE_PENALTY * global_map.accomulated_dead_time,
+    #    charging=global_map.accomulated_charging_penalty,
+    #)
     return dict(
-        uncertainty=UNCERTAINTY_WEIGHT * global_map.accomulated_uncertainty,
-        dead=DEAD_DRONE_PENALTY * global_map.accomulated_dead_time,
-        charging=global_map.accomulated_charging_penalty,
-    )
+            uncertainty=UNCERTAINTY_WEIGHT * global_map.accomulated_uncertainty,
+            dead=DEAD_DRONE_PENALTY * global_map.accomulated_dead_time
+        )
 
 
 def format_cost_terms(terms: dict) -> str:
@@ -432,7 +455,7 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
     ##### Penalties, accumulated by the monitor on every sample #####
     terms = simulation_cost_terms(global_map)
     dead_penalty = terms["dead"]
-    charging_penalty = terms["charging"]
+    #charging_penalty = terms["charging"]
 
     ##### Cost for optimization #####
     total_cost = sum(terms.values())
@@ -443,7 +466,7 @@ def evaluate_simulation_cost(results_aggregator, global_map: GlobalMapMonitor,
         logging.info(f"Global unvisited cells: {global_map.unvisited_cells}")
         logging.info(f"Medium accomulated uncertainty per drone: {medium_uncertainty}")
         logging.info(f"Dead drone time: {global_map.accomulated_dead_time} drone*s, penalty: {dead_penalty}")
-        logging.info(f"Charging above Nc: {global_map.accomulated_charging_excess} drone*s, penalty: {charging_penalty}")
+        #logging.info(f"Charging above Nc: {global_map.accomulated_charging_excess} drone*s, penalty: {charging_penalty}")
         logging.info(f"Cost: {total_cost}")
 
     return total_cost
@@ -557,8 +580,6 @@ def run_training():
     toolbox.register("select", tools.selTournament, tournsize=3)
 
     ### Parallelization
-    ##### Forked explicitly: the workers have to inherit the module constants main() may have #####
-    ##### changed. A spawned worker would import them again with their default values.        #####
     pool = multiprocessing.get_context("fork").Pool(processes=CORES_TO_USE)
     toolbox.register("map", pool.map)
 
@@ -570,16 +591,16 @@ def run_training():
     stats.register("min", np.min)
     stats.register("max", np.max)
 
-    ##### min_<term> columns: the COST_TERMS of the individual that scored min, #####
-    ##### they add up to it. They show which term the GA is actually fighting.  #####
+    ##### min_<term> columns: the COST_TERMS of the individual that scored min, 
+    ##### they add up to it. They show which term the GA is actually fighting.  
     min_term_fields = [f"min_{term}" for term in COST_TERMS]
     log = tools.Logbook()
     log.header = ["gen", "nevals"] + stats.fields + min_term_fields
 
     def evaluate_generation(gen, population):
-        ##### New scenarios every generation, shared by all its individuals (see    #####
-        ##### objective_function). Everyone is re-evaluated, elites included, so a  #####
-        ##### lucky score from an earlier generation does not stick.                 #####
+        ##### New scenarios every generation, shared by all its individuals (see    
+        ##### objective_function). Everyone is re-evaluated, elites included, so a  
+        ##### lucky score from an earlier generation does not stick.                 
         seeds = [random.randrange(2**31) for _ in range(RUNS_PER_EVALUATION)]
         base_positions = [sample_base_position(seed) for seed in seeds]
         print(f"Generation {gen} seeds: {seeds}, base positions: {base_positions}")
@@ -594,8 +615,8 @@ def run_training():
                    **{field: best.cost_terms[term] for field, term in zip(min_term_fields, COST_TERMS)})
         print(log.stream)
 
-    ##### Own loop instead of eaSimple: eaSimple has no elitism and only evaluates #####
-    ##### changed individuals, so with a noisy cost it keeps old lucky scores.     #####
+    ##### Own loop instead of eaSimple: eaSimple has no elitism and only evaluates 
+    ##### changed individuals, so with a noisy cost it keeps old lucky scores.     
     try:
         evaluate_generation(0, pop)
         for gen in range(1, NUMBER_OF_GENERATIONS + 1):

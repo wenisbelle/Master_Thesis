@@ -99,6 +99,7 @@ def GotoCoordsMobilityCommand(current_position: np.ndarray,
 ##### it does not (0.77-1.70x over 100 s, 0.86-1.25x over 1000 s), so the drain estimate is not exact. #####
 ##### Same distribution as before, so the mean drain and DISCHARGE_RATE are unchanged.               #####
 SHARED_BATTERY_CONFIG = BatteryPowerConfiguration(
+    battery_capacity=10000.0,     # mAh, double the 5000 default (2026-11-26). total_uav_mass unchanged, so the drain per second halves, see DISCHARGE_RATE
     random_air_speed=True,
     random_air_speed_u=0.0,       # mean air speed, m/s
     random_air_speed_sigma=4.0,   # std deviation, m/s

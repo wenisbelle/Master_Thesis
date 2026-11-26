@@ -2,7 +2,7 @@
   "system": "naive",
   "drones": 6,
   "transmission_range": 200.0,
-  "duration": 30000,
+  "duration": 50000,
   "sample_interval": 1.0,
   "seed": 0,
   "individual": [

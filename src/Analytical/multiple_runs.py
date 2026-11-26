@@ -44,7 +44,10 @@ individual, add --overwrite: a directory refuses runs of another individual.
 The runs go in parallel, a fresh process for each one, in train mode: the per-routine
 protocol log of a test run is tens of MB and would be written by every process at once.
 A run whose file already exists has finished before and is skipped, so --runs 20 after
---runs 10 only runs the 10 new ones. --overwrite runs them all again.
+--runs 10 only runs the 10 new ones. --overwrite runs them all again. So after a crash or a
+power cut, the same command without --overwrite carries on from the last finished run (the
+runs that were in flight start again from t = 0). --overwrite clears each directory only when
+the loop reaches it, so delete the directories by hand to start fresh and resume without it.
 """
 
 import os
@@ -426,8 +429,13 @@ def run_jobs(jobs: list, workers: int, logs_directory: str, config: dict) -> int
                       f"{record['error']}", flush=True)
                 continue
             path = os.path.join(logs_directory, run_file(record["run"]))
-            with open(path, "wb") as f:
+            ##### Written aside and renamed, so a power cut mid-write leaves no truncated run_k.pkl, #####
+            ##### which the next start would skip as finished (RUN_PATTERN does not match .tmp)      #####
+            with open(path + ".tmp", "wb") as f:
                 pickle.dump(record, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(path + ".tmp", path)
             stats = run_statistics(record, grid)
             cost = f"cost {stats['cost']:.1f}, " if has_cost(config["system"]) else ""
             print(f"[{done}/{len(jobs)}] run {record['run']} (seed {record['seed']}, base(s) "

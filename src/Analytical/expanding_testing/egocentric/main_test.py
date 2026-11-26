@@ -56,6 +56,10 @@ MONITOR_INTERVAL = 10.0
 ##### Cell spacing of the protocol, needed to turn metres into cells #####
 DISTANCE_BETWEEN_CELLS = 20
 
+##### Nc of the test runs, fixed whatever the number of drones (main.py defaults to int(drones / 3)). #####
+##### --charging-capacity overrides it. With PADS_PER_BASE = None every base gets Nc pads.          #####
+CHARGING_BASE_CAPACITY = 2
+
 ##### Each run is written into a logs directory next to this file, so runs can #####
 ##### be kept apart. The file names are fixed, plots/*.py look them up there.   #####
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -120,7 +124,7 @@ def run_simulation(duration: int, number_of_drones: int, individual: list,
                    enable_map_plot: bool = False,
                    enable_simulation_plot: bool = False,
                    charging_base_positions: list = main.CHARGING_BASE_POSITIONS,
-                   charging_capacity: int = None):
+                   charging_capacity: int = CHARGING_BASE_CAPACITY):
     """
     Runs a single simulation of main.py with the given individual and recharge
     bases, recording the state of every drone every monitor_interval seconds.
@@ -459,10 +463,10 @@ def main_test() -> int:
                              "every base. It is moved to the centre of its cell, where the drones land. "
                              "The drones take off from the bases in turn "
                              f"(default: one base at {main.CHARGING_BASE_POSITIONS[0]})")
-    parser.add_argument("--charging-capacity", type=int, default=None, metavar="NC",
+    parser.add_argument("--charging-capacity", type=int, default=CHARGING_BASE_CAPACITY, metavar="NC",
                         help="most drones charging at once, over all the bases together, before the "
                              "protocol's congestion term starts, so drones - NC are meant to keep mapping "
-                             "(default: int(drones / 3), the capacity of the single base of Analytical/egocentric)")
+                             f"(default: {CHARGING_BASE_CAPACITY}, fixed whatever the number of drones)")
     parser.add_argument("--quiet", action="store_true",
                         help="run the protocol in train mode, without the per-routine log")
     parser.add_argument("--map-plot", action="store_true",

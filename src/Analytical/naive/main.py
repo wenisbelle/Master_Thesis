@@ -45,11 +45,12 @@ DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility ha
 DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility handler, m/s^2 (3.0 before 2026-11-24)
 
 ##### Measured, not used by the naive drone. Only the reference line of plots/plot_returns.py #####
-DISCHARGE_RATE = 0.00067  # measured 2026-11-23 after the battery plugin body-frame fix: 0.000665-0.000667 per second, cruising at 15 m/s with the random air speed, the same along x and y (0.00073 before the fix). Still valid with the air speed held 60 s (2026-11-24, protocol.py): same N(0, 4) distribution, so the same mean drain
+DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 battery_capacity is doubled to 10000 mAh (protocol.py) with the mass unchanged, so it is half of the 0.00067 measured cruising at 15 m/s with the random air speed (battery plugin body-frame fix, 2026-11-23)
 
 ##### Fixed protocol parameters, not tuned
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
 TIME_TO_RECHARGE = 300  # s a drone charges on a pad, given to the drones
+CHARGING_BASE_CAPACITY = None  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 ##### 1.0 as swarm and centralized. egocentric still has 0.5 (Analytical/README.md, known issues) #####
@@ -180,7 +181,12 @@ def sample_base_position(seed: int) -> tuple:
 
 
 def charging_base_capacity(number_of_drones: int) -> int:
-    """Nc, the drones that can charge at once before the cost adds the congestion penalty."""
+    """
+    Nc, the pads of the base: the drones that can charge at once, the others wait
+    landed. CHARGING_BASE_CAPACITY when set (main_test.py), else int(number_of_drones / 3).
+    """
+    if CHARGING_BASE_CAPACITY is not None:
+        return CHARGING_BASE_CAPACITY
     return int(number_of_drones/3)
 
 

@@ -56,6 +56,9 @@ MONITOR_INTERVAL = 10.0
 ##### Cell spacing of the protocol, needed to turn metres into cells #####
 DISTANCE_BETWEEN_CELLS = 20
 
+##### Nc, the pads of the base in the test runs. Fixed, not int(drones / 3) as in the GA tuning #####
+CHARGING_BASE_CAPACITY = 2
+
 ##### Each run is written into a logs directory next to this file, so runs can #####
 ##### be kept apart. The file names are fixed, plots/*.py look them up there.   #####
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -193,6 +196,7 @@ def run_simulation(duration: int, number_of_drones: int,
     original_factory = main.drone_protocol_factory
     original_duration = main.SIMULATION_DURATION
     original_number_of_drones = main.NUMBER_OF_DRONES
+    original_charging_base_capacity = main.CHARGING_BASE_CAPACITY
 
     def recorded_factory(**factory_kwargs):
         return make_recorded_drone(recorder_holder, original_factory, **factory_kwargs)
@@ -229,6 +233,7 @@ def run_simulation(duration: int, number_of_drones: int,
     main.drone_protocol_factory = recorded_factory
     main.SIMULATION_DURATION = duration
     main.NUMBER_OF_DRONES = number_of_drones
+    main.CHARGING_BASE_CAPACITY = CHARGING_BASE_CAPACITY
 
     try:
         results, global_map = main.create_and_run_simulation(
@@ -246,6 +251,7 @@ def run_simulation(duration: int, number_of_drones: int,
         main.drone_protocol_factory = original_factory
         main.SIMULATION_DURATION = original_duration
         main.NUMBER_OF_DRONES = original_number_of_drones
+        main.CHARGING_BASE_CAPACITY = original_charging_base_capacity
 
     ##### The run ends on the event that closes the simulation, which can fall 
     ##### before the next multiple of monitor_interval, so the final state is  

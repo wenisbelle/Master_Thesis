@@ -91,3 +91,71 @@ scripts can also be run from anywhere, e.g. `python3 swarm/plots/plot_drones.py
 | `plot_decisions.py` | slider over the changes of destination of one drone (`--drone ID`, default 0) |
 
 Every script accepts `--directory`, and `--help` lists the options.
+
+## Running a batch on the server
+
+The server is reached with `ssh -p 22222 wenisbelle@139.82.47.158` and the repository
+is in `~/Master_Thesis` there. Start the batch with `nohup` so it survives the ssh session
+closing, and keep its output in a log:
+
+```bash
+cd ~/Master_Thesis/src
+nohup python3 Analytical/multiple_runs.py --system naive egocentric swarm centralized \
+    --runs 50 --drones 3 6 9 12 --range 200 --hand-tuned \
+    >> multiple_runs.log 2>&1 &
+```
+
+If the server goes down, run the same command again **without `--overwrite`**. The runs
+already written are skipped and it carries on from there. The runs that were still
+simulating start again from t = 0.
+
+`--overwrite` clears each directory only when the loop gets to it, so after a crash some
+directories hold the new batch and others the old one. To start a batch fresh, delete its
+directories by hand instead and run without `--overwrite`:
+
+```bash
+rm -rf Analytical/{naive,egocentric,swarm,centralized}/multiple_runs_hand_tuned/200/{3,6,9,12}
+```
+
+## Copying the results from the server
+
+The server has no `rsync`, so the results come over `ssh` as a `tar` stream: one
+connection, one password prompt. Run these on your own computer, from the repository root.
+The download goes to `results.tgz` first, and nothing local changes unless it succeeded.
+
+**Replace local directories with the server's copy.** The local directories are deleted and
+extracted again from the server, so runs of an older batch cannot mix with the new ones in
+the plots. Change the systems and the `200` to the batch you want:
+
+```bash
+for s in naive egocentric swarm centralized; do
+  ssh -p 22222 wenisbelle@139.82.47.158 \
+      tar -czvf - -C Master_Thesis/src/Analytical $s/multiple_runs_hand_tuned/200 > $s.tgz \
+  && gzip -t $s.tgz \
+  && rm -rf src/Analytical/$s/multiple_runs_hand_tuned/200 \
+  && tar -xzf $s.tgz -C src/Analytical && rm $s.tgz \
+  || { echo "== $s failed"; break; }
+done
+```
+
+Each system comes in its own connection (about 440 MB of runs, ~100 MB compressed, for
+4 drone counts × 50 runs), and the file names scroll past as they are sent. A system's
+local directory is only deleted once its download is complete (`gzip -t`). If the
+connection drops, run the loop again with only the systems that are left. Without a key
+(`ssh-copy-id`, below) it asks for the password once per system.
+
+**Copy every result directory** (`multiple_runs*/` of every system, including
+`expanding_testing`). Files from the server overwrite the local ones with the same name.
+Files that only exist locally are kept, and nothing else in the repository is touched:
+
+```bash
+ssh -p 22222 wenisbelle@139.82.47.158 \
+    'cd Master_Thesis/src/Analytical && find . -type d -name "multiple_runs*" -prune | tar -czf - -T -' \
+    > results.tgz && tar -xzf results.tgz -C src/Analytical && rm results.tgz
+```
+
+To see what would come before extracting, stop after the download and list it with
+`tar -tzf results.tgz`. If `tar` reports `Permission denied`, the local files were written
+by the docker container as root: `sudo chown -R $USER: src/Analytical` and extract again.
+Run `ssh-copy-id -p 22222 wenisbelle@139.82.47.158` once to log in with a key instead of
+the password.

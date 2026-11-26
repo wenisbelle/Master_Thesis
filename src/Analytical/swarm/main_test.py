@@ -35,22 +35,22 @@ from .recharge_base import BaseMessageType
 from .estimation_metrics import summarize, format_summary
 
 
-SIMULATION_DURATION = 10000
+SIMULATION_DURATION = 50000
 NUMBER_OF_DRONES = 10
 
 ##### The individual filled in by hand, one gene per line in the GENE_BOUNDS order of main.py.  #####
 ##### --hand-tuned runs it instead of the GA logbooks, here and in all_tests_distance.py,        #####
 ##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
 HAND_TUNED_INDIVIDUAL = [
-    1.0,   # base_variance, between 0.25 and 100. Same kernel in every system so they compare fairly (2026-11-24). 4.0 was tuned on swarm alone and gives any system ~-8% steady uncertainty
-    1.0,   # alpha_variance_modifier, between 0 and 100. Same kernel in every system so they compare fairly (2026-11-24)
+    1.0,   # base_variance, between 0.25 and 100. Same kernel in every system so they compare fairly 
+    1.0,   # alpha_variance_modifier, between 0 and 100
     100.0, # energy_gamma, between 0.1 and 100. Paper: 0.5 per distance unit x C_max 200 units = 100 per battery fraction
     1.0,   # charging_base_multiplier, between 0 and 100
     200.0, # distance_between_drone_norm, between 10 and 1000
-    0.20,  # a_battery_modifier, between 0 and 10. Applies ABOVE the swarm mean: above it by 0.2 -> margin -0.04 (return later). Hand-tuned 2026-11-24
-    0.30,  # b_battery_modifier, between 0 and 10. Applies BELOW the swarm mean: below it by 0.2 -> margin +0.06 (return earlier). 0.3 was the best b of the 2026-11-24 a/b/c sweep (-2.3% steady uncertainty)
-    0.05,  # c_battery_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.05 (~75 s later). Hand-tuned 2026-11-24
-    0.25,  # charge_margin, between MIN_CHARGE_MARGIN (0.15) and 0.5. Same as egocentric and the centralized reserve; naive returns at 0.30 (2026-11-24). 0.10 above MIN, the room a and c have to delay the return
+    0.20,  # a_battery_modifier, between 0 and 10. Applies ABOVE the swarm mean: above it by 0.2 -> margin -0.04 (return later)
+    0.30,  # b_battery_modifier, between 0 and 10. Applies BELOW the swarm mean: below it by 0.2 -> margin +0.06 (return earlier)
+    0.05,  # c_battery_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.05 (~75 s later)
+    0.25,  # charge_margin, between MIN_CHARGE_MARGIN (0.15) and 0.5. Same as egocentric and the centralized reserve; naive returns at 0.30 
 ]
 
 ##### How often the drone state is sampled.
@@ -58,6 +58,9 @@ MONITOR_INTERVAL = 10.0
 
 ##### Cell spacing of the protocol, needed to turn metres into cells #####
 DISTANCE_BETWEEN_CELLS = 20
+
+##### Nc, the pads of the base in the test runs. Fixed, not int(drones / 3) as in the GA tuning #####
+CHARGING_BASE_CAPACITY = 2
 
 ##### Each run is written into a logs directory next to this file, so runs can #####
 ##### be kept apart. The file names are fixed, plots/*.py look them up there.   #####
@@ -200,6 +203,7 @@ def run_simulation(duration: int, number_of_drones: int,
     original_factory = main.drone_protocol_factory
     original_duration = main.SIMULATION_DURATION
     original_number_of_drones = main.NUMBER_OF_DRONES
+    original_charging_base_capacity = main.CHARGING_BASE_CAPACITY
 
     def recorded_factory(**factory_kwargs):
         return make_recorded_drone(recorder_holder, original_factory, **factory_kwargs)
@@ -236,6 +240,7 @@ def run_simulation(duration: int, number_of_drones: int,
     main.drone_protocol_factory = recorded_factory
     main.SIMULATION_DURATION = duration
     main.NUMBER_OF_DRONES = number_of_drones
+    main.CHARGING_BASE_CAPACITY = CHARGING_BASE_CAPACITY
 
     try:
         results, global_map = main.create_and_run_simulation(
@@ -253,6 +258,7 @@ def run_simulation(duration: int, number_of_drones: int,
         main.drone_protocol_factory = original_factory
         main.SIMULATION_DURATION = original_duration
         main.NUMBER_OF_DRONES = original_number_of_drones
+        main.CHARGING_BASE_CAPACITY = original_charging_base_capacity
 
     ##### The run ends on the event that closes the simulation, which can fall 
     ##### before the next multiple of monitor_interval, so the final state is  

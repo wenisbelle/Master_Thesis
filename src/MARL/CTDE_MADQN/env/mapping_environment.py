@@ -144,7 +144,7 @@ class MappingEnvironmentConfig:
     communication_range: float = 100
     drone_speed: float = 15.0
     drone_max_acceleration: float = 3.0
-    discharge_rate: float = 0.00067  # config.DISCHARGE_RATE, measured after the 2026-11-23 battery plugin fix
+    discharge_rate: float = 0.000335  # config.DISCHARGE_RATE: 0.00067 measured after the 2026-11-23 battery plugin fix, halved by the doubled battery_capacity (2026-11-26)
     min_charge_margin: float = 0.20
     charging_capacity: Optional[int] = None  # Nc, None: int(drones / 3)
 

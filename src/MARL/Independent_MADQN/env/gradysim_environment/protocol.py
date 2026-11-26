@@ -221,6 +221,7 @@ def GotoCoordsMobilityCommand(current_position: np.ndarray,
 ##### Same distribution as before, so the mean drain and DISCHARGE_RATE are unchanged. Same config as  #####
 ##### Analytical/*/protocol.py, so with the same seed both see the same wind.                        #####
 SHARED_BATTERY_CONFIG = BatteryPowerConfiguration(
+    battery_capacity=10000.0,     # mAh, double the 5000 default (2026-11-26). total_uav_mass unchanged, so the drain per second halves, see DISCHARGE_RATE
     random_air_speed=True,
     random_air_speed_u=0.0,       # mean air speed, m/s
     random_air_speed_sigma=4.0,   # std deviation, m/s
