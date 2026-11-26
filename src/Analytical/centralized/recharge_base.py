@@ -32,8 +32,10 @@ Only the base node writes its pads and its waiting room. They are made when the
 simulation is built (instantiate), before any node is initialized, and main.py hands the
 node itself to what reads it after the build
 (simulation.get_node(base_node_id(...)).protocol_encapsulator.protocol): the world
-(world.base), which reads the pads and the waiting room as the oracle it is, and the
-reports of main_test.py (global_map.recharge_base). Until 2026-11-25 the pads were a
+(world.base), which reads the pads and the waiting room as the oracle it is and asks the
+base when its waiting room will charge (waiting_room_starts, with the TIME_TO_RECHARGE
+main.py gives the base and the drones), and the reports of main_test.py
+(global_map.recharge_base). Until 2026-11-25 the pads were a
 ChargingStation object made in main.py and shared with the node, in
 Analytical/charging_station.py.
 
@@ -107,31 +109,6 @@ def send_take_off(provider, base_id: int) -> None:
     provider.send_communication_command(SendMessageCommand(json.dumps(message), base_id))
 
 
-def waiting_room_starts(charging_starts, waiting_count: int, pads: int, time_to_recharge: float,
-                        now: float) -> list:
-    """
-    When the drones of a waiting room start charging, first in line first. Every charge
-    lasts time_to_recharge and the base hands a pad over the instant it frees, so the
-    k-th drone in line takes the k-th pad that frees: at the end of a charge on the base,
-    or of a charge of the waiting room before it. A pad already free is taken now.
-
-    charging_starts are the start times of the charges on the pads. Exact as long as no
-    drone lands ahead of the line, and none can (first landed, first served). Used by
-    the scheduler of the world (world.py), from the pads of the base node.
-    """
-    if waiting_count <= 0:
-        return []
-    pads_free_at = [float(start) + time_to_recharge for start in charging_starts]
-    pads_free_at += [float(now)] * max(0, int(pads) - len(pads_free_at))
-    heapq.heapify(pads_free_at)
-    starts = []
-    for _ in range(waiting_count):
-        start = max(float(now), heapq.heappop(pads_free_at))
-        starts.append(start)
-        heapq.heappush(pads_free_at, start + time_to_recharge)
-    return starts
-
-
 class RechargeBase(IProtocol):
     """
     The base node: its pads and its waiting room, the landings and the take-offs. Only the
@@ -142,6 +119,7 @@ class RechargeBase(IProtocol):
     _config = {
         "base_index": 0,  # position of this base in charging_base_positions
         "pads": 1,  # how many drones charge on it at once
+        "time_to_recharge": 300.0,  # s a charge lasts, TIME_TO_RECHARGE of main.py, the same the drones get
         "mode": "train",
     }
 
@@ -156,6 +134,7 @@ class RechargeBase(IProtocol):
         base.BASE_INDEX = cls._config["base_index"]
         ##### Nc is int(drones / 3): below 3 drones the base still has one pad #####
         base.pads = max(1, int(cls._config["pads"]))
+        base.TIME_TO_RECHARGE = float(cls._config["time_to_recharge"])
         ##### {drone id: (time its charge started, its battery then)} of the drones on a pad, #####
         ##### in the order they took it                                                       #####
         base.charging = {}
@@ -206,6 +185,28 @@ class RechargeBase(IProtocol):
             self.waits.append((next_drone, landed_at, float(now)))
             granted.append(next_drone)
         return granted
+
+    def waiting_room_starts(self, now: float) -> list:
+        """
+        When the drones of the waiting room start charging, first in line first. Every charge
+        lasts TIME_TO_RECHARGE and the base hands a pad over the instant it frees, so the
+        k-th drone in line takes the k-th pad that frees: at the end of a charge on a pad,
+        or of a charge of the waiting room before it. A pad already free is taken now.
+
+        Exact as long as no drone lands ahead of the line, and none can (first landed, first
+        served, see land). Used by the scheduler of the world (world.py).
+        """
+        if not self.waiting:
+            return []
+        pads_free_at = [start + self.TIME_TO_RECHARGE for start, _ in self.charging.values()]
+        pads_free_at += [float(now)] * max(0, self.pads - len(pads_free_at))
+        heapq.heapify(pads_free_at)
+        starts = []
+        for _ in self.waiting:
+            start = max(float(now), heapq.heappop(pads_free_at))
+            starts.append(start)
+            heapq.heappush(pads_free_at, start + self.TIME_TO_RECHARGE)
+        return starts
 
     def summary(self, end_time: float = None) -> dict:
         """
@@ -287,14 +288,17 @@ class RechargeBase(IProtocol):
                            f"{len(self.charging)} drones charging and {len(self.waiting)} waiting")
 
 
-def recharge_base_factory(pads: int, base_index: int = 0, mode: str = "train") -> Type[RechargeBase]:
+def recharge_base_factory(pads: int, time_to_recharge: float, base_index: int = 0,
+                          mode: str = "train") -> Type[RechargeBase]:
     """
     Creates the protocol class of the base, with pads charging pads (Nc), new for every
-    simulation.
+    simulation. time_to_recharge is how long a charge lasts, the TIME_TO_RECHARGE main.py
+    also gives the drones.
     """
     config = {
         "base_index": base_index,
         "pads": pads,
+        "time_to_recharge": time_to_recharge,
         "mode": mode,
     }
 

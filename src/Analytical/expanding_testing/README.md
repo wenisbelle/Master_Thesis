@@ -119,7 +119,7 @@ ids `0..n-1` and base `b` is node `n + b` (`base_node_id`).
 - **Heartbeat (swarm only, `BROADCAST_BASE` in `main.py`).** Every 1 s, while a drone
   is on its ground, a base broadcasts a `BaseHeartbeatMessage` with its pads, the
   drones charging on it (id, time the charge started, battery) and the drones of its
-  waiting room (id, time they landed, battery). It has
+  waiting room (id, time their charge will start, battery, worked out by the base). It has
   the same range as every other message. A drone in range stores the charging ones as
   CHARGING and the waiting ones as WAITING, with the time their charge will start, in
   its swarm table, and counts both as on a base. When one of them is new to it, it

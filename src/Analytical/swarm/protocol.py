@@ -10,7 +10,7 @@ from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
 from .recharge_base import (BaseMessageType, BaseHeartbeatMessage, base_node_id,
-                            send_landed, send_take_off, waiting_room_starts)
+                            send_landed, send_take_off)
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -26,7 +26,6 @@ class DroneStatus(enum.Enum):
     GOING_TO_BASE = 1
     DEAD = 2
     CHARGING = 3
-    ##### Landed on the base, waiting for the base to give it a pad (since 2026-11-24), see recharge_base.py #####
     WAITING = 4
 
 class MessageType(enum.Enum):
@@ -34,8 +33,6 @@ class MessageType(enum.Enum):
     GOSSIPING_MESSAGE = 1
     SHARE_GOTO_POSITION_MESSAGE = 2
     DEAD_NOTIFICATION_MESSAGE = 3
-    ##### 4 was the CHARGING_NOTIFICATION_MESSAGE of the charging drones. Since 2026-11-24 the base #####
-    ##### broadcasts who is on the ground, see recharge_base.BaseHeartbeatMessage                    #####
 
 class HeartBeatMessage(TypedDict):
     message_type: int
@@ -47,8 +44,8 @@ class GossipingMessage(TypedDict):
     map: str  # see encode_map
     sender: int
     drone_position: list
-    drone_velocity: list  # sender's horizontal velocity [vx, vy] (None before its first telemetry),
-                          # for the turn time of the pair decision (FitnessEvaluator.turn_time)
+    drone_velocity: list  # sender's horizontal velocity [vx, vy]
+                          # for the turn time of the pair decision
     drone_status: int
     sender_battery_swarm_status: list  # one row per drone: [battery, time of the observation, status]
 
@@ -103,12 +100,6 @@ def GotoCoordsMobilityCommand(current_position: np.ndarray,
     return SetVelocityMobilityCommand(float(vx), float(vy), float(vz))
 
 
-
-##### Wind (since 2026-11-24): the old random air speed N(0, 4) m/s along the heading, but each    #####
-##### drone keeps a value for 60 s before drawing the next one (piecewise constant). Drawn every     #####
-##### second it averaged out over a flight (100 s of cruise: 0.94-1.08x the mean drain), held for 60 s #####
-##### it does not (0.77-1.70x over 100 s, 0.86-1.25x over 1000 s), so the drain estimate is not exact. #####
-##### Same distribution as before, so the mean drain and DISCHARGE_RATE are unchanged.               #####
 SHARED_BATTERY_CONFIG = BatteryPowerConfiguration(
     random_air_speed=True,
     random_air_speed_u=0.0,       # mean air speed, m/s
@@ -121,11 +112,11 @@ class Drone(IProtocol):
     camera: CameraHardware
     _log: logging.Logger
     visualizer: MapVisualizer = None
-    ### Variable to track how many interactions happened ###
+    ### Variable to track how many interactions happened 
     Number_of_Encounters: int = 0
     battery: BatteryPowerPlugin = None
 
-    ##### Configuration for drone inheritance #####
+    ##### Configuration for drone inheritance 
     _config = {
         "uncertainty_rate": 0.01,
         "vanishing_update_time": 10.0,
@@ -134,21 +125,22 @@ class Drone(IProtocol):
         "map_height": 10,
         "drone_speed": 10.0,  # cruise speed, m/s
         "drone_max_acceleration": 10.0,  # horizontal acceleration limit of the mobility handler, m/s^2
-        ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this #####
-        ##### is in cells^2: 1.0 == one cell spacing, not one metre.               #####
+        "time_to_recharge": 300.0,  # s a charge lasts on a pad, TIME_TO_RECHARGE of main.py
+        ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this 
+        ##### is in cells^2: 1.0 == one cell spacing, not one metre.               
         'base_variance': 1.0,
         'alpha_variance_modifier': 1.0,
         'energy_gamma': 1.0,
         'charging_base_multiplier': 1.0,
-        ##### Normaliser of the encounter coupling term, in metres. Smaller means #####
-        ##### the two drones are pushed apart harder when they meet. Above ~500   #####
-        ##### the term is swamped by the reward spread and does nothing.          #####
+        ##### Normaliser of the encounter coupling term, in metres. Smaller means 
+        ##### the two drones are pushed apart harder when they meet. Above ~500   
+        ##### the term is swamped by the reward spread and does nothing.          
         'distance_between_drone_norm': 50.0,
         'kernel_n_sigma': 3, # fixed, the truncation radius of the kernel in sigmas
-        ##### Uncertainty of every cell at t=0. Below 1 so the first sweep of the map, #####
-        ##### the same for every individual, weighs less in the cost.                  #####
+        ##### Uncertainty of every cell at t=0. Below 1 so the first sweep of the map, 
+        ##### the same for every individual, weighs less in the cost.                  
         'initial_uncertainty': 0.5,
-        ##### Seed of the drone's own random streams, see initialize. None is random #####
+        ##### Seed of the drone's own random streams, see initialize. None is random 
         'seed': None,
         'a_battery_modifier': 1.0,
         'b_battery_modifier': 1.0,
@@ -158,7 +150,7 @@ class Drone(IProtocol):
         'Nc_charging_base': 2,
         'discharge_rate': 0.001,
         'charging_base_position': (0.0, 0.0),
-        ##### "train" runs silent and fast, "test" logs every routine #####
+        ##### "train" runs silent and fast, "test" logs every routine 
         "mode": "train",
         "enable_map_plot": False,
     }
@@ -166,9 +158,9 @@ class Drone(IProtocol):
     def initialize(self) -> None:
         self._log = logging.getLogger()
 
-        ##### Execution mode. During the GA tuning ("train") thousands of #####
-        ##### simulations run in parallel, so the per-routine logs are     #####
-        ##### disabled. They are only written during a "test" run.        #####
+        ##### Execution mode. During the GA tuning ("train") thousands of 
+        ##### simulations run in parallel, so the per-routine logs are     
+        ##### disabled. They are only written during a "test" run.        
         self.MODE = self._config.get("mode", "train")
         self.VERBOSE = self.MODE == "test"
 
@@ -178,7 +170,8 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
-        self.TIME_TO_RECHARGE = 300
+        ##### How long a charge lasts on a pad, TIME_TO_RECHARGE of main.py, which gives the same value to the base
+        self.TIME_TO_RECHARGE = self._config["time_to_recharge"]
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -193,7 +186,7 @@ class Drone(IProtocol):
         self.KERNEL_N_SIGMA = self._config["kernel_n_sigma"]
         self.DISCHARGE_RATE = self._config["discharge_rate"]
         self.CHARGING_BASE_POSITION = self._config["charging_base_position"]
-        ##### The base is a node, added after the drones, see recharge_base.py #####
+        ##### The base is a node, added after the drones
         self.BASE_NODE_ID = base_node_id(self.NUMBER_OF_DRONES)
         self.CHARGE_MARGIN = self._config["chage_margin"]
         self.MIN_CHARGE_MARGIN = self._config["min_charge_margin"]
@@ -230,26 +223,23 @@ class Drone(IProtocol):
         ##### Drone speed #####
         self.speed_command = self._config["drone_speed"]
 
-        ##### Approach to the base. The drone has to stop on the base, but the handler brakes at most  #####
-        ##### at drone_max_acceleration: zeroing the velocity on arrival, at 15 m/s, stops it up to      #####
-        ##### 37.5 m past the base. The drone flies a braking profile instead, see the mobility timer:   #####
-        ##### min(speed, sqrt(2 a d), d / tau), d the distance to the base. The sqrt part brakes at a,   #####
-        ##### the d / tau part settles the last metres, at up to 2a where it takes over, so a is kept   #####
-        ##### at 0.4 of the handler's limit. Inside BASE_APPROACH_RADIUS the drone could pass the point  #####
-        ##### where it has to start braking before the next 1 s update, so it is updated more often.    #####
+        ##### Approach to the base. The drone has to stop on the base, but the handler brakes at most  
+        ##### at drone_max_acceleration: zeroing the velocity on arrival, at 15 m/s, stops it up to     
+        ##### 37.5 m past the base. The drone flies a braking profile instead
+        ##### min(speed, sqrt(2 a d), d / tau), d the distance to the base
         self.BASE_APPROACH_DECELERATION = 0.4 * self._config["drone_max_acceleration"]
         self.BASE_APPROACH_TIME_CONSTANT = 1.0  # tau, s. Several updates long, so it does not overshoot between two
         self.BASE_APPROACH_UPDATE_TIME = 0.1
         self.BASE_APPROACH_RADIUS = (self.speed_command**2 / (2 * self.BASE_APPROACH_DECELERATION)
                                      + self.speed_command * self.MOBILITY_UPDATE_TIME)
-        ##### The charge starts once the drone is on the base and almost stopped, the drift left #####
-        ##### when the velocity is zeroed is BASE_ARRIVAL_SPEED^2 / (2 * max acceleration), < 2 mm. #####
+        ##### The charge starts once the drone is on the base and almost stopped, the drift left 
+        ##### when the velocity is zeroed is BASE_ARRIVAL_SPEED^2 / (2 * max acceleration), < 2 mm. 
         self.BASE_ARRIVAL_TOLERANCE = 0.05
         self.BASE_ARRIVAL_SPEED = 0.1
 
-        ##### Expected flight time to the base of a drone that decided to go there, from the mean distance #####
-        ##### of the cells to the base, plus the time lost braking on the approach, speed / (2 a).          #####
-        ##### Used to guess when a drone seen GOING_TO_BASE starts charging.                                #####
+        ##### Expected flight time to the base of a drone that decided to go there, from the mean distance 
+        ##### of the cells to the base, plus the time lost braking on the approach, speed / (2 a).          
+        ##### Used to guess when a drone seen GOING_TO_BASE starts charging.                                
         cells_x = np.arange(self.MAP_WIDTH) * self.DISTANCE_BETWEEN_CELLS - (self.MAP_WIDTH * self.DISTANCE_BETWEEN_CELLS) / 2
         cells_y = np.arange(self.MAP_HEIGHT) * self.DISTANCE_BETWEEN_CELLS - (self.MAP_HEIGHT * self.DISTANCE_BETWEEN_CELLS) / 2
         distance_cells_to_base = np.hypot(cells_x[:, np.newaxis] - self.CHARGING_BASE_POSITION[0],
@@ -257,8 +247,8 @@ class Drone(IProtocol):
         self.EXPECTED_TIME_TO_BASE = (float(distance_cells_to_base.mean()) / self.speed_command
                                       + self.speed_command / (2 * self.BASE_APPROACH_DECELERATION))
 
-        ### It's considered that the at any high the camera reach will be enough #####
-        ##### Cluster plugins initialization #####
+        ### It's considered that the at any high the camera reach will be enough 
+        ##### Cluster plugins initialization 
         self.fitness = FitnessEvaluator(map_width=self.MAP_WIDTH,
                                         map_height=self.MAP_HEIGHT,
                                         distance_between_cells = self.DISTANCE_BETWEEN_CELLS,
@@ -278,20 +268,20 @@ class Drone(IProtocol):
                                         number_of_cells_x_y =self.CELLS_EVALUETED_FOR_PRIORITY,
                                         drone_max_acceleration=self._config["drone_max_acceleration"])
         
-        ##### Communication tracking. Avoiding communications loops #####
+        ##### Communication tracking. Avoiding communications loops 
         self.last_drone_interaction_time = np.zeros(self.NUMBER_OF_DRONES)  
 
         ##### Initial random position #####
-        ##### Each drone has its own random streams, one for the initial destination and #####
-        ##### one for the wind, derived from (seed, drone id). Drawing from them never   #####
-        ##### moves the stream of another drone, so two runs with the same seed keep    #####
-        ##### the same scenario for every drone, even after their decisions diverge.     #####
+        ##### Each drone has its own random streams, one for the initial destination and 
+        ##### one for the wind, derived from (seed, drone id). Drawing from them never   
+        ##### moves the stream of another drone, so two runs with the same seed keep    
+        ##### the same scenario for every drone, even after their decisions diverge.     
         destination_seed, wind_seed = np.random.SeedSequence(
             None if self._config["seed"] is None else [self._config["seed"], self.provider.get_id()]
         ).spawn(2)
         destination_rng = np.random.default_rng(destination_seed)
         self.goto_command = np.array([destination_rng.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_WIDTH/2), destination_rng.uniform(-self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2, self.DISTANCE_BETWEEN_CELLS*self.MAP_HEIGHT/2), self.DRONE_ALTITUDE])
-        ##### No telemetry has arrived yet, but the drones take off from the base, see main.py #####
+
         command = GotoCoordsMobilityCommand(current_position=(*self.CHARGING_BASE_POSITION, 0.0),
                                             destination=self.goto_command,
                                             speed=self.speed_command)
@@ -316,7 +306,7 @@ class Drone(IProtocol):
         self.battery_at_charging_start = self.battery_status
 
 
-        ##### Starting the callbacks #####
+        ##### Starting the callbacks 
         self.provider.schedule_timer("mobility",self.provider.current_time() + self.MOBILITY_UPDATE_TIME)
         self.provider.schedule_timer("camera",self.provider.current_time() + 1)
         self.provider.schedule_timer("heartbeat",self.provider.current_time() + 1)
@@ -325,7 +315,7 @@ class Drone(IProtocol):
             self.provider.schedule_timer("traveled_distance", self.provider.current_time() + 5)
         self.provider.schedule_timer("battery_check", self.provider.current_time() + self.BATTERY_CHECK_INTERVAL)
 
-        ##### Visualizing the MAP #####
+        ##### Visualizing the MAP 
         ##### Only during a test run, the plot would slow down the GA tuning #####
         if self._config.get("enable_map_plot", False) and Drone.visualizer is None:
             # The visualizer is shared by every drone of the simulation.
@@ -394,7 +384,7 @@ class Drone(IProtocol):
         Returns:
             float: mean battery status of the other drones that are still alive
             int: number of the other drones still alive estimated to be on the base, charging or in the
-                 waiting room (since 2026-11-24), see estimate_drone_battery
+                 waiting room, see estimate_drone_battery
         """
         updated_battery_vector = np.copy(swarm_battery_vector)
         is_charging = np.zeros(updated_battery_vector.shape[0], dtype=bool)
@@ -479,12 +469,11 @@ class Drone(IProtocol):
             observation_time = charging_start_time + self.TIME_TO_RECHARGE
             status = DroneStatus.MAPPING.value
 
-    ##### Map updating ##### 
+    ##### Map updating  
     def vanishing_map_routine(self):
         self.map[:, :, 0] = self.map[:, :, 0] + self.UNCERTAINTY_RATE
         
         ##### Checking if the cell was visited #####
-        ##### Importante parameter. If there are unviseted cells, there will be penalizations in the algorithm #####
         self.is_cell_visited[self.map[:, :, 1] > 0.0] = 1
 
         if self.VERBOSE:
@@ -536,7 +525,7 @@ class Drone(IProtocol):
         self.provider.send_mobility_command(command)
 
     
-    ##### External mobility command. When receiving encountering another drone, the one with highest ID calculates the new destinations #####
+    ##### External mobility command. When receiving encountering another drone, the one with highest ID calculates the new destinations 
     def external_mobility_command(self, another_drone_position: list, another_drone_id: int,
                                   another_drone_velocity: list = None) -> tuple[np.ndarray, DroneStatus]:
         map_center_offset = (self.MAP_WIDTH * self.DISTANCE_BETWEEN_CELLS) / 2
@@ -646,9 +635,9 @@ class Drone(IProtocol):
         self.provider.send_communication_command(command)
 
     def send_dead_notification(self):
-        ##### The only thing a DEAD drone still does, every DEAD_NOTIFICATION_INTERVAL. It cannot #####
-        ##### fly anymore but its electronics still have power, so it keeps telling whoever is in #####
-        ##### range that it is DEAD, and they stop counting it in the swarm terms.                 #####
+        ##### The only thing a DEAD drone still does, every DEAD_NOTIFICATION_INTERVAL. It cannot 
+        ##### fly anymore but its electronics still have power, so it keeps telling whoever is in 
+        ##### range that it is DEAD, and they stop counting it in the swarm terms.                 
         message: DeadNotificationMessage = {
             'message_type': MessageType.DEAD_NOTIFICATION_MESSAGE.value,
             'sender': self.provider.get_id(),
@@ -662,22 +651,18 @@ class Drone(IProtocol):
         Stores what the base tells about the drones on the ground. Returns True when a drone is new on the
         base: it was not counted there yet, or the stored stay is an older one that already ended.
 
-        A drone on a pad gets the row (battery, time its charge started, CHARGING), as before. A drone
-        of the waiting room gets (battery at landing, time its charge will start, WAITING): the base
-        hands the pads over in landing order the instant they free, so the start is known exactly from
-        the charges on the pads and the place in line (recharge_base.waiting_room_starts). Its
-        WAITING -> CHARGING row then has the same time, and is not new. Both rows keep a time that
-        only grows from one stay on the base to the next, so the gossip (newest row wins) keeps them.
+        A drone on a pad gets the row (battery, time its charge started, CHARGING). A drone
+        of the waiting room gets (battery at landing, time its charge will start, WAITING). The base
+        sends that start already made (RechargeBase.waiting_room_starts): it hands the pads over in
+        landing order the instant they free, so it knows the start exactly from the charges on its
+        pads and the place in line.
         """
         my_id = self.provider.get_id()
-        now = self.provider.current_time()
         is_new = False
         rows = [(drone_id, start, battery, DroneStatus.CHARGING.value)
                 for drone_id, start, battery in base_msg['charging']]
-        starts = waiting_room_starts([start for _, start, _ in base_msg['charging']], len(base_msg['waiting']),
-                                     base_msg['pads'], self.TIME_TO_RECHARGE, now)
         rows += [(drone_id, start, battery, DroneStatus.WAITING.value)
-                 for (drone_id, _, battery), start in zip(base_msg['waiting'], starts)]
+                 for drone_id, start, battery in base_msg['waiting']]
 
         for drone_id, start, battery, status in rows:
             # This drone's own stay, it already knows it
@@ -735,16 +720,16 @@ class Drone(IProtocol):
                         self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} map has total uncertainty of {self.total_uncertainty}")
                 self.provider.schedule_timer("vanishing_map", self.provider.current_time() + self.VANISHING_UPDATE_TIME)
 
-        ##### Handled outside of the status gate below, the drone is DEAD when it fires #####
+        ##### Handled outside of the status gate below, the drone is DEAD when it fires 
         if timer == "dead_notification":
             self.send_dead_notification()
             self.provider.schedule_timer("dead_notification", self.provider.current_time() + self.DEAD_NOTIFICATION_INTERVAL)
             return
 
-        ##### Handled outside of the status gate below, the drone is CHARGING when it fires #####
+        ##### Handled outside of the status gate below, the drone is CHARGING when it fires 
         if timer == "recharge_done":
-            ##### The drone takes off: it tells the base, which gives its pad to the first drone #####
-            ##### of the waiting room, and the battery plugin bills the flight again.             #####
+            ##### The drone takes off: it tells the base, which gives its pad to the first drone 
+            ##### of the waiting room, and the battery plugin bills the flight again.             
             send_take_off(self.provider, self.BASE_NODE_ID)
             self.battery.charge_battery_to_full()
             self.battery.resume()
@@ -795,31 +780,25 @@ class Drone(IProtocol):
                     elif self.status == DroneStatus.GOING_TO_BASE:
                         speed = 0.0 if self.drone_velocity is None else float(np.linalg.norm(self.drone_velocity))
                         if distance_to_goto < self.BASE_ARRIVAL_TOLERANCE and speed < self.BASE_ARRIVAL_SPEED:
-                            ##### The drone reached the base and lands. It is frozen until it takes off #####
-                            ##### again: the velocity is zeroed and no timer is rescheduled, so every    #####
-                            ##### routine (camera, heartbeat, mobility, traveled distance, battery      #####
-                            ##### check) stops until "recharge_done". On the ground the motors are off: #####
-                            ##### the battery plugin stops, so the battery does not drain while the     #####
-                            ##### drone waits or charges, and it cannot die there.                       #####
+                            ##### The drone reached the base and lands. It is frozen until it takes off 
+                            ##### again: the velocity is zeroed and no timer is rescheduled, so every    
+                            ##### routine (camera, heartbeat, mobility, traveled distance, battery      
+                            ##### check) stops until "recharge_done". On the ground the motors are off: 
+                            ##### the battery plugin stops, so the battery does not drain while the     
+                            ##### drone waits or charges, and it cannot die there.                       
                             self.provider.send_mobility_command(SetVelocityMobilityCommand(0.0, 0.0, 0.0))
                             self.battery.shutdown()
 
                             ##### It waits for a pad until the base gives it one (PAD_MESSAGE): at the  #####
-                            ##### same instant when one is free, otherwise when its turn comes. At most #####
-                            ##### Nc drones charge at once, see recharge_base.py.                       #####
+                            ##### same instant when one is free, otherwise when its turn comes. 
                             self.status = DroneStatus.WAITING
                             if self.VERBOSE:
                                 self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} reached the base and asks for a pad")
                             send_landed(self.provider, self.BASE_NODE_ID, self.battery.battery_status)
                             return
                         else:
-                            ##### Same refresh as in the MAPPING branch, and for the same  #####
-                            ##### reason. Without it the velocity set when the base was    #####
-                            ##### chosen is never re-aimed: the drone curves under the     #####
-                            ##### handler's acceleration limit, misses the arrival window, #####
-                            ##### and then flies in a straight line off the map forever.   #####
-                            ##### The speed follows the braking profile, so the drone stops #####
-                            ##### on the base, see BASE_APPROACH_DECELERATION.              #####
+                            ##### Same refresh as in the MAPPING branch, and for the same  
+                            ##### reason.        
                             approach_speed = min(self.speed_command,
                                                  np.sqrt(2 * self.BASE_APPROACH_DECELERATION * distance_to_goto),
                                                  distance_to_goto / self.BASE_APPROACH_TIME_CONSTANT)
@@ -1001,6 +980,7 @@ def drone_protocol_factory(
     map_height: int,
     drone_speed: float,                  # fixed, m/s
     drone_max_acceleration: float,       # fixed, m/s^2
+    time_to_recharge: float,             # fixed, s
     base_variance: float,                # tunable, in cells^2
     alpha_variance_modifier: float,      # tunable
     energy_gamma: float,                 # tunable
@@ -1040,6 +1020,7 @@ def drone_protocol_factory(
         "map_height": map_height,
         "drone_speed": drone_speed,
         "drone_max_acceleration": drone_max_acceleration,
+        "time_to_recharge": time_to_recharge,
         "base_variance": base_variance,
         "alpha_variance_modifier": alpha_variance_modifier,
         "energy_gamma": energy_gamma,

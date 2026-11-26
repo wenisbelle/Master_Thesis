@@ -55,6 +55,7 @@ DISCHARGE_RATE = 0.00067  # measured 2026-11-23 after the battery plugin body-fr
 
 ##### Fixed protocol parameters, not tuned
 CHARGING_BASE_POSITIONS = [(0.0, 0.0)]  # [(x, y), ...] in metres, one per base
+TIME_TO_RECHARGE = 300  # s a drone charges on a pad, given to the drones
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
@@ -351,6 +352,7 @@ def create_and_run_simulation(individual, mode: str = "train",
         map_height=MAP_HEIGHT,
         drone_speed=DRONE_SPEED,
         drone_max_acceleration=DRONE_MAX_ACCELERATION,
+        time_to_recharge=TIME_TO_RECHARGE,
         **unpack_individual(individual),
         return_battery_threshold=RETURN_BATTERY_THRESHOLD,
         charging_base_positions=charging_base_positions,

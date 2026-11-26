@@ -10,7 +10,7 @@ from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
 from .recharge_base import (BaseMessageType, BaseHeartbeatMessage, base_node_id,
-                            send_landed, send_take_off, waiting_room_starts)
+                            send_landed, send_take_off)
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -142,6 +142,7 @@ class Drone(IProtocol):
         "map_height": 10,
         "drone_speed": 10.0,  # cruise speed, m/s
         "drone_max_acceleration": 10.0,  # horizontal acceleration limit of the mobility handler, m/s^2
+        "time_to_recharge": 300.0,  # s a charge lasts on a pad, TIME_TO_RECHARGE of main.py
         ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this #####
         ##### is in cells^2: 1.0 == one cell spacing, not one metre.               #####
         'base_variance': 1.0,
@@ -186,7 +187,8 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
-        self.TIME_TO_RECHARGE = 300
+        ##### How long a charge lasts on a pad, TIME_TO_RECHARGE of main.py, the same the bases get #####
+        self.TIME_TO_RECHARGE = self._config["time_to_recharge"]
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -699,21 +701,19 @@ class Drone(IProtocol):
         bases together, so which base a drone is on does not matter here.
 
         A drone on a pad gets the row (battery, time its charge started, CHARGING), as before. A drone
-        of a waiting room gets (battery at landing, time its charge will start, WAITING): its base
-        hands the pads over in landing order the instant they free, so the start is known exactly from
-        the charges on its pads and the place in line (recharge_base.waiting_room_starts). Its
+        of a waiting room gets (battery at landing, time its charge will start, WAITING). Its base
+        sends that start already made (RechargeBase.waiting_room_starts): it hands the pads over in
+        landing order the instant they free, so it knows the start exactly from the charges on its
+        pads and the place in line. Its
         WAITING -> CHARGING row then has the same time, and is not new. Both rows keep a time that
         only grows from one stay on the base to the next, so the gossip (newest row wins) keeps them.
         """
         my_id = self.provider.get_id()
-        now = self.provider.current_time()
         is_new = False
         rows = [(drone_id, start, battery, DroneStatus.CHARGING.value)
                 for drone_id, start, battery in base_msg['charging']]
-        starts = waiting_room_starts([start for _, start, _ in base_msg['charging']], len(base_msg['waiting']),
-                                     base_msg['pads'], self.TIME_TO_RECHARGE, now)
         rows += [(drone_id, start, battery, DroneStatus.WAITING.value)
-                 for (drone_id, _, battery), start in zip(base_msg['waiting'], starts)]
+                 for drone_id, start, battery in base_msg['waiting']]
 
         for drone_id, start, battery, status in rows:
             # This drone's own stay, it already knows it
@@ -1035,6 +1035,7 @@ def drone_protocol_factory(
     map_height: int,
     drone_speed: float,                  # fixed, m/s
     drone_max_acceleration: float,       # fixed, m/s^2
+    time_to_recharge: float,             # fixed, s
     base_variance: float,                # tunable, in cells^2
     alpha_variance_modifier: float,      # tunable
     energy_gamma: float,                 # tunable
@@ -1074,6 +1075,7 @@ def drone_protocol_factory(
         "map_height": map_height,
         "drone_speed": drone_speed,
         "drone_max_acceleration": drone_max_acceleration,
+        "time_to_recharge": time_to_recharge,
         "base_variance": base_variance,
         "alpha_variance_modifier": alpha_variance_modifier,
         "energy_gamma": energy_gamma,

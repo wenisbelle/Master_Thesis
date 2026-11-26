@@ -81,7 +81,7 @@ per mobility tick (1 s):
 1. **Booked charges.** These are the drones CHARGING, from the start of their charge, the
    drones GOING_TO_BASE, at the slot they left for, and (since 2026-11-24) the drones in
    the waiting room of the base, at the moment a pad frees for them
-   (`waiting_room_starts`: in the order they landed, each at the end of the earliest
+   (`RechargeBase.waiting_room_starts`: in the order they landed, each at the end of the earliest
    charge still on a pad).
 2. **Deadlines.** Each MAPPING drone gets its latest safe arrival,
    `now + (battery − reserve) / (1.15 · DISCHARGE_RATE)`. Arriving then still leaves the

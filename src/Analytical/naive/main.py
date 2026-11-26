@@ -49,6 +49,7 @@ DISCHARGE_RATE = 0.00067  # measured 2026-11-23 after the battery plugin body-fr
 
 ##### Fixed protocol parameters, not tuned
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
+TIME_TO_RECHARGE = 300  # s a drone charges on a pad, given to the drones
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 ##### 1.0 as swarm and centralized. egocentric still has 0.5 (Analytical/README.md, known issues) #####
@@ -411,6 +412,7 @@ def create_and_run_simulation(individual, mode: str = "train",
         map_height=MAP_HEIGHT,
         drone_speed=DRONE_SPEED,
         drone_max_acceleration=DRONE_MAX_ACCELERATION,
+        time_to_recharge=TIME_TO_RECHARGE,
         **unpack_individual(individual),
         charging_base_position=charging_base_position,
         return_battery_threshold=RETURN_BATTERY_THRESHOLD,

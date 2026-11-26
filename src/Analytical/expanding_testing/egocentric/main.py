@@ -47,6 +47,7 @@ DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility h
 ##### Fixed protocol parameters, not tuned
 DISCHARGE_RATE = 0.00067  # measured 2026-11-23 after the battery plugin body-frame fix: 0.000665-0.000667 per second, cruising at 15 m/s with the random air speed, the same along x and y (0.00073 before the fix). Still valid with the air speed held 60 s (2026-11-24, protocol.py): same N(0, 4) distribution, so the same mean drain
 CHARGING_BASE_POSITIONS = [(0.0, 0.0)]  # [(x, y), ...] in metres, one per base
+TIME_TO_RECHARGE = 300  # s a drone charges on a pad, given to the drones
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, as in Analytical/swarm, egocentric and naive
@@ -340,6 +341,7 @@ def create_and_run_simulation(individual, mode: str = "train",
         map_height=MAP_HEIGHT,
         drone_speed=DRONE_SPEED,
         drone_max_acceleration=DRONE_MAX_ACCELERATION,
+        time_to_recharge=TIME_TO_RECHARGE,
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
         charging_base_positions=charging_base_positions,

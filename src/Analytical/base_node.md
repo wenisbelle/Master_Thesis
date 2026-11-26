@@ -78,27 +78,34 @@ what its system uses):
   `BaseHeartbeatMessage` are only in the swarm copies.
 - `base_node_id(number_of_drones, base_index)`: the base is node `n + b`.
 - `send_landed` and `send_take_off`: what the drones call.
-- `waiting_room_starts(...)` gives when each drone of a waiting room will start
-  charging. It is in the swarm copies (the drones, on the heartbeat) and in centralized
-  (the scheduler).
 - `RechargeBase`, the node:
   - `instantiate` makes its pads and its waiting room: `pads`, `charging` (a dict
     `{id: (charge start, battery)}`), `waiting` (first landed first), the waits and the
     landings of the run.
   - `land(id, now, battery)` and `take_off(id, now)`. `take_off` returns the drones that
     get a pad now.
+  - `waiting_room_starts(now)` gives when each drone of its waiting room will start
+    charging. Swarm copies and centralized only: the swarm base puts it in its
+    heartbeat, the centralized scheduler asks the base for it. It needs
+    `TIME_TO_RECHARGE`, which the base gets from `main.py` (since 2026-11-25; before,
+    the function took the charge time of the drone that called it).
   - `summary` and `report` give the waits of the run to the reports.
   - `handle_packet` answers `LANDED` and `TAKE_OFF` and ignores the drones' broadcasts.
   - Swarm copies: `charging_rows` and `waiting_rows` build the heartbeat, and the
     `base_heartbeat` timer runs with `broadcast=True`.
-- `recharge_base_factory(pads, base_index, mode)`, plus `broadcast` in the swarm copies.
+- `recharge_base_factory(pads, base_index, mode)`. The swarm copies and centralized take
+  `time_to_recharge` after `pads`, and the swarm copies `broadcast` too.
 - `BASE_ANTENNA_ALTITUDE = 50`.
 
 **Each `main.py`:**
 - After the drones, `builder.add_node(recharge_base_factory(Nc, mode=mode),
   (x, y, BASE_ANTENNA_ALTITUDE))`. Swarm adds `broadcast=BROADCAST_BASE` (True, and only
   the swarm `main.py` files have it). `expanding_testing` adds one node per base, with
-  `PADS_PER_BASE` pads (Nc by default) and its `base_index`.
+  `PADS_PER_BASE` pads (Nc by default) and its `base_index`. Swarm and centralized
+  also give the base `TIME_TO_RECHARGE`.
+- `TIME_TO_RECHARGE` (300 s) is a constant of every `main.py` since 2026-11-25. The
+  drones get it as `time_to_recharge` in `drone_protocol_factory`, and the base gets the
+  same value where it uses it. Before, each protocol hardcoded 300.
 - After the build, the node itself goes to what reads it:
   `global_map.recharge_base = simulation.get_node(base_node_id(n)).protocol_encapsulator.protocol`
   for the reports (`global_map.recharge_bases`, one per base, in `expanding_testing`).
@@ -120,15 +127,16 @@ charging notification.
 - **A drone on a pad** gets the row `(battery, time its charge started, CHARGING)`, as
   the notification gave.
 - **A drone of the waiting room** gets `(battery at landing, time its charge will start,
-  WAITING)`. The receiver works that start out from the heartbeat
-  (`waiting_room_starts`):
+  WAITING)`. The base works that start out and sends it in the heartbeat
+  (`RechargeBase.waiting_room_starts`, since 2026-11-25; before, each receiver
+  computed it from the landing times in the heartbeat):
   - the pads free at the end of the charges on them;
   - the k-th drone in line takes the k-th pad that frees;
   - each charge takes `TIME_TO_RECHARGE`, 300 s since 2026-11-25 (100 s before).
 
   This is exact: no drone can overtake the line, and the pad passes at the take-off
-  instant. The base sends the landing time, as asked. The receiver keeps the start
-  instead, because that is what the estimate needs.
+  instant. The base is the one that hands the pads over, so the rule of the line is
+  written only there, and the receiver stores the start as it gets it.
 - **Gossip stays consistent.** The CHARGING row that follows has the same time as the
   WAITING row, so it is not "new". The next stay on the base always has a later time,
   so the newest-row-wins merge keeps the right one.

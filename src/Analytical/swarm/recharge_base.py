@@ -1,18 +1,11 @@
 """
-The recharge base of the swarm system, a node of the simulation (since 2026-11-24).
-Every system has its own copy of this file (since 2026-11-25), so each one runs on its
-own.
-
 The base owns its Nc charging pads and its waiting room: at most Nc drones charge at
 once. A drone that lands while every pad is taken waits on the ground next to the base,
 in the waiting room, and takes the first pad that frees, in the order the drones landed.
 
 On the ground, waiting or charging, the motors are off: the drone stops its battery
 plugin when it lands and starts it again when it takes off, so its battery does not change
-and no drone can die while it waits. Before the pads (2026-11-24) the capacity was only a
-penalty of the cost: any number of drones could charge at once, so a system that ignored
-Nc got its drones back to mapping sooner and looked better on uncertainty than one that
-respected it. Now waiting costs mapping time, for every system.
+and no drone can die while it waits.
 
 The drones talk to their base with messages:
 
@@ -23,17 +16,17 @@ The drones talk to their base with messages:
                                                   the waiting room, with a PAD, same instant
 
 A landed drone is WAITING until the PAD arrives. On a free pad the PAD comes at the
-same instant (gradysim delivers a message with no delay as a new event of the same
-time), so the drone is WAITING for 0 s. The drone and its base are at the same point,
+same instant so the drone is WAITING for 0 s. The drone and its base are at the same point,
 so these messages are always in range. The medium of the runs has no failures; with
-failures a drone could wait forever.
+failures a drone could wait forever, because there is no check messages implemented yet
 
 The base also tells the drones in range who is on the ground, every HEARTBEAT_INTERVAL:
 the drones charging (id, time their charge started, battery) and the drones of the
-waiting room (id, time they landed, battery), see BaseHeartbeatMessage. It replaces the
-ChargingNotificationMessage each charging drone broadcast itself before 2026-11-24. The
-base is at the drones' altitude, so it reaches as far as that notification did. It is
-sent only while some drone is on the ground, as the notification was.
+waiting room (id, time their charge will start, battery), see BaseHeartbeatMessage.
+The base computes that start (waiting_room_starts): it is the one that hands the pads
+over, so the rule of the line is written only here, and the drones store the start as
+they get it. For that the base knows how long a charge lasts, TIME_TO_RECHARGE of
+main.py, the same value main.py gives the drones.
 
 Only the base node writes its pads and its waiting room. They are made when the
 simulation is built (instantiate), before any node is initialized, and main.py hands the
@@ -98,11 +91,13 @@ class BaseHeartbeatMessage(TypedDict):
     ##### [drone id, time its charge started, battery then] of every drone on a pad, the charge #####
     ##### ends TIME_TO_RECHARGE later                                                            #####
     charging: list
-    waiting: list  # [drone id, time it landed, battery then] of its waiting room, first in line first
+    ##### [drone id, time its charge will start, battery then] of its waiting room, first in line #####
+    ##### first. The base computes the start, see RechargeBase.waiting_room_starts                #####
+    waiting: list
 
 
 def base_node_id(number_of_drones: int, base_index: int = 0) -> int:
-    """Node id of a base: the bases are added after the drones, see main.py."""
+    """Node id of a base: the bases are added after the drones"""
     return number_of_drones + base_index
 
 
@@ -125,31 +120,6 @@ def send_take_off(provider, base_id: int) -> None:
     provider.send_communication_command(SendMessageCommand(json.dumps(message), base_id))
 
 
-def waiting_room_starts(charging_starts, waiting_count: int, pads: int, time_to_recharge: float,
-                        now: float) -> list:
-    """
-    When the drones of a waiting room start charging, first in line first. Every charge
-    lasts time_to_recharge and the base hands a pad over the instant it frees, so the
-    k-th drone in line takes the k-th pad that frees: at the end of a charge on the base,
-    or of a charge of the waiting room before it. A pad already free is taken now.
-
-    charging_starts are the start times of the charges on the pads. Exact as long as no
-    drone lands ahead of the line, and none can (first landed, first served). Used by
-    the swarm drones on the base heartbeat.
-    """
-    if waiting_count <= 0:
-        return []
-    pads_free_at = [float(start) + time_to_recharge for start in charging_starts]
-    pads_free_at += [float(now)] * max(0, int(pads) - len(pads_free_at))
-    heapq.heapify(pads_free_at)
-    starts = []
-    for _ in range(waiting_count):
-        start = max(float(now), heapq.heappop(pads_free_at))
-        starts.append(start)
-        heapq.heappush(pads_free_at, start + time_to_recharge)
-    return starts
-
-
 class RechargeBase(IProtocol):
     """
     The base node: its pads and its waiting room, the landings and the take-offs. Only the
@@ -160,6 +130,7 @@ class RechargeBase(IProtocol):
     _config = {
         "base_index": 0,  # position of this base in charging_base_positions
         "pads": 1,  # how many drones charge on it at once
+        "time_to_recharge": 300.0,  # s a charge lasts, TIME_TO_RECHARGE of main.py, the same the drones get
         "broadcast": True,  # send the BaseHeartbeatMessage
         "mode": "train",
     }
@@ -175,6 +146,7 @@ class RechargeBase(IProtocol):
         base.BASE_INDEX = cls._config["base_index"]
         ##### Nc is int(drones / 3): below 3 drones the base still has one pad #####
         base.pads = max(1, int(cls._config["pads"]))
+        base.TIME_TO_RECHARGE = float(cls._config["time_to_recharge"])
         ##### {drone id: (time its charge started, its battery then)} of the drones on a pad, #####
         ##### in the order they took it                                                       #####
         base.charging = {}
@@ -197,7 +169,7 @@ class RechargeBase(IProtocol):
         if self.BROADCAST:
             self.provider.schedule_timer("base_heartbeat", self.provider.current_time() + self.HEARTBEAT_INTERVAL)
 
-    ##### The pads and the waiting room #####
+    ##### The pads and the waiting room 
 
     def land(self, drone_id: int, now: float, battery: float) -> bool:
         """
@@ -205,7 +177,7 @@ class RechargeBase(IProtocol):
         waiting room, because every pad is taken or other drones are already waiting.
         """
         if drone_id in self._landed:
-            ##### Already on the ground: the base answers the same again #####
+            ##### Already on the ground: the base answers the same again 
             return drone_id in self.charging
         self.landings += 1
         self._landed[drone_id] = (float(now), float(battery))
@@ -232,13 +204,37 @@ class RechargeBase(IProtocol):
             granted.append(next_drone)
         return granted
 
+    def waiting_room_starts(self, now: float) -> list:
+        """
+        When the drones of the waiting room start charging, first in line first. Every charge
+        lasts TIME_TO_RECHARGE and the base hands a pad over the instant it frees, so the
+        k-th drone in line takes the k-th pad that frees: at the end of a charge on a pad,
+        or of a charge of the waiting room before it. A pad already free is taken now.
+
+        Exact as long as no drone lands ahead of the line, and none can (first landed, first
+        served, see land). The base sends it in its heartbeat, so the drones get the
+        start already made and the rule of the line is only written here.
+        """
+        if not self.waiting:
+            return []
+        pads_free_at = [start + self.TIME_TO_RECHARGE for start, _ in self.charging.values()]
+        pads_free_at += [float(now)] * max(0, self.pads - len(pads_free_at))
+        heapq.heapify(pads_free_at)
+        starts = []
+        for _ in self.waiting:
+            start = max(float(now), heapq.heappop(pads_free_at))
+            starts.append(start)
+            heapq.heappush(pads_free_at, start + self.TIME_TO_RECHARGE)
+        return starts
+
     def charging_rows(self) -> list:
         """[drone id, time its charge started, battery then] of every drone on a pad."""
         return [[drone_id, start, battery] for drone_id, (start, battery) in self.charging.items()]
 
-    def waiting_rows(self) -> list:
-        """[drone id, landing time, battery then] of every drone of the waiting room, first in line first."""
-        return [[drone_id, *self._landed[drone_id]] for drone_id in self.waiting]
+    def waiting_rows(self, now: float) -> list:
+        """[drone id, time its charge will start, battery then] of every drone of the waiting room, first in line first."""
+        return [[drone_id, start, self._landed[drone_id][1]]
+                for drone_id, start in zip(self.waiting, self.waiting_room_starts(now))]
 
     def summary(self, end_time: float = None) -> dict:
         """
@@ -292,7 +288,7 @@ class RechargeBase(IProtocol):
             'base': self.BASE_INDEX,
             'pads': self.pads,
             'charging': self.charging_rows(),
-            'waiting': self.waiting_rows(),
+            'waiting': self.waiting_rows(self.provider.current_time()),
         }
         self.provider.send_communication_command(BroadcastMessageCommand(json.dumps(message)))
 
@@ -310,14 +306,17 @@ class RechargeBase(IProtocol):
 
         if msg_type == BaseMessageType.LANDED_MESSAGE.value:
             landed: LandedMessage = data
+            # If there is an available pad send it to the drone. It will be charging
             if self.land(landed['sender'], now, landed['battery']):
                 self.send_pad(landed['sender'])
+            # else, it will wait in the "waiting room"
             elif self.VERBOSE:
                 self._log.info(f"At time: {now}, node {landed['sender']} landed on base {self.BASE_INDEX}, "
                                f"every pad is taken: waiting room, {len(self.waiting)} in line")
 
         elif msg_type == BaseMessageType.TAKE_OFF_MESSAGE.value:
             take_off: TakeOffMessage = data
+            # Call the waiting drones to the charging pad, if there is any
             for drone_id in self.take_off(take_off['sender'], now):
                 self.send_pad(drone_id)
 
@@ -334,15 +333,17 @@ class RechargeBase(IProtocol):
                            f"{len(self.charging)} drones charging and {len(self.waiting)} waiting")
 
 
-def recharge_base_factory(pads: int, base_index: int = 0, broadcast: bool = True,
+def recharge_base_factory(pads: int, time_to_recharge: float, base_index: int = 0, broadcast: bool = True,
                           mode: str = "train") -> Type[RechargeBase]:
     """
     Creates the protocol class of the base, with pads charging pads (Nc), new for every
-    simulation. broadcast turns on the BaseHeartbeatMessage.
+    simulation. time_to_recharge is how long a charge lasts, the TIME_TO_RECHARGE main.py
+    also gives the drones. broadcast turns on the BaseHeartbeatMessage.
     """
     config = {
         "base_index": base_index,
         "pads": pads,
+        "time_to_recharge": time_to_recharge,
         "broadcast": broadcast,
         "mode": mode,
     }

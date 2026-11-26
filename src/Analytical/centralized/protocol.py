@@ -101,6 +101,7 @@ class Drone(IProtocol):
         "map_height": 10,
         "drone_speed": 10.0,  # cruise speed, m/s
         "drone_max_acceleration": 10.0,  # horizontal acceleration limit of the mobility handler, m/s^2
+        "time_to_recharge": 300.0,  # s a charge lasts on a pad, TIME_TO_RECHARGE of main.py
         ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this #####
         ##### is in cells^2: 1.0 == one cell spacing, not one metre.               #####
         'base_variance': 1.0,
@@ -146,7 +147,8 @@ class Drone(IProtocol):
         self.MOBILITY_UPDATE_TIME = 1.0
         ##### Period of the pair decision check, the heartbeat period of swarm #####
         self.ENCOUNTER_CHECK_TIME = 1.0
-        self.TIME_TO_RECHARGE = 300
+        ##### How long a charge lasts on a pad, TIME_TO_RECHARGE of main.py, the same the base and the world use #####
+        self.TIME_TO_RECHARGE = self._config["time_to_recharge"]
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -695,6 +697,7 @@ def drone_protocol_factory(
     map_height: int,
     drone_speed: float,                  # fixed, m/s
     drone_max_acceleration: float,       # fixed, m/s^2
+    time_to_recharge: float,             # fixed, s
     base_variance: float,                # tunable, in cells^2
     alpha_variance_modifier: float,      # tunable
     energy_gamma: float,                 # tunable
@@ -734,6 +737,7 @@ def drone_protocol_factory(
         "map_height": map_height,
         "drone_speed": drone_speed,
         "drone_max_acceleration": drone_max_acceleration,
+        "time_to_recharge": time_to_recharge,
         "base_variance": base_variance,
         "alpha_variance_modifier": alpha_variance_modifier,
         "energy_gamma": energy_gamma,

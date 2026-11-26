@@ -215,7 +215,8 @@ Who takes part in step 4 differs:
   line, at that instant. The pads go in the order the drones landed.
 - **Charging:** 300 s on the pad (100 s until 2026-11-25). In swarm the base broadcasts every second, while a
   drone is on the ground, the drones charging (id, time the charge started, battery) and
-  the drones of the waiting room (id, time they landed, battery). Before, each charging
+  the drones of the waiting room (id, time their charge will start, battery, worked out by
+  the base). Before, each charging
   swarm drone broadcast its own charging notification.
 - **After the charge:** full battery, MAPPING, and the drone chooses a cell.
 - **Death:** at ≤ 10% the drone is DEAD. It stops where it is and from then on only
@@ -279,7 +280,7 @@ description, the checks and the references are in
   recharge always takes 300 s whatever the battery, so returning late is the right goal.
   The pads are hard here too: a drone sent to a full base (no free slot before its
   deadline) waits landed, and the scheduler books the drones of the waiting room at the
-  moment a pad frees for them (`world.waiting_room_starts`). The world reads the pads
+  moment a pad frees for them (the base's `waiting_room_starts`). The world reads the pads
   from the base node's own bookkeeping, as the oracle it is.
 - **4 genes.** The coverage genes are kept. The base attraction `κ`, the genes `a`, `b`,
   `c` and `charge_margin` are gone.

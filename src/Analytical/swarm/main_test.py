@@ -41,7 +41,6 @@ NUMBER_OF_DRONES = 10
 ##### The individual filled in by hand, one gene per line in the GENE_BOUNDS order of main.py.  #####
 ##### --hand-tuned runs it instead of the GA logbooks, here and in all_tests_distance.py,        #####
 ##### multiple_runs.py and run_all_tests_with_multiple_runs.py (plot_multiple_runs.py reads the  #####
-##### runs back with --hand-tuned too). It starts as BEST_INDIVIDUAL of main.py.                 #####
 HAND_TUNED_INDIVIDUAL = [
     1.0,   # base_variance, between 0.25 and 100. Same kernel in every system so they compare fairly (2026-11-24). 4.0 was tuned on swarm alone and gives any system ~-8% steady uncertainty
     1.0,   # alpha_variance_modifier, between 0 and 100. Same kernel in every system so they compare fairly (2026-11-24)
@@ -70,8 +69,6 @@ RECORDING_FILE = "test_recording.pkl"
 ##### What made a drone choose the base, abort or die, from the event the protocol was #####
 ##### handling when its status changed. See SimulationRecorder.record_return_event.     #####
 TIMER_TRIGGERS = {"mobility": "own", "recharge_done": "after_recharge", "battery_check": "battery"}
-##### Since 2026-11-24 the base broadcasts who is on the ground, in place of the charging drones' own  #####
-##### notification: the trigger keeps its name, so the older recordings plot the same                 #####
 MESSAGE_TRIGGERS = {"GOSSIPING_MESSAGE": "encounter",
                     "SHARE_GOTO_POSITION_MESSAGE": "sent",
                     "CHARGING_NOTIFICATION_MESSAGE": "charging_notification",

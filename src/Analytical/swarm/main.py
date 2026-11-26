@@ -35,17 +35,15 @@ DRONE_SPEED = 15.0  # cruise speed, m/s. Also the speed limit of the mobility ha
 DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility handler, m/s^2 (3.0 before 2026-11-24)
 
 ##### Fixed protocol parameters, not tuned 
-DISCHARGE_RATE = 0.00067  # measured 2026-11-23 after the battery plugin body-frame fix: 0.000665-0.000667 per second, cruising at 15 m/s with the random air speed, the same along x and y (0.00073 before the fix). Still valid with the air speed held 60 s (2026-11-24, protocol.py): same N(0, 4) distribution, so the same mean drain
-CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
+DISCHARGE_RATE = 0.00067  # measured after the battery plugin body-frame fix: 0.000665-0.000667 per second, cruising at 15 m/s with the random air speed,
+CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning and other tests draws one per run, see sample_base_position
+TIME_TO_RECHARGE = 300  # s a drone charges on a pad. Given to the drones and to the base, so both use the same
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
 INITIAL_UNCERTAINTY = 10.0  # uncertainty of every cell at t=0, the first sweep of the map weighs less in the cost
-MIN_CHARGE_MARGIN = 0.15  # fraction of battery for going near the base of recharging. Floor of the swarm margin: 0.10 below the hand-tuned 0.25, so a and c can delay the return (2026-11-24)
+MIN_CHARGE_MARGIN = 0.15  # fraction of battery for going near the base of recharging. 
 
 ##### Cost weights, every term is integrated over time.
-##### UNCERTAINTY_WEIGHT was 0.01 on the 50x50 map at 10 m/s. On 100x100 at 15 m/s the accumulated #####
-##### uncertainty of BEST_INDIVIDUAL is 13.9x larger (GA aggregate, 3 seeds x sizes 3/5/7/10), so the  #####
-##### weight is divided by it: the uncertainty term keeps its old size next to the penalties.         #####
 UNCERTAINTY_WEIGHT = 0.00072          # cost per unit of global uncertainty per simulated second
 DEAD_DRONE_PENALTY = 1000.0           # cost per dead drone per simulated second
 CHARGING_CONGESTION_PENALTY = 30.0    # K of congestion_penalty_rate, cost per simulated second
@@ -55,9 +53,7 @@ COST_TERMS = ("uncertainty", "dead", "charging")  # the terms summed into the co
 ##### How often the global map is assembled and sampled, in simulated seconds. 
 GLOBAL_MAP_SAMPLE_INTERVAL = 1.0
 
-##### The base node broadcasts the drones charging and waiting every second (recharge_base.py): #####
-##### the swarm drones count the drones on the ground with it. It replaces the charging         #####
-##### notification each charging drone broadcast itself (until the base node, 2026-11-24).       #####
+##### The base node broadcasts the drones charging and waiting every second (recharge_base.py): 
 BROADCAST_BASE = True
 
 ##### GA genome layout: (name, low, high), in the order the individual stores them.
@@ -75,7 +71,7 @@ GENE_BOUNDS = [
     ("charge_margin", MIN_CHARGE_MARGIN, 0.5),  
 ]
 
-##### GA parameters (mode "train") #####
+##### GA parameters (mode "train")
 POPULATION_SIZE = 50
 NUMBER_OF_GENERATIONS = 20
 CROSSOVER_PROBABILITY = 0.8
@@ -86,9 +82,7 @@ TRAINING_DRONE_COUNTS = (3, 5, 7, 10)  # swarm sizes each individual is evaluate
 BASE_POSITION_SIGMA = 333.0  # std deviation of the base around the map centre, m. 3 sigma reaches the map border
 GA_LOGBOOK_FILE = "ga_logbook.txt"
 
-##### Test parameters (mode "test") #####
-##### Individual found by the GA tuning. Placeholder: the protocol defaults,
-##### in the GENE_BOUNDS order. Replace after a real tuning run.
+##### Test parameters (mode "test") 
 BEST_INDIVIDUAL =  [94.15, 93.66, 30.95, 0.02, 292.09, 3.42, 8.16, 4.82, 0.49]
 
 
@@ -368,6 +362,7 @@ def create_and_run_simulation(individual, mode: str = "train",
         map_height=MAP_HEIGHT,
         drone_speed=DRONE_SPEED,
         drone_max_acceleration=DRONE_MAX_ACCELERATION,
+        time_to_recharge=TIME_TO_RECHARGE,
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
         charging_base_position=charging_base_position,
@@ -381,21 +376,20 @@ def create_and_run_simulation(individual, mode: str = "train",
         seed=seed
     )
 
-    ##### The drones take off from the recharge base #####
+    ##### The drones take off from the recharge base 
     for _ in range(number_of_drones):
         builder.add_node(ConfiguredDrone, (charging_base_position[0], charging_base_position[1], 0))
 
-    ##### The base is a node (since 2026-11-24), added after the drones so they keep the ids     #####
-    ##### 0..number_of_drones-1. It owns the pads and the waiting room. BROADCAST_BASE: see      #####
-    ##### recharge_base.py                                                                        #####
-    builder.add_node(recharge_base_factory(int(number_of_drones/3), broadcast=BROADCAST_BASE, mode=mode),
+    ##### The base is also a node, added after the drones so they keep the ids     
+    ##### 0..number_of_drones-1. It owns the pads and the waiting room.
+    builder.add_node(recharge_base_factory(int(number_of_drones/3), TIME_TO_RECHARGE, broadcast=BROADCAST_BASE, mode=mode),
                      (charging_base_position[0], charging_base_position[1], BASE_ANTENNA_ALTITUDE))
 
     # Building & starting
     simulation = builder.build()
 
     global_map = GlobalMapMonitor(simulation, number_of_drones, sample_interval)
-    ##### For the reports: the base node itself, its pads and the waits of the run #####
+    ##### For the reports: the base node itself, its pads and the waits of the run 
     global_map.recharge_base = simulation.get_node(base_node_id(number_of_drones)).protocol_encapsulator.protocol
     observers = [global_map.sample]
     if observer_factory is not None:

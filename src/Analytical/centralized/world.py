@@ -47,8 +47,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .recharge_base import waiting_room_starts
-
 
 @dataclass(frozen=True)
 class ChargingSlot:
@@ -350,18 +348,8 @@ class CentralizedWorld:
             elif drone.status == going:
                 straight = now + self.flight_time_to_base(drone) - self.APPROACH_EXTRA_TIME
                 starts.append(max(self.planned_arrival.get(drone_id, straight), straight))
-        return starts + self.waiting_room_starts(now)
-
-    def waiting_room_starts(self, now: float) -> list:
-        """
-        When the drones of the waiting room will start charging (since 2026-11-24, see
-        recharge_base.py). They take the pads in the order they landed, each one as soon as
-        a pad frees: at the end of a charge on the base, or of a charge of the waiting room
-        before it. The start is never before now.
-        """
-        charging_starts = [start for start, _ in self.base.charging.values()]
-        return waiting_room_starts(charging_starts, len(self.base.waiting), self.base.pads,
-                                   self.time_to_recharge, now)
+        ##### The drones of the waiting room, when the base will give them a pad #####
+        return starts + self.base.waiting_room_starts(now)
 
     def plan(self, now: float) -> dict:
         """The ChargingSlot of every MAPPING drone, from the true state at now, see plan_charging."""
