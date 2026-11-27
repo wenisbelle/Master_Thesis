@@ -38,6 +38,18 @@ def _read(reader, protocol):
         return float("nan")
 
 
+def _margin_now(protocol, margin_method):
+    """
+    The margin the drone would use if it decided now: margin_method of its FitnessEvaluator
+    ("base_charge_margin" or "cell_charge_margin"), with its own battery and its own
+    estimate of the swarm.
+    """
+    return getattr(protocol.fitness, margin_method)(
+        protocol.battery.battery_status,
+        *protocol.aproximate_battery_consumption_model(protocol.swarm_battery_status,
+                                                       protocol.provider.current_time()))
+
+
 class SimulationRecorder:
     ##### Per-drone scalars sampled on every snapshot. The plots look them up #####
     ##### by these names, so a new variable only has to be added here to      #####
@@ -49,19 +61,23 @@ class SimulationRecorder:
         "accomulated_uncertainty": lambda p: p.accomulated_uncertainty,
         "visited_cells": lambda p: p.is_cell_visited.sum(),
         "distance": lambda p: p.total_distance_traveled,
-        ##### Effective margin of recharge_base_fitness: the reserve the drone would #####
-        ##### keep if it decided now, from its own estimate of the swarm. The drone  #####
-        ##### only uses it while MAPPING, the plots leave the other states out.     #####
-        "charge_margin": lambda p: p.fitness.charge_margin(
-            p.battery.battery_status,
-            *p.aproximate_battery_consumption_model(p.swarm_battery_status,
-                                                    p.provider.current_time())),
+        ##### Effective margins if the drone decided now, from its own estimate of the #####
+        ##### swarm. The drone only uses them while MAPPING, the plots leave the other #####
+        ##### states out.                                                              #####
+        #####   charge_margin       base margin, recharge_base_fitness (Eq. 15). The   #####
+        #####                       key kept its old name, so the plots and the older  #####
+        #####                       recordings still match                             #####
+        #####   cell_charge_margin  cells margin, energy_effect (Eqs. 13-14), since    #####
+        #####                       2026-11-26                                         #####
+        "charge_margin": lambda p: _margin_now(p, "base_charge_margin"),
+        "cell_charge_margin": lambda p: _margin_now(p, "cell_charge_margin"),
     }
 
     ##### Constants of the run, drawn as reference lines. Read once from the #####
     ##### protocol that ran, so they match it even if the defaults change.   #####
     PARAMETERS = {
-        "charge_margin": lambda p: p.fitness.CHARGE_MARGIN,
+        "charge_margin": lambda p: p.fitness.BASE_CHARGE_MARGIN,       # tuned base margin, old key name
+        "cell_charge_margin": lambda p: p.fitness.CELL_CHARGE_MARGIN,  # tuned cells margin
         "min_charge_margin": lambda p: p.fitness.MIN_CHARGE_MARGIN,
         "Nc_charging_base": lambda p: p.fitness.Nc_CHARGING_BASE,
         ##### The constants of the battery model the drones decide with #####
@@ -84,15 +100,17 @@ class SimulationRecorder:
     #####   belief_status    status of j in the row (DroneStatus value), DEAD included      #####
     BELIEFS = ("belief_battery", "belief_charging", "belief_age", "belief_status")
 
-    ##### Inputs of the swarm and congestion terms of charge_margin, (T,) per drone: the  #####
+    ##### Inputs of the swarm and congestion terms of the margins, (T,) per drone: the  #####
     ##### mean battery of the other drones alive and how many of them are on the base   #####
     ##### (charging or waiting, since 2026-11-24), as                                    #####
     ##### the drone estimates them (what it decides with) and as they really are, and   #####
-    ##### the margin each pair gives. The true values are computed like               #####
+    ##### the margins each pair gives: charge_margin_* is the base margin (old name),   #####
+    ##### cell_charge_margin_* the cells margin. The true values are computed like      #####
     ##### aproximate_battery_consumption_model does, from the real state of the drones. #####
     SWARM_TERMS = ("mean_battery_estimate", "mean_battery_true",
                    "drones_charging_estimate", "drones_charging_true",
-                   "charge_margin_estimate", "charge_margin_true")
+                   "charge_margin_estimate", "charge_margin_true",
+                   "cell_charge_margin_estimate", "cell_charge_margin_true")
 
     def __init__(self, simulation, num_drones, map_width, map_height, distance_between_cells,
                  status_labels=None):
@@ -182,9 +200,13 @@ class SimulationRecorder:
             "drones_charging_estimate": float(charging_estimate),
             "drones_charging_true": float(charging_true),
             "charge_margin_estimate": _read(
-                lambda p: p.fitness.charge_margin(own_battery, mean_estimate, charging_estimate), protocol),
+                lambda p: p.fitness.base_charge_margin(own_battery, mean_estimate, charging_estimate), protocol),
             "charge_margin_true": _read(
-                lambda p: p.fitness.charge_margin(own_battery, mean_true, charging_true), protocol),
+                lambda p: p.fitness.base_charge_margin(own_battery, mean_true, charging_true), protocol),
+            "cell_charge_margin_estimate": _read(
+                lambda p: p.fitness.cell_charge_margin(own_battery, mean_estimate, charging_estimate), protocol),
+            "cell_charge_margin_true": _read(
+                lambda p: p.fitness.cell_charge_margin(own_battery, mean_true, charging_true), protocol),
         }
 
     def snapshot(self, time=None):

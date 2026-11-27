@@ -193,10 +193,10 @@ class Drone(IProtocol):
         self.CHARGING_BASE_POSITION = self._config["charging_base_position"]
 
         self.BASE_NODE_ID = base_node_id(self.NUMBER_OF_DRONES)
-        self.CELLS_CHARGE_MARGIN = self._config["cells_charge_margin"]
-        self.A_CELLS_MODIFIER = self._config["a_cells_modifier"]
-        self.B_CELLS_MODIFIER = self._config["b_cells_modifier"]
-        self.C_CELLS_MODIFIER = self._config["c_cells_modifier"]
+        self.CELL_CHARGE_MARGIN = self._config["cells_charge_margin"]
+        self.A_CELL_MODIFIER = self._config["a_cells_modifier"]
+        self.B_CELL_MODIFIER = self._config["b_cells_modifier"]
+        self.C_CELL_MODIFIER = self._config["c_cells_modifier"]
         self.BASE_CHARGE_MARGIN = self._config["base_charge_margin"]
         self.A_BASE_MODIFIER = self._config["a_base_modifier"]
         self.B_BASE_MODIFIER = self._config["b_base_modifier"]
@@ -269,11 +269,15 @@ class Drone(IProtocol):
                                         charging_base_multiplier=self.CHARGING_BASE_MULTIPLIER,
                                         distance_between_drone_norm=self.DISTANCE_BETWEEN_DRONE_NORM,
                                         kernel_n_sigma=self.KERNEL_N_SIGMA,
-                                        a_battery_modifier=self.A_BASE_MODIFIER,
-                                        b_battery_modifier=self.B_BASE_MODIFIER,
-                                        c_battery_modifier=self.C_BASE_MODIFIER,
-                                        discharge_rate=self.DISCHARGE_RATE,
-                                        charge_margin =self.BASE_CHARGE_MARGIN,
+                                        a_base_modifier=self.A_BASE_MODIFIER,
+                                        b_base_modifier=self.B_BASE_MODIFIER,
+                                        c_base_modifier=self.C_BASE_MODIFIER,
+                                        base_charge_margin =self.BASE_CHARGE_MARGIN,
+                                        a_cell_modifier=self.A_CELL_MODIFIER,
+                                        b_cell_modifier=self.B_CELL_MODIFIER,
+                                        c_cell_modifier=self.C_CELL_MODIFIER,
+                                        cell_charge_margin =self.CELL_CHARGE_MARGIN,
+                                        discharge_rate=self.DISCHARGE_RATE,                                        
                                         min_charge_margin = self.MIN_CHARGE_MARGIN,
                                         Nc_charging_base=self.Nc_CHARGING_BASE,
                                         number_of_cells_x_y =self.CELLS_EVALUETED_FOR_PRIORITY,
