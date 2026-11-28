@@ -9,7 +9,7 @@ import base64
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
-from .recharge_base import BaseMessageType, base_node_id, send_landed, send_take_off
+from .recharge_base import charge_duration, BaseMessageType, base_node_id, send_landed, send_take_off
 
 from gradysim.protocol.interface import IProtocol
 from gradysim.simulator.handler.mobility.dynamic_velocity.telemetry import DynamicVelocityTelemetry
@@ -124,7 +124,9 @@ class Drone(IProtocol):
         "map_height": 10,
         "drone_speed": 10.0,  # cruise speed, m/s
         "drone_max_acceleration": 10.0,  # horizontal acceleration limit of the mobility handler, m/s^2
-        "time_to_recharge": 300.0,  # s a charge lasts on a pad, TIME_TO_RECHARGE of main.py
+        ##### A charge lasts recharge_fixed_time + (1 - battery) * recharge_time_per_battery s, see charge_duration #####
+        "recharge_fixed_time": 100.0,
+        "recharge_time_per_battery": 300.0,
         ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this #####
         ##### is in cells^2: 1.0 == one cell spacing, not one metre.               #####
         'base_variance': 4.0,
@@ -162,8 +164,10 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
-        ##### How long a charge lasts on a pad, TIME_TO_RECHARGE of main.py #####
-        self.TIME_TO_RECHARGE = self._config["time_to_recharge"]
+        ##### How long a charge lasts on a pad: charge_duration of the battery it starts with, from the  #####
+        ##### RECHARGE_FIXED_TIME and RECHARGE_TIME_PER_BATTERY of main.py, the same the base gets        #####
+        self.RECHARGE_FIXED_TIME = self._config["recharge_fixed_time"]
+        self.RECHARGE_TIME_PER_BATTERY = self._config["recharge_time_per_battery"]
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -486,18 +490,24 @@ class Drone(IProtocol):
         updated_map = self.compare_maps(decode_map(gossiping_msg['map'], self.map.shape))
         return updated_map
 
+    def charge_duration(self, battery: float) -> float:
+        """How long a charge started with this battery lasts, see recharge_base.charge_duration."""
+        return charge_duration(battery, self.RECHARGE_FIXED_TIME, self.RECHARGE_TIME_PER_BATTERY)
+
     def start_charging(self) -> None:
         """
-        The drone is on a pad: it charges for TIME_TO_RECHARGE, then "recharge_done" takes it
+        The drone is on a pad: it charges for charge_duration of its battery, then "recharge_done" takes it
         off. Called when the base gives it a pad (PAD_MESSAGE): at once on a free pad, or when
         its turn in the waiting room comes.
         """
+        ##### The battery does not change on the ground, it is the one the drone landed with #####
+        duration = self.charge_duration(self.battery.battery_status)
         self.status = DroneStatus.CHARGING
 
         if self.VERBOSE:
-            self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} is on a pad and is recharging for {self.TIME_TO_RECHARGE}")
+            self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} is on a pad and is recharging for {duration:.0f} s")
 
-        self.provider.schedule_timer("recharge_done", self.provider.current_time() + self.TIME_TO_RECHARGE)
+        self.provider.schedule_timer("recharge_done", self.provider.current_time() + duration)
 
     def handle_timer(self, timer: str) -> None:
         
@@ -759,7 +769,8 @@ def drone_protocol_factory(
     map_height: int,
     drone_speed: float,                  # fixed, m/s
     drone_max_acceleration: float,       # fixed, m/s^2
-    time_to_recharge: float,             # fixed, s
+    recharge_fixed_time: float,          # fixed, s every charge lasts at least
+    recharge_time_per_battery: float,    # fixed, s more for a whole battery missing
     base_variance: float,                # tunable, in cells^2
     alpha_variance_modifier: float,      # tunable
     distance_between_drone_norm: float,  # tunable
@@ -791,7 +802,8 @@ def drone_protocol_factory(
         "map_height": map_height,
         "drone_speed": drone_speed,
         "drone_max_acceleration": drone_max_acceleration,
-        "time_to_recharge": time_to_recharge,
+        "recharge_fixed_time": recharge_fixed_time,
+        "recharge_time_per_battery": recharge_time_per_battery,
         "base_variance": base_variance,
         "alpha_variance_modifier": alpha_variance_modifier,
         "distance_between_drone_norm": distance_between_drone_norm,

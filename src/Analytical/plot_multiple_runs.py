@@ -25,6 +25,14 @@ Plots the runs multiple_runs.py wrote, for one or more systems, in two figures:
       wait: it shows how often every pad is taken and how long the line gets.
   The intervals are 95% percentile bootstraps of the mean over the runs: they narrow
   as runs are added, the spread between runs (b) does not.
+- Drones mapping (since 2026-11-27): the drones neither on the base nor dead, the service the
+  swarm delivers. The mean uncertainty follows the mean number in the air, but the same mean
+  can be delivered steadily or in waves. (a) in time, the mean in windows of --window seconds;
+  (b) the shortfall, the share of the time with at most k drones mapping, for every k, on a log
+  scale; (c) how constant it is, the standard deviation in time of the number mapping, a dot
+  per run, paired run by run with a Wilcoxon test when seeded alike. (b) and (c) take the time
+  from --steady-state on. GOING_TO_BASE is not logged apart: a drone flying to the base counts
+  as mapping, its camera still sees the cells on the way.
 - Time between two visits of a cell, by the distance from the cell to its nearest base,
   in bins of --distance-bin metres (see multiple_runs.RevisitMonitor for what a visit is):
   the mean (line) and one standard deviation around it (band), over every revisit of the
@@ -552,6 +560,146 @@ def plot_on_base_at_once(ax, loaded):
     ax.legend(loc="upper right", fontsize=8, frameon=False, handlelength=3.5)
 
 
+def drones_mapping(data, series):
+    """
+    Drones mapping at every sample of a run: the drones neither on the base (charging or waiting)
+    nor dead. The runs do not log GOING_TO_BASE apart, so a drone flying to the base is counted
+    as mapping: its camera still sees the cells under it on the way.
+    """
+    on_base = series["charging"] + (series["waiting"] if "waiting" in series else 0)
+    return data["config"]["drones"] - on_base - series["dead"]
+
+
+def plot_mapping(loaded, window, steady_state):
+    """
+    How many drones are mapping, the service the swarm delivers. The mean uncertainty follows
+    the mean number of drones in the air, but two systems with the same mean can deliver it
+    differently: always N - 2, or N most of the time and N - 4 in the recharge waves.
+      (a) in time: the mean number mapping in windows of window seconds, mean over the runs;
+      (b) the shortfall: the share of the time with at most k drones mapping, for every k;
+      (c) how constant it is: the standard deviation in time of the number mapping, a dot per
+          run, paired run by run (Wilcoxon) when seeded alike.
+    (b) and (c) only take the time from steady_state on.
+    """
+    fig = plt.figure(figsize=(10, 7.5), constrained_layout=True)
+    layout = fig.add_gridspec(2, 2, height_ratios=(1, 1.25), width_ratios=(1.35, 1))
+    ax_time, ax_short, ax_runs = (fig.add_subplot(layout[0, :]), fig.add_subplot(layout[1, 0]),
+                                  fig.add_subplot(layout[1, 1]))
+    drones = max(data["config"]["drones"] for data in loaded.values())
+    counts = np.arange(drones)
+    jitter = np.random.default_rng(JITTER_SEED)
+    variability = {}
+    for index, (system, data) in enumerate(loaded.items()):
+        style = SYSTEM_STYLES[system]
+        dt = data["config"]["sample_interval"]
+        mapping = np.array([drones_mapping(data, series) for series in data["series"]], dtype=float)
+        steady = data["grid"] >= steady_state
+
+        ##### (a) In time #####
+        share, edges = windowed(mapping, data["grid"], dt, window)
+        mean, low, high = bootstrap_mean(share)
+        whole, whole_low, whole_high = bootstrap_mean(mapping[:, steady].mean(axis=1))
+        ax_time.fill_between(edges, np.r_[low, low[-1]], np.r_[high, high[-1]], step="post",
+                             color=style["color"], alpha=BAND_ALPHA, lw=0)
+        ax_time.step(edges, np.r_[mean, mean[-1]], where="post", color=style["color"], ls=style["ls"], lw=1.4,
+                     label=f"{system}, {len(data['runs'])} runs, {whole:.2f} mapping on average")
+
+        ##### (b) The shortfall: share of the time with at most k drones mapping #####
+        at_most = 100.0 * np.array([[np.mean(run[steady] <= k) for k in counts] for run in mapping])
+        short, short_low, short_high = bootstrap_mean(at_most)
+        seen = short > 0
+        offset = (index - (len(loaded) - 1) / 2) * 0.12
+        ax_short.errorbar(counts[seen] + offset, short[seen],
+                          yerr=[(short - short_low)[seen], (short_high - short)[seen]],
+                          marker=style["marker"], ls=style["ls"], color=style["color"], ms=5, lw=1.2, capsize=2,
+                          label=system)
+
+        ##### (c) How constant: the standard deviation in time of each run #####
+        spread_in_time = mapping[:, steady].std(axis=1)
+        variability[system] = {record["run"]: float(value) for record, value in zip(data["runs"], spread_in_time)}
+        line = {"color": style["color"], "lw": 1.0}
+        ax_runs.boxplot(spread_in_time, positions=[index], widths=0.45, showfliers=False, boxprops=line,
+                        whiskerprops=line, capprops=line, medianprops={"color": style["color"], "lw": 2.0})
+        ax_runs.scatter(index + jitter.uniform(-0.13, 0.13, len(spread_in_time)), spread_in_time,
+                        marker=style["marker"], s=16, color=style["color"], alpha=0.55, lw=0, zorder=3)
+        spread_mean, spread_low, spread_high = bootstrap_mean(spread_in_time)
+        ax_runs.errorbar(index + 0.36, spread_mean, yerr=[[spread_mean - spread_low], [spread_high - spread_mean]],
+                         fmt="o", color="black", ms=4, capsize=3, lw=1.0, zorder=4)
+
+        since = f" from {steady_state:g} s" if steady_state > 0 else ""
+        nc = min(pads(data))
+        print(f"{system}: {whole:.3f} drones mapping on average{since}, {CONFIDENCE}% interval "
+              f"[{whole_low:.3f}, {whole_high:.3f}] over {len(mapping)} runs; std in time {spread_mean:.3f} "
+              f"[{spread_low:.3f}, {spread_high:.3f}]")
+        print(f"{system}: share of the time{since} with at most k drones mapping: "
+              + ", ".join(f"k={k} {short[k]:.2f}%" for k in counts if short[k] > 0)
+              + f" (at most {drones - nc - 1}: some drone waiting or dead)")
+
+    ##### (a) #####
+    for data in loaded.values():
+        nc = min(pads(data))
+        n = data["config"]["drones"]
+        ax_time.axhline(n - nc, color="0.35", ls=":", lw=1.0)
+        ax_time.text(0.995, n - nc, f"{n} - {nc}: every pad taken, nobody waiting ", ha="right", va="bottom",
+                     fontsize=7, color="0.35", transform=ax_time.get_yaxis_transform(), zorder=5,
+                     bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0})
+        break
+    if steady_state > 0:
+        ax_time.axvspan(0, steady_state, color=OVER_CAPACITY_COLOR, lw=0, zorder=0)
+        ax_time.text(steady_state / 2, 0.02, "left out\nof (b), (c)", transform=ax_time.get_xaxis_transform(),
+                     ha="center", va="bottom", fontsize=7, color="0.35")
+    ax_time.set_xlim(0, max(data["config"]["duration"] for data in loaded.values()))
+    ax_time.set_ylim(top=drones + 0.2)
+    ax_time.set_xlabel("time (s)")
+    ax_time.set_ylabel("drones mapping")
+    ax_time.set_title(f"(a) In time: mean number of drones mapping in {window:g} s windows (mean over the runs, "
+                      f"{CONFIDENCE}% bootstrap interval)", loc="left", fontsize=9)
+    ax_time.grid(True, **GRID)
+    ax_time.legend(loc="lower right", fontsize=8, frameon=False, handlelength=3.5)
+
+    ##### (b) #####
+    nc = sorted({count for data in loaded.values() for count in pads(data)})
+    ax_short.axvspan(-0.5, drones - nc[0] - 0.5, color=OVER_CAPACITY_COLOR, lw=0, zorder=0)
+    ax_short.text(-0.4, 0.97, "shaded: some drone waits\nfor a pad (or is dead)",
+                  transform=ax_short.get_xaxis_transform(), ha="left", va="top", fontsize=7)
+    ax_short.set_yscale("log")
+    ax_short.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+    ax_short.set_xticks(counts)
+    ax_short.set_xlim(-0.5, drones - 0.5)
+    ax_short.set_xlabel("at most k drones mapping")
+    ax_short.set_ylabel("time with at most k mapping\n(% of the run, log scale)")
+    ax_short.set_title("(b) Shortfall: how often the service drops to k or fewer"
+                       + (f", from {steady_state:g} s" if steady_state > 0 else ""), loc="left", fontsize=9)
+    ax_short.grid(True, axis="y", which="major", **GRID)
+    ax_short.set_axisbelow(True)
+    ax_short.legend(loc="lower right", fontsize=8, frameon=False, handlelength=3.5)
+
+    ##### (c) #####
+    title = "(c) How constant: std in time of\nthe drones mapping, each run" + (
+        f", from {steady_state:g} s" if steady_state > 0 else "")
+    test = paired_test({system: (loaded[system]["config"]["seed"], per_run) for system, per_run in variability.items()})
+    if test is not None:
+        p_value, pairs = test
+        compared = ("paired Wilcoxon " + ("p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}")
+                    + f", {pairs} runs")
+        title += "\n" + compared
+        print(f"{' vs '.join(variability)}, std in time of the drones mapping: {compared}")
+    ax_runs.set_xlim(-0.6, len(variability) - 0.4)
+    ax_runs.set_xticks(range(len(variability)))
+    ax_runs.set_xticklabels([system.replace("/", "/\n") for system in variability], fontsize=8)
+    ax_runs.set_ylim(bottom=0)
+    ax_runs.set_ylabel("std in time of the drones mapping")
+    ax_runs.set_title(title, loc="left", fontsize=9)
+    ax_runs.grid(True, axis="y", **GRID)
+    ax_runs.set_axisbelow(True)
+    ax_runs.legend(handles=[Line2D([], [], marker="o", ls="none", color="0.45", alpha=0.55, ms=4, label="one run"),
+                            Line2D([], [], marker="o", ls="none", color="black", ms=4,
+                                   label=f"mean, {CONFIDENCE}% interval")],
+                   loc="lower left", fontsize=7, frameon=False, handletextpad=0.3)
+    fig.suptitle(f"Drones mapping over the runs, {scenario(loaded)}")
+    return fig
+
+
 def revisit_by_distance(runs, distances, distance_bin, bins):
     """
     Per distance bin, over every revisit of every run: the mean and the std deviation of
@@ -821,8 +969,8 @@ if __name__ == "__main__":
                         help="directory of the runs, relative to each system directory "
                              "(default: multiple_runs/<range>/<drones>)")
     parser.add_argument("--window", type=float, default=WINDOW,
-                        help="width of the windows the probability of a drone waiting for a pad is "
-                             "estimated in, in s (default: %(default)s)")
+                        help="width of the windows the probability of a drone waiting for a pad, and the "
+                             "mean number of drones mapping, are estimated in, in s (default: %(default)s)")
     parser.add_argument("--distance-bin", type=float, default=DISTANCE_BIN,
                         help="width of the bins of distance to the base the time between two visits "
                              "is grouped in, in m (default: %(default)s)")
@@ -836,12 +984,13 @@ if __name__ == "__main__":
                         help="width of the moving average of the difference of uncertainty, in s "
                              "(default: %(default)s)")
     parser.add_argument("--steady-state", type=float, default=0.0,
-                        help="the per-run panel of the difference figure only averages from this time on, "
-                             "in s, to leave the first sweep of the map out (default: %(default)s)")
+                        help="the per-run panel of the difference figure, and panels (b) and (c) of the drones "
+                             "mapping, only take the time from this time on, in s, to leave the first sweep of "
+                             "the map out (default: %(default)s)")
     parser.add_argument("--save",
                         help="also save the figures, as <name>_uncertainty<ext>, <name>_uncertainty_difference<ext>, "
-                             "<name>_charging<ext>, <name>_revisit<ext> and <name>_revisit_difference<ext>, the "
-                             "extension sets the format (pdf, png, ...)")
+                             "<name>_charging<ext>, <name>_mapping<ext>, <name>_revisit<ext> and "
+                             "<name>_revisit_difference<ext>, the extension sets the format (pdf, png, ...)")
     args = parser.parse_args()
     if args.distance_bin <= 0:
         parser.error("--distance-bin has to be positive")
@@ -859,6 +1008,7 @@ if __name__ == "__main__":
                "uncertainty_difference": plot_uncertainty_difference(loaded, reference, args.uncertainty_window,
                                                                      args.steady_state),
                "charging": plot_charging(loaded, args.window),
+               "mapping": plot_mapping(loaded, args.window, args.steady_state),
                "revisit": plot_revisit(loaded, args.distance_bin),
                "revisit_difference": plot_revisit_difference(loaded, reference, args.distance_bin)}
     figures = {name: fig for name, fig in figures.items() if fig is not None}

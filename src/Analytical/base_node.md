@@ -53,7 +53,7 @@ the ground**: the drones charging and the drones in the waiting room.
 ```
 drone lands      ── LANDED (its battery) ──▶  base: a pad free and nobody waiting?
                  ◀── PAD ─────────────────    yes: at once. No: when its turn comes
-drone charges TIME_TO_RECHARGE (300 s) on the pad
+drone charges charge_duration(battery) on the pad
 drone takes off  ── TAKE_OFF ─────────────▶  base: the pad goes to the first drone of
                                               the waiting room, with a PAD, same instant
 
@@ -86,15 +86,20 @@ what its system uses):
     get a pad now.
   - `waiting_room_starts(now)` gives when each drone of its waiting room will start
     charging. Swarm copies and centralized only: the swarm base puts it in its
-    heartbeat, the centralized scheduler asks the base for it. It needs
-    `TIME_TO_RECHARGE`, which the base gets from `main.py` (since 2026-11-25; before,
-    the function took the charge time of the drone that called it).
+    heartbeat, the centralized scheduler asks the base for it. It needs how long each
+    charge lasts: `charge_duration(battery)` with `RECHARGE_FIXED_TIME` and
+    `RECHARGE_TIME_PER_BATTERY` from `main.py`, 100 + (1 − battery) · 300 s since
+    2026-11-27 (a flat `TIME_TO_RECHARGE` from 2026-11-25; before, the function took the
+    charge time of the drone that called it).
   - `summary` and `report` give the waits of the run to the reports.
   - `handle_packet` answers `LANDED` and `TAKE_OFF` and ignores the drones' broadcasts.
   - Swarm copies: `charging_rows` and `waiting_rows` build the heartbeat, and the
     `base_heartbeat` timer runs with `broadcast=True`.
 - `recharge_base_factory(pads, base_index, mode)`. The swarm copies and centralized take
-  `time_to_recharge` after `pads`, and the swarm copies `broadcast` too.
+  `recharge_fixed_time, recharge_time_per_battery` after `pads` (`time_to_recharge` until
+  2026-11-27), and the swarm copies `broadcast` too.
+- `charge_duration(battery, fixed_time, time_per_battery)`, in every copy: the drones
+  schedule their `recharge_done` with it, and the timed bases free their pads with it.
 - `BASE_ANTENNA_ALTITUDE = 50`.
 
 **Each `main.py`:**
@@ -102,10 +107,12 @@ what its system uses):
   (x, y, BASE_ANTENNA_ALTITUDE))`. Swarm adds `broadcast=BROADCAST_BASE` (True, and only
   the swarm `main.py` files have it). `expanding_testing` adds one node per base, with
   `PADS_PER_BASE` pads (Nc by default) and its `base_index`. Swarm and centralized
-  also give the base `TIME_TO_RECHARGE`.
-- `TIME_TO_RECHARGE` (300 s) is a constant of every `main.py` since 2026-11-25. The
-  drones get it as `time_to_recharge` in `drone_protocol_factory`, and the base gets the
-  same value where it uses it. Before, each protocol hardcoded 300.
+  also give the base `RECHARGE_FIXED_TIME` and `RECHARGE_TIME_PER_BATTERY`.
+- `RECHARGE_FIXED_TIME` (100 s) and `RECHARGE_TIME_PER_BATTERY` (300 s) are constants of
+  every `main.py` since 2026-11-27: a charge lasts 100 + (1 − battery) · 300 s. The drones
+  get them in `drone_protocol_factory`, and the base gets the same values where it uses
+  them. From 2026-11-25 it was a flat `TIME_TO_RECHARGE` (300 s); before, each protocol
+  hardcoded it.
 - After the build, the node itself goes to what reads it:
   `global_map.recharge_base = simulation.get_node(base_node_id(n)).protocol_encapsulator.protocol`
   for the reports (`global_map.recharge_bases`, one per base, in `expanding_testing`).
@@ -132,7 +139,8 @@ charging notification.
   computed it from the landing times in the heartbeat):
   - the pads free at the end of the charges on them;
   - the k-th drone in line takes the k-th pad that frees;
-  - each charge takes `TIME_TO_RECHARGE`, 300 s since 2026-11-25 (100 s before).
+  - each charge takes `charge_duration` of its battery, 100 + (1 − battery) · 300 s since
+    2026-11-27 (a flat 300 s from 2026-11-25, 100 s before).
 
   This is exact: no drone can overtake the line, and the pad passes at the take-off
   instant. The base is the one that hands the pads over, so the rule of the line is

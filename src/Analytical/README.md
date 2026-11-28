@@ -41,7 +41,7 @@ the two disagree, the code is right and this file is out of date.
 | `plot_ga_cost.py` | GA history of one range: the best cost per generation and its terms |
 | `multiple_runs.py` | Runs one system many times, with the bases drawn again on every run |
 | `run_all_tests_with_multiple_runs.py` | `multiple_runs.py` for every tuned range |
-| `plot_multiple_runs.py` | The figures over many runs: uncertainty, charging, time between visits |
+| `plot_multiple_runs.py` | The figures over many runs: uncertainty, charging, drones mapping, time between visits |
 | `estimation_decision.md` | Plan and pilot results: how good the swarm battery estimate is |
 | `waiting_room.md` | The hard base capacity and the waiting room of 2026-11-24: what changed, why, and where in the code (swarm first) |
 | `base_node.md` | The base as a node of the simulation, later the same day: the messages between the drones and the base, the base heartbeat of swarm |
@@ -106,7 +106,7 @@ nothing runs untuned. There are two exceptions:
 | Wind | Random air speed N(0, 4) m/s along the heading, each drone keeps a value for 60 s (piecewise constant). Same mean drain as before, but over 100 s of cruise 0.77–1.70× of it (p1–p99, 0.86–1.25× over 1000 s) instead of 0.94–1.08×. Until 2026-11-24 a new value every second | `SHARED_BATTERY_CONFIG`, gradysim `BatteryPowerConfiguration.random_air_speed_hold` |
 | Discharge assumed by the decisions | 0.00067 of the battery per second (measured cruising at 15 m/s with the wind, after the 2026-11-23 battery plugin fix; 0.00073 before) | `DISCHARGE_RATE` |
 | Dead | battery ≤ 10% | `DEAD_BATTERY_THRESHOLD` |
-| Recharge | 300 s on a pad, then full (100 s until 2026-11-25). On the ground, waiting or charging, the battery does not change (the battery plugin is stopped from landing to take-off, since 2026-11-24) | `TIME_TO_RECHARGE` |
+| Recharge | `100 + (1 − battery) · 300` s on a pad, with the battery it landed with, then full (since 2026-11-27; a flat 300 s from 2026-11-25, 100 s before). 325 s at 0.25. On the ground, waiting or charging, the battery does not change (the battery plugin is stopped from landing to take-off, since 2026-11-24) | `RECHARGE_FIXED_TIME`, `RECHARGE_TIME_PER_BATTERY`, `charge_duration` in each `recharge_base.py` |
 
 The drones take off from the base. The real battery drain comes from gradysim's
 `BatteryPowerPlugin`. `DISCHARGE_RATE` is only what the decisions assume. At
@@ -172,6 +172,33 @@ charge margin. If the base attracts more, the drone goes to the base
   never below `MIN_CHARGE_MARGIN` (0.15 for swarm since 2026-11-24, 0.20 before). `b` applies when the drone is below the mean of the others, `a`
   when it is above. With more drones charging, the margin drops, so the drone stays
   out longer.
+- Since 2026-11-27 the two swarm inputs are about the next pads, not the whole swarm now:
+  - the mean battery only counts the others expected to land within 2 charges at the base
+    margin (650 s with the 325 s charge at 0.25, `swarm_window_recharges`) from now, so `b` leads the lowest of the drones about to
+    land and `a` holds back the others of that group;
+  - `charging` counts the others expected on the base when the drone would land if it went
+    now (now + its own flight time to the base), and only the ones known to be there or on
+    their way (rows CHARGING, WAITING or GOING_TO_BASE). A drone that leaves before it lands
+    frees its pad.
+  At an encounter each drone of the pair gets its own inputs.
+- Early pull (2026-11-27): the margin also rises by `c` (one place in line, a charge `/ Nc`
+  of waiting, ≈ 0.05 of battery) when going to the base now saves the drone a wait:
+  - its natural landing is when its battery reaches the unshifted `base_charge_margin`. The energy
+    to fly home drains like the mapping, so that time does not depend on where it will decide
+    (egocentric, fixed margin: 0.220 ± 0.004 at landing from anywhere on the map);
+  - rank rule: it is pulled only if it is the first drone that would wait at its natural landing,
+    so exactly `Nc` others are expected on the base then, all landed before it (first come, first
+    served, a tie goes to the lower id). With more, an earlier drone would already wait;
+  - a pad is expected free if it went now, and the natural landing is within the swarm window;
+  - both instants count the guessed landings of MAPPING rows too, so the difference is not biased.
+    The positions of the others are not known, so the rank comes from the predicted landings;
+  - a drone sent to the base by its pull is committed (`committed_to_base`) while a pad is still
+    expected free when it lands, from the drones known to be on the base or on their way
+    (`pull_still_holds`): news from the base, an encounter or a command sent by another drone
+    do not send it back while the pull holds. Without it, 2 of 4 aborted pulls turned back with a
+    pad still free, because the rank rule flipped. When the base turns out full, the commitment
+    ends and the drone decides again (with `c`, it goes back to mapping if its battery allows).
+    At an encounter the pull of the other drone travels in the goto message (`early_pull`).
 
 ### Encounters
 
@@ -213,7 +240,7 @@ Who takes part in step 4 differs:
   CHARGING. Otherwise the drone stays in the waiting room until the base sends it `PAD`:
   at take-off a drone sends `TAKE_OFF`, and the base gives its pad to the first drone in
   line, at that instant. The pads go in the order the drones landed.
-- **Charging:** 300 s on the pad (100 s until 2026-11-25). In swarm the base broadcasts every second, while a
+- **Charging:** `100 + (1 − battery) · 300` s on the pad (since 2026-11-27; a flat 300 s from 2026-11-25, 100 s before). In swarm the base broadcasts every second, while a
   drone is on the ground, the drones charging (id, time the charge started, battery) and
   the drones of the waiting room (id, time their charge will start, battery, worked out by
   the base). Before, each charging
@@ -225,9 +252,13 @@ Who takes part in step 4 differs:
 **Swarm battery estimate** (`estimate_drone_battery`). From the last row heard
 about each drone, a swarm drone projects that drone forward. It assumes the drone:
 - flies at `DISCHARGE_RATE`;
-- goes to the base when it reaches `MIN_CHARGE_MARGIN` (if it was MAPPING), or after the mean
-  flight time to the base (if it was GOING_TO_BASE);
-- charges for `TIME_TO_RECHARGE` (300 s) and comes back full, with the same cycle repeating.
+- goes to the base when it reaches the tuned `base_charge_margin`, without the swarm and
+  congestion shifts (if it was MAPPING), or after the mean flight time to the base (if it was
+  GOING_TO_BASE). Until 2026-11-27 it was `MIN_CHARGE_MARGIN`, the floor: the drones really go
+  home well above it (0.27–0.32 at landing, 12 drones), so the recharges were predicted several
+  hundred seconds late. A drone seen MAPPING already below `base_charge_margin` is being held
+  out by its shifts, so it is assumed to go home at `MIN_CHARGE_MARGIN`;
+- charges for `charge_duration` of the battery it lands with and comes back full, with the same cycle repeating.
 
 A drone the base lists in its waiting room gets a WAITING row: its battery at landing,
 and the time its charge will start. The drone works that time out from the heartbeat
@@ -235,9 +266,10 @@ and the time its charge will start. The drone works that time out from the heart
 because the base hands the pads over in landing order the instant they free. Until
 then the waiting drone's battery is constant.
 
-This gives the mean battery of the others and how many are on the base, charging or
-waiting (the `N` of the congestion term, so `N + 1 − Nc` is the waiting room the drone
-would make). Known-dead drones are left out. `estimation_decision.md` measures how far off this estimate is.
+This gives the mean battery of the others expected to land within the swarm window, and how
+many are on the base, charging or waiting, when the drone would land (the `N` of the
+congestion term, so `N + 1 − Nc` is the waiting room the drone would make, see the charge
+margin above). Known-dead drones are left out. `estimation_decision.md` measures how far off this estimate is.
 
 ### Swarm vs egocentric, in one table
 
@@ -277,7 +309,9 @@ description, the checks and the references are in
   the base at once. It works backwards from the latest deadline, with a repair for drones
   whose window is narrow. A drone leaves when its slot minus its flight time has come.
   The reserve is the fixed 0.25 (`MIN_CHARGE_MARGIN`, 0.20 before 2026-11-24). A
-  recharge always takes 300 s whatever the battery, so returning late is the right goal.
+  recharge lasts `100 + (1 − battery) · 300` s, so an early return saves 3 s of charge per 1% of
+  battery but throws away about 30 s of flight: returning late is still the right goal. The plan
+  books every charge as `PLANNED_CHARGE_TIME` = 350 s (world.py).
   The pads are hard here too: a drone sent to a full base (no free slot before its
   deadline) waits landed, and the scheduler books the drones of the waiting room at the
   moment a pad frees for them (the base's `waiting_room_starts`). The world reads the pads
@@ -463,6 +497,25 @@ Since the pads (2026-11-24) no run with 3 drones or more goes above `Nc`, so the
 panels only show something on older runs. The congestion is in the `waiting` series.
 
 Bootstrap: 5000 resamples, seeded, so the figure is the same on every call.
+
+### Drones mapping (`<name>_mapping`, since 2026-11-27)
+
+The drones neither on the base (charging or waiting) nor dead, computed from the
+series the runs already store. GOING_TO_BASE is not logged apart, so a drone flying
+to the base counts as mapping: its camera still sees the cells on the way.
+
+The mean uncertainty follows the mean number of drones in the air, but the same mean
+can be delivered steadily or in recharge waves. This figure shows how steadily:
+
+- **(a) In time:** the mean number mapping in `--window` windows, mean over the runs,
+  with the `N − Nc` line (every pad taken, nobody waiting).
+- **(b) Shortfall:** the share of the time with at most `k` drones mapping, for every
+  `k`, on a log scale. The shaded side is where some drone waits for a pad (or is dead).
+- **(c) How constant:** each run's standard deviation in time of the number mapping,
+  a dot per run, paired run by run (Wilcoxon) when two systems are seeded alike.
+
+(b) and (c) take the time from `--steady-state` on: the first wave after the common
+start at t = 0 is far deeper than the later ones and would dominate them.
 
 ### Time between two visits of a cell, by distance to the base
 

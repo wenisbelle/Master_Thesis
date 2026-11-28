@@ -46,7 +46,7 @@ the code is right.
 | Genes | 9 | **4**: `base_variance`, `alpha_variance_modifier`, `energy_gamma`, `distance_between_drone_norm` |
 
 Everything else is swarm's code, copied with its comments: the camera, the mobility and
-the braking approach to the base, the battery plugin and the wind, the 300 s recharge,
+the braking approach to the base, the battery plugin and the wind, the recharge (`100 + (1 − battery) · 300` s since 2026-11-27),
 death at 10%, the take-off from the base, the random streams from `(seed, drone id)`,
 `INITIAL_UNCERTAINTY` = 1.0, the cost, the GA and its bounds, the monitors.
 
@@ -65,9 +65,9 @@ Two changes to the per-drone results are needed because the map is shared:
 
 ## The charging scheduler (`world.py`)
 
-A full recharge always takes `TIME_TO_RECHARGE` (300 s since 2026-11-25, 100 s before) and
-fills the battery, whatever was left. A drone
-that recharges early therefore only wastes battery. The best policy is to return **as
+A recharge lasts `100 + (1 − battery) · 300` s and fills the battery (since 2026-11-27; a
+flat 300 s from 2026-11-25, 100 s before). A drone that recharges early saves 3 s of charge
+per 1% of battery, but throws away about 30 s of flight: it still mostly wastes battery. The best policy is to return **as
 late as is safe**, staggered so that no more than `Nc` drones are on the base at once.
 The base is busy: a drone charges for 300 s after about every 1,100–1,300 s of flight,
 against `Nc = int(n/3)`, so with n a multiple of 3 each pad is in use about 60% of the
@@ -89,8 +89,9 @@ per mobility tick (1 s):
    The flight time to the base cancels out of this formula.
 3. **Slots.** The drones are taken from the latest deadline to the earliest. Each gets
    the latest charging slot that starts no later than its deadline, during which fewer
-   than `max(1, Nc)` other charges are on the base. A slot is `TIME_TO_RECHARGE` (300 s) + `SLOT_GUARD` (15 s)
-   long. This is backward earliest-deadline-first.
+   than `max(1, Nc)` other charges are on the base. A slot is `PLANNED_CHARGE_TIME` (350 s) + `SLOT_GUARD` (15 s)
+   long. The real charge is shorter for a drone landing above 0.17, so a pad frees at or
+   before the end of its slot. This is backward earliest-deadline-first.
 4. **Repair.** A drone with a narrow window (near its deadline and far from the base) can
    find every slot it can reach taken by a drone placed earlier that had room to go
    earlier. First a swap is tried: the drone takes that slot and the other drone is
@@ -330,7 +331,7 @@ instance of it:
 
 | Simons | This scheduler |
 |---|---|
-| A job, all of equal length | One charge: `TIME_TO_RECHARGE` + `SLOT_GUARD` = 315 s |
+| A job, all of equal length | One charge as planned: `PLANNED_CHARGE_TIME` + `SLOT_GUARD` = 365 s (the real charge, `100 + (1 − battery) · 300` s, is at most that for a drone landing above 0.17) |
 | The identical machines | The `max(1, Nc)` places on the base |
 | Release time | The earliest arrival: `now` + the flight time to the base |
 | Deadline | The latest safe arrival, `now + (battery − 0.20) / (1.15 · DISCHARGE_RATE)`. This bounds the start of the charge, so Simons' deadline (on the end of the job) is this plus 315 s |

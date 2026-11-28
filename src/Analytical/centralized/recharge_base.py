@@ -18,7 +18,7 @@ The drones talk to their base with messages:
 
     drone lands      ── LANDED (its battery) ──▶  base: a pad free and nobody waiting?
                      ◀── PAD ─────────────────    yes: at once. No: when its turn comes
-    drone charges TIME_TO_RECHARGE on the pad
+    drone charges charge_duration(battery) on the pad
     drone takes off  ── TAKE_OFF ─────────────▶  base: the pad goes to the first drone of
                                                   the waiting room, with a PAD, same instant
 
@@ -33,8 +33,8 @@ simulation is built (instantiate), before any node is initialized, and main.py h
 node itself to what reads it after the build
 (simulation.get_node(base_node_id(...)).protocol_encapsulator.protocol): the world
 (world.base), which reads the pads and the waiting room as the oracle it is and asks the
-base when its waiting room will charge (waiting_room_starts, with the TIME_TO_RECHARGE
-main.py gives the base and the drones), and the reports of main_test.py
+base when its waiting room will charge (waiting_room_starts, with charge_duration and the
+RECHARGE_FIXED_TIME and RECHARGE_TIME_PER_BATTERY main.py gives the base and the drones), and the reports of main_test.py
 (global_map.recharge_base). Until 2026-11-25 the pads were a
 ChargingStation object made in main.py and shared with the node, in
 Analytical/charging_station.py.
@@ -90,6 +90,17 @@ def base_node_id(number_of_drones: int, base_index: int = 0) -> int:
     return number_of_drones + base_index
 
 
+def charge_duration(battery: float, fixed_time: float, time_per_battery: float) -> float:
+    """
+    How long a charge lasts on a pad: fixed_time, plus time_per_battery in proportion to the
+    battery missing when it starts, fixed_time + (1 - battery) * time_per_battery (main.py:
+    100 + (1 - battery) * 300 s). The battery does not change on the ground, so the battery at
+    landing gives the same duration.
+    """
+    missing = 1.0 - min(1.0, max(0.0, float(battery)))
+    return float(fixed_time) + missing * float(time_per_battery)
+
+
 def send_landed(provider, base_id: int, battery: float) -> None:
     """The drone landed on the base base_id: it asks for a pad."""
     message: LandedMessage = {
@@ -119,7 +130,10 @@ class RechargeBase(IProtocol):
     _config = {
         "base_index": 0,  # position of this base in charging_base_positions
         "pads": 1,  # how many drones charge on it at once
-        "time_to_recharge": 300.0,  # s a charge lasts, TIME_TO_RECHARGE of main.py, the same the drones get
+        ##### A charge lasts charge_duration of its battery: RECHARGE_FIXED_TIME and RECHARGE_TIME_PER_BATTERY of #####
+        ##### main.py, the same the drones get                                                                    #####
+        "recharge_fixed_time": 100.0,
+        "recharge_time_per_battery": 300.0,
         "mode": "train",
     }
 
@@ -134,7 +148,8 @@ class RechargeBase(IProtocol):
         base.BASE_INDEX = cls._config["base_index"]
         ##### Nc is int(drones / 3): below 3 drones the base still has one pad #####
         base.pads = max(1, int(cls._config["pads"]))
-        base.TIME_TO_RECHARGE = float(cls._config["time_to_recharge"])
+        base.RECHARGE_FIXED_TIME = float(cls._config["recharge_fixed_time"])
+        base.RECHARGE_TIME_PER_BATTERY = float(cls._config["recharge_time_per_battery"])
         ##### {drone id: (time its charge started, its battery then)} of the drones on a pad, #####
         ##### in the order they took it                                                       #####
         base.charging = {}
@@ -186,10 +201,14 @@ class RechargeBase(IProtocol):
             granted.append(next_drone)
         return granted
 
+    def charge_duration(self, battery: float) -> float:
+        """How long a charge started with this battery lasts, see the module charge_duration."""
+        return charge_duration(battery, self.RECHARGE_FIXED_TIME, self.RECHARGE_TIME_PER_BATTERY)
+
     def waiting_room_starts(self, now: float) -> list:
         """
         When the drones of the waiting room start charging, first in line first. Every charge
-        lasts TIME_TO_RECHARGE and the base hands a pad over the instant it frees, so the
+        lasts charge_duration of its battery and the base hands a pad over the instant it frees, so the
         k-th drone in line takes the k-th pad that frees: at the end of a charge on a pad,
         or of a charge of the waiting room before it. A pad already free is taken now.
 
@@ -198,14 +217,14 @@ class RechargeBase(IProtocol):
         """
         if not self.waiting:
             return []
-        pads_free_at = [start + self.TIME_TO_RECHARGE for start, _ in self.charging.values()]
+        pads_free_at = [start + self.charge_duration(battery) for start, battery in self.charging.values()]
         pads_free_at += [float(now)] * max(0, self.pads - len(pads_free_at))
         heapq.heapify(pads_free_at)
         starts = []
-        for _ in self.waiting:
+        for drone_id in self.waiting:
             start = max(float(now), heapq.heappop(pads_free_at))
             starts.append(start)
-            heapq.heappush(pads_free_at, start + self.TIME_TO_RECHARGE)
+            heapq.heappush(pads_free_at, start + self.charge_duration(self._landed[drone_id][1]))
         return starts
 
     def summary(self, end_time: float = None) -> dict:
@@ -288,17 +307,18 @@ class RechargeBase(IProtocol):
                            f"{len(self.charging)} drones charging and {len(self.waiting)} waiting")
 
 
-def recharge_base_factory(pads: int, time_to_recharge: float, base_index: int = 0,
+def recharge_base_factory(pads: int, recharge_fixed_time: float, recharge_time_per_battery: float, base_index: int = 0,
                           mode: str = "train") -> Type[RechargeBase]:
     """
     Creates the protocol class of the base, with pads charging pads (Nc), new for every
-    simulation. time_to_recharge is how long a charge lasts, the TIME_TO_RECHARGE main.py
+    simulation. recharge_fixed_time and recharge_time_per_battery set how long a charge lasts (charge_duration), the values main.py
     also gives the drones.
     """
     config = {
         "base_index": base_index,
         "pads": pads,
-        "time_to_recharge": time_to_recharge,
+        "recharge_fixed_time": recharge_fixed_time,
+        "recharge_time_per_battery": recharge_time_per_battery,
         "mode": mode,
     }
 

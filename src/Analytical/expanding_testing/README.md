@@ -71,7 +71,11 @@ at once before the protocol reacts. Future base limitations will be explored
 in the next works. The rule is the same as in `Analytical/`, only the drones
 are now spread over several bases: the swarm drone's estimate of how many
 others are charging (`aproximate_battery_consumption_model`) is exactly the
-original one.
+original one. Since 2026-11-27 it is the count expected when the drone would land
+(at its nearest base), from the drones known to be on a base or on their way, and
+the mean battery of the swarm term only counts the others expected to land in the
+next 600 s, as in `Analytical/swarm` (see `Analytical/README.md`, charge margin). The
+early pull is the same too, with `Nc` over all the bases together.
 
 It is soft: it pushes the drones to stay out longer when the swarm is
 congested, it does not forbid more than `Nc` drones charging at once over all

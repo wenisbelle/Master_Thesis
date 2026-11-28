@@ -26,16 +26,20 @@ computed again from the true state:
    base, it arrives with RESERVE of battery left (MIN_CHARGE_MARGIN of the swarm),
    discharging at PLANNING_DRAIN_FACTOR times DISCHARGE_RATE.
 3. Taking the drones from the latest deadline to the earliest, each one gets the
-   latest charging slot (TIME_TO_RECHARGE + SLOT_GUARD long) that starts at or before
+   latest charging slot (PLANNED_CHARGE_TIME + SLOT_GUARD long) that starts at or before
    its deadline with fewer than the capacity drones charging at the same time. A drone
    that finds none is repaired (place_slots). When there is still none the deadline
    wins: a drone is never sent late to avoid congestion.
 4. A drone leaves when the time to start its slot minus its flight time to the base
    has come. It checks once per tick, so by then its slot is a little in the past: a
    free slot that is late by at most SLOT_GUARD means "leave now" (latest_slot).
-A full recharge always takes TIME_TO_RECHARGE, whatever the battery left, so a
-charge started early only wastes battery: the latest safe slot is the best one, and
-the slots only move earlier to keep at most `capacity` drones on the base at once.
+A charge lasts 100 + (1 - battery) * 300 s (charge_duration in recharge_base.py), so a
+charge started early is shorter, but it still throws away more flight than it saves on
+the pad (1% of battery is about 30 s of flight and 3 s of charge): the latest safe slot is
+the best one, and the slots only move earlier to keep at most `capacity` drones on the
+base at once. The plan books every charge as PLANNED_CHARGE_TIME (350 s), longer than the
+charge of a drone landing at the reserve (325 s with 0.25), so the slots stay of equal
+length and a pad frees at or before the end of its slot.
 
 The slot problem is the one of Simons (1983): jobs of equal length (the charges),
 identical machines (the capacity), release times (the earliest arrivals) and
@@ -126,7 +130,7 @@ def latest_slot(starts, earliest: float, latest: float, length: float, capacity:
     return max(candidates, key=lambda start: (-congestion(starts, start, length, capacity), start)), False
 
 
-def plan_charging(now: float, mapping_drones, booked_starts, capacity: int, time_to_recharge: float,
+def plan_charging(now: float, mapping_drones, booked_starts, capacity: int, planned_charge_time: float,
                   slot_guard: float, discharge_rate: float, reserve: float) -> dict:
     """
     The charging slot of every MAPPING drone, {drone id: ChargingSlot}.
@@ -134,7 +138,7 @@ def plan_charging(now: float, mapping_drones, booked_starts, capacity: int, time
     mapping_drones: (drone id, true battery, flight time to the base) of every MAPPING drone.
     booked_starts:  the start of every charge already decided (CHARGING and GOING_TO_BASE drones).
 
-    A charge occupies the base for time_to_recharge + slot_guard. The guard absorbs the
+    A charge occupies the base for planned_charge_time + slot_guard. The guard absorbs the
     error of the predicted flight time (turning, braking on the approach) and the delay of
     a drone that only checks its plan once per tick, so two charges planned back to back do
     not overlap.
@@ -156,7 +160,7 @@ def plan_charging(now: float, mapping_drones, booked_starts, capacity: int, time
         ##### battery - discharge_rate * (wait + flight_time) = reserve, solved for the wait #####
         latest_leave = now + (battery - reserve - discharge_rate * flight_time) / discharge_rate
         deadlines.append((drone_id, latest_leave + flight_time, flight_time))
-    return place_slots(now, deadlines, booked_starts, time_to_recharge + slot_guard, max(1, capacity),
+    return place_slots(now, deadlines, booked_starts, planned_charge_time + slot_guard, max(1, capacity),
                        tolerance=slot_guard)
 
 
@@ -243,6 +247,10 @@ class CentralizedWorld:
 
     ##### Seconds added to every planned charge, see plan_charging #####
     SLOT_GUARD = 15.0
+    ##### Length the plan books for every charge, s. The real charge lasts 100 + (1 - battery) * 300 s:     #####
+    ##### 350 s covers a drone landing down to 0.17 of battery, below the reserve, so the slots stay of    #####
+    ##### equal length (the problem check_centralized.py solves) and a pad frees before its slot ends.   #####
+    PLANNED_CHARGE_TIME = 350.0
     APPROACH_EXTRA_TIME = 0.0
     ##### The deadlines are planned with a drain this much above DISCHARGE_RATE. DISCHARGE_RATE #####
     ##### is right on average (measured 2026-11-15, 6 runs of 3000 s: 0.999 of it), but over    #####
@@ -279,7 +287,6 @@ class CentralizedWorld:
             self.growth_period = drone.VANISHING_UPDATE_TIME
             self.base_position = tuple(drone.CHARGING_BASE_POSITION)
             self.capacity = drone.Nc_CHARGING_BASE
-            self.time_to_recharge = drone.TIME_TO_RECHARGE
             self.discharge_rate = drone.DISCHARGE_RATE
             self.reserve = drone.MIN_CHARGE_MARGIN
             self.speed = drone.speed_command
@@ -357,7 +364,7 @@ class CentralizedWorld:
         mapping_drones = [(i, drone.battery.battery_status, self.flight_time_to_base(drone))
                           for i, drone in sorted(self.drones.items()) if drone.status == mapping]
         return plan_charging(now, mapping_drones, self.booked_starts(now), self.capacity,
-                             self.time_to_recharge, self.SLOT_GUARD,
+                             self.PLANNED_CHARGE_TIME, self.SLOT_GUARD,
                              self.PLANNING_DRAIN_FACTOR * self.discharge_rate, self.reserve)
 
     def time_to_leave(self, drone_id: int, now: float) -> bool:

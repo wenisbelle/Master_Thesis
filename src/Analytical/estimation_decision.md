@@ -23,10 +23,12 @@ doesn't explain why it matters.
 2. **Projection to now.** `estimate_drone_battery` ([protocol.py:416](swarm/protocol.py#L416))
    moves a row forward from its observation time to the current time:
    - the drone discharges linearly at `DISCHARGE_RATE` (0.00067 per s; 0.00073 before the 2026-11-23 battery plugin fix);
-   - a drone seen MAPPING is assumed to fly until its battery reaches
-     `MIN_CHARGE_MARGIN` (0.20), then go to the base;
+   - a drone seen MAPPING is assumed to fly until its battery reaches the tuned
+     `base_charge_margin` (without the swarm and congestion shifts), then go to the base.
+     Until 2026-11-27 it was `MIN_CHARGE_MARGIN` (0.20, then the 0.15 floor), the source of
+     the model mismatch below;
    - a drone seen GOING_TO_BASE reaches the base `EXPECTED_TIME_TO_BASE` after the observation;
-   - at the base it charges for `TIME_TO_RECHARGE` (300 s since 2026-11-25, 100 s before) with its battery held constant
+   - at the base it charges for `charge_duration` of its battery at the charge start, `100 + (1 − battery) · 300` s since 2026-11-27 (a flat 300 s since 2026-11-25, 100 s before), with its battery held constant
      (true since 2026-11-24; a wait for a pad, see the base node in `swarm/recharge_base.py`, is not modelled),
      then leaves with a full battery and the cycle repeats.
 3. **Swarm terms.** `aproximate_battery_consumption_model`
@@ -36,6 +38,27 @@ doesn't explain why it matters.
    - **N̂**: how many are charging.
 
    With nobody left to compare with, it returns the drone's own battery and 0.
+
+   Since 2026-11-27 both are about the next pads:
+   - **m̂** is the mean battery now of the others expected to land within `SWARM_WINDOW`
+     (2 charges at `base_charge_margin`, 650 s with 0.25) from now. A drone already on the base is not counted.
+     With nobody in the window it is the drone's own battery (no shift).
+   - **N̂** is the number of others expected on the base, charging or waiting, at the drone's
+     own arrival time (now + its flight time to the base). Only rows CHARGING, WAITING or
+     GOING_TO_BASE are counted. A landing guessed from a MAPPING row is not: in a 6-drone
+     test the drones of the first wave, all mapping below 0.25, predicted each other on the
+     base and held each other down to the 0.15 floor.
+   - A drone seen MAPPING already below `base_charge_margin` is projected to go home at
+     `MIN_CHARGE_MARGIN`, the floor, instead of being counted on the base at once.
+   - At an encounter the deciding drone works out the values for the other drone too,
+     from that drone's position and battery.
+   - A third value, the **early pull** (0 or 1, `early_pull`), raises the base margin by `c`
+     when the drone is the first that would wait at its natural landing (when its battery
+     reaches `base_charge_margin`), a pad is expected free if it went now, and the natural
+     landing is within `SWARM_WINDOW`. Here the guessed landings of MAPPING rows count, at
+     both instants. Recorded as `early_pull_estimate` / `_true`. A drone the pull sends to the
+     base is committed to it while a pad is still expected free when it lands, from the known
+     drones (`committed_to_base`, `pull_still_holds`).
 4. **Margin.** `charge_margin` ([fitness.py:684](swarm/fitness.py#L684)):
 
    ```
@@ -63,7 +86,10 @@ The genes amplify it. With the default individual in [main.py](swarm/main.py) (t
 - **Age of the information.** Out of range and with no encounter, a row only gets older.
 - **Model mismatch.** The projection sends MAPPING drones home at 0.20. Real drones decide at
   about 0.45–0.58, so a recharge the observer did not hear about is missed: it believes the
-  drone kept draining while it is really back near full. This biases m̂ low.
+  drone kept draining while it is really back near full. This biases m̂ low. Since 2026-11-27
+  the projection uses the tuned base margin instead, which shrinks the mismatch but does not
+  remove it: the swarm shift b·(m̂ − own) is about +0.08 at every return, so the drones still
+  go home above the base margin.
 - **Constant discharge rate.** The real battery comes from the physics model of
   BatteryPowerPlugin, with random air speed (σ = 4 m/s). Since 2026-11-24 the wind drifts over ~20 min
   (see Analytical/README.md): the mean drain still matches it (0.000675/s cruising), but over 100 s
@@ -89,6 +115,11 @@ under `"states"`:
 | `belief_status` | (T, N) | status stored in i's row for j |
 | `mean_battery_estimate` / `_true` | (T,) | m̂, and m from the real batteries of the other drones not really DEAD |
 | `drones_charging_estimate` / `_true` | (T,) | N̂, and N from the real statuses |
+
+Since 2026-11-27 m̂ and N̂ are forecasts (the swarm window and the arrival time, see step 3),
+so `_true` is the same forecast made from the real current state of every drone (on a pad:
+its real charge start; in the waiting room: the start the base announces). It measures the
+error of the stale rows, not the error of the forecast itself.
 | `charge_margin_estimate` / `_true` | (T,) | `charge_margin` with (m̂, N̂), and with (m, N) |
 
 Own columns are NaN. In egocentric, which has no estimator, every belief is NaN.

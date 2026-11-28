@@ -61,8 +61,10 @@ def _marker_kwargs(style, color, size=55):
 def _reference_lines(ax, parameters, horizontal=True):
     """The tuned margin, MIN_CHARGE_MARGIN and the death threshold, as battery levels."""
     handles = []
-    for key, style, text in (("charge_margin", "--", "tuned CHARGE_MARGIN"),
-                             ("min_charge_margin", ":", "MIN_CHARGE_MARGIN (the others are assumed to return here)"),
+    ##### Since 2026-11-27 the estimator sends the others home at the tuned base margin, #####
+    ##### it used MIN_CHARGE_MARGIN before                                                #####
+    for key, style, text in (("charge_margin", "--", "tuned base_charge_margin (the others are assumed to return here)"),
+                             ("min_charge_margin", ":", "MIN_CHARGE_MARGIN (floor of the margin)"),
                              ("dead_battery_threshold", "-.", "dead below")):
         value = parameters.get(key)
         if value is None or not np.isfinite(value):

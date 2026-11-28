@@ -9,7 +9,7 @@ import base64
 from scipy.interpolate import RegularGridInterpolator
 from .visualization import MapVisualizer
 from .fitness import FitnessEvaluator
-from .recharge_base import (BaseMessageType, BaseHeartbeatMessage, base_node_id,
+from .recharge_base import (charge_duration, BaseMessageType, BaseHeartbeatMessage, base_node_id,
                             send_landed, send_take_off)
 
 from gradysim.protocol.interface import IProtocol
@@ -54,6 +54,7 @@ class SendGoToMessage(TypedDict):
     goto: list
     sender: int
     status: int  # DroneStatus value the receiver takes with the new destination
+    early_pull: int  # 1 when the receiver is sent to the base by its early pull, it then commits to it
 
 class DeadNotificationMessage(TypedDict):
     message_type: int
@@ -126,7 +127,9 @@ class Drone(IProtocol):
         "map_height": 10,
         "drone_speed": 10.0,  # cruise speed, m/s
         "drone_max_acceleration": 10.0,  # horizontal acceleration limit of the mobility handler, m/s^2
-        "time_to_recharge": 300.0,  # s a charge lasts on a pad, TIME_TO_RECHARGE of main.py
+        ##### A charge lasts recharge_fixed_time + (1 - battery) * recharge_time_per_battery s, see charge_duration #####
+        "recharge_fixed_time": 100.0,
+        "recharge_time_per_battery": 300.0,
         ##### sigma_0^2 of Eq. (11). The kernel offsets are in CELL units, so this 
         ##### is in cells^2: 1.0 == one cell spacing, not one metre.               
         'base_variance': 4.0,
@@ -153,6 +156,9 @@ class Drone(IProtocol):
         'c_base_modifier': 1.0,         
         'min_charge_margin': 0.20, # minimum charge margin, fixed
         'Nc_charging_base': 2,
+        ##### Look-ahead of the swarm term, in charges: the mean battery of the b/a term only counts the  #####
+        ##### others expected to land within swarm_window_recharges charges from now       #####
+        'swarm_window_recharges': 2.0,
         'discharge_rate': 0.001,
         'charging_base_position': (0.0, 0.0),
         ##### "train" runs silent and fast, "test" logs every routine 
@@ -175,8 +181,10 @@ class Drone(IProtocol):
 
         self.TIMEOUT_TO_UPDATE_DESTINATION = 10.0
         self.MOBILITY_UPDATE_TIME = 1.0
-        ##### How long a charge lasts on a pad, TIME_TO_RECHARGE of main.py, which gives the same value to the base
-        self.TIME_TO_RECHARGE = self._config["time_to_recharge"]
+        ##### How long a charge lasts on a pad: charge_duration of the battery it starts with, from the  #####
+        ##### RECHARGE_FIXED_TIME and RECHARGE_TIME_PER_BATTERY of main.py, the same the base gets        #####
+        self.RECHARGE_FIXED_TIME = self._config["recharge_fixed_time"]
+        self.RECHARGE_TIME_PER_BATTERY = self._config["recharge_time_per_battery"]
 
         self.UNCERTAINTY_RATE = self._config["uncertainty_rate"]
         self.VANISHING_UPDATE_TIME = self._config["vanishing_update_time"]
@@ -204,6 +212,16 @@ class Drone(IProtocol):
 
         self.MIN_CHARGE_MARGIN = self._config["min_charge_margin"]
         self.Nc_CHARGING_BASE = self._config["Nc_charging_base"]
+        ##### the b/a term compares the drone only with the others expected to land within   
+        ##### SWARM_WINDOW from now, the ones it competes with for the next pads, see        
+        ##### aproximate_battery_consumption_model.
+        self.SWARM_WINDOW = self._config.get("swarm_window_recharges", 2.0) * self.charge_duration(self.BASE_CHARGE_MARGIN)
+        ##### Rows the c term counts, see aproximate_battery_consumption_model #####
+        self.KNOWN_ON_BASE_OR_GOING = (DroneStatus.CHARGING.value, DroneStatus.WAITING.value, DroneStatus.GOING_TO_BASE.value)
+        ##### A drone sent to the base by its early pull keeps going while a pad is still expected free when it   #####
+        ##### lands, see pull_still_holds. The rank rule needs exactly Nc drones ahead of it, so small changes of  #####
+        ##### the forecast would otherwise send it back while a pad is still free (2 of 4 aborted pulls in a test) #####
+        self.committed_to_base = False
         self.results_aggregator = self._config.get("results_aggregator", {})
         
         self.DRONE_ALTITUDE = 50.0
@@ -387,62 +405,144 @@ class Drone(IProtocol):
             self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} map has a accomulated uncertainty of {self.accomulated_uncertainty}")
             self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} map has total uncertainty of {self.total_uncertainty}")
 
-    def aproximate_battery_consumption_model(self, swarm_battery_vector: np.ndarray, current_time: float) -> tuple[float, int]:
+    def time_to_base(self, position) -> float:
         """
-        This function approximates the battery consumption model based on the swarm battery vector and the current time.
-        Used for the prediction model when the drone is making a decision
+        Flight time from position to the base plus the time lost braking on the approach, the way
+        EXPECTED_TIME_TO_BASE is made. EXPECTED_TIME_TO_BASE itself before the first telemetry.
+        """
+        if position is None:
+            return self.EXPECTED_TIME_TO_BASE
+        distance = np.hypot(position[0] - self.CHARGING_BASE_POSITION[0], position[1] - self.CHARGING_BASE_POSITION[1])
+        return float(distance) / self.speed_command + self.speed_command / (2 * self.BASE_APPROACH_DECELERATION)
 
+    def aproximate_battery_consumption_model(self, swarm_battery_vector: np.ndarray, current_time: float,
+                                             drone_id: int = None, own_battery: float = None,
+                                             arrival_time: float = None) -> tuple[float, int, int]:
+        """
+        The swarm inputs of the base margin of drone drone_id, from the rows of swarm_battery_vector projected
+        by predict_drone. Only the other drones still alive enter them.
+        - mean battery, the b/a term: the mean battery at current_time of the others expected to land within
+          SWARM_WINDOW from current_time, the drones this one competes with for the next pads. A drone already
+          on the base is not counted, it has landed. With nobody in the window it is own_battery, so the term
+          gives no shift. 
+        - drones on the base, the c term: the others expected on the base, charging or waiting, at
+          arrival_time, when this drone would land if it went to the base now. A drone that leaves before it
+          lands frees its pad, a drone that lands before it takes one. N + 1 - Nc is the waiting room it
+          would make. Only the drones known to be on the base or on their way are counted (rows CHARGING,
+          WAITING or GOING_TO_BASE), not the landings guessed from a MAPPING row.
+        - early pull, 0 or 1, raises the base margin by c (see early_pull): the drone goes to the base now,
+          while a pad is free, instead of waiting in line at its natural landing.
         Args:
-            swarm_battery_vector (np.ndarray): A 2D array where each row represents a drone's battery status, the last update time and its status.
+            swarm_battery_vector (np.ndarray): one row per drone: battery, time of the observation and status.
             current_time (float): The current simulation time.
+            drone_id (int): the drone the terms are for, this drone by default. At an encounter this drone
+                also works them out for the other one, see external_mobility_command.
+            own_battery (float): battery of drone_id, this drone's battery by default.
+            arrival_time (float): when drone_id would land if it went to the base now. By default
+                current_time + time_to_base of this drone's position.
 
         Returns:
-            float: mean battery status of the other drones that are still alive
-            int: number of the other drones still alive estimated to be on the base, charging or in the
-                 waiting room, see estimate_drone_battery
+            float: mean battery of the others alive expected to land within SWARM_WINDOW (own_battery if none)
+            int: number of the others alive expected on the base at arrival_time, charging or waiting
+            int: early pull, see early_pull
         """
-        updated_battery_vector = np.copy(swarm_battery_vector)
-        is_charging = np.zeros(updated_battery_vector.shape[0], dtype=bool)
+        if drone_id is None:
+            drone_id = self.provider.get_id()
+        if own_battery is None:
+            own_battery = self.battery.battery_status
+        if arrival_time is None:
+            arrival_time = current_time + self.time_to_base(self.drone_position)
 
-        for i in range(updated_battery_vector.shape[0]):
-            updated_battery_status, is_charging[i] = self.estimate_drone_battery(updated_battery_vector[i, 0],
-                                                                                 updated_battery_vector[i, 1],
-                                                                                 updated_battery_vector[i, 2],
-                                                                                 current_time)
+        window_end = current_time + self.SWARM_WINDOW
+        ##### Natural landing: when this drone lands if it keeps mapping, at the unshifted base margin. The energy #####
+        ##### to fly home is drained like the mapping, so it does not depend on where the drone will decide.       #####
+        natural_landing = current_time + max(0.0, own_battery - self.BASE_CHARGE_MARGIN) / self.DISCHARGE_RATE
+        landing_soon = []
+        drones_on_base_at_arrival = 0
+        ##### For the early pull, guesses included: the drones on the base when it would land now, and the ones on #####
+        ##### the base at its natural landing that landed before it (first come, first served, a tie goes to the   #####
+        ##### lower id). Both instants are counted the same way, so the difference is not biased.                  #####
+        guessed_on_base_at_arrival = 0
+        ahead_at_natural_landing = 0
+        for j in range(swarm_battery_vector.shape[0]):
+            battery, observation_time, status = swarm_battery_vector[j]
+            if j == drone_id or status == DroneStatus.DEAD.value:
+                continue
 
-            updated_battery_vector[i, 0] = updated_battery_status
-            updated_battery_vector[i, 1] = current_time
+            battery_now, on_base_now, landing_time = self.predict_drone(battery, observation_time, status, current_time)
+            if not on_base_now and landing_time <= window_end:
+                landing_soon.append(battery_now)
 
-        # Only the other drones that are still alive enter the swarm terms:
-        others = np.arange(updated_battery_vector.shape[0]) != self.provider.get_id()
-        known_dead = updated_battery_vector[:, 2] == DroneStatus.DEAD.value
-        alive_others = others & ~known_dead
+            ##### c only counts the drones known to be on the base or on their way to it. The landing of a    
+            ##### MAPPING row is a guess, and counting guesses at the arrival time held the drones of a wave   
+            ##### to the floor: each one believed the others were already on the base                          
+            _, on_base_at_arrival, _ = self.predict_drone(battery, observation_time, status, arrival_time)
+            guessed_on_base_at_arrival += int(on_base_at_arrival)
+            if status in self.KNOWN_ON_BASE_OR_GOING:
+                drones_on_base_at_arrival += int(on_base_at_arrival)
 
-        if not alive_others.any():
-            # Nobody to compare with: the mean is the drone's own battery (no swarm shift) and nobody is charging
-            return self.battery.battery_status, 0
+            _, on_base_at_natural_landing, _ = self.predict_drone(battery, observation_time, status, natural_landing)
+            lands_with_it_after = (not on_base_now and landing_time == natural_landing and j > drone_id)
+            ahead_at_natural_landing += int(on_base_at_natural_landing and not lands_with_it_after)
 
-        # calculate the mean battery status of the other drones still alive
-        mean_battery_status = np.mean(updated_battery_vector[alive_others, 0])
-        # calculate the number of the other drones still alive estimated to be on the base, charging or waiting:
-        # the drones a newcomer finds there, so N + 1 - Nc is the waiting room it would make
-        drones_charging = np.sum(is_charging[alive_others])
+        mean_battery_status = float(np.mean(landing_soon)) if landing_soon else float(own_battery)
+        early_pull = self.early_pull(arrival_time, natural_landing, guessed_on_base_at_arrival, ahead_at_natural_landing)
+        return mean_battery_status, drones_on_base_at_arrival, early_pull
 
-        return mean_battery_status, drones_charging
+    def early_pull(self, arrival_time: float, natural_landing: float, on_base_at_arrival: int,
+                   ahead_at_natural_landing: int) -> int:
+        """
+        1 when the drone should go to the base before its natural landing, 0 otherwise. The base margin then
+        rises by c, the battery worth of one place in line (a charge at the base margin / Nc of waiting), so the drone goes
+        when the battery it would throw away, the flight between arrival_time and natural_landing, is worth less.
+
+        The pull is c * max(0, excess at natural_landing - excess at arrival_time), excess = max(0, N + 1 - Nc),
+        and only for:
+        - the first drone that would wait at its natural landing (rank rule): the drones ahead of it on the
+          base then fill the pads exactly. With more ahead, an earlier drone would already wait: the pull is
+          its own, and pulling both would only move the line earlier. Its excess at natural_landing is 1;
+        - a natural landing within SWARM_WINDOW of arrival_time: further away, the flight thrown away is
+          worth more than any place in line, and the guessed landings get unreliable.
+        Positions are not in the belief table, so the rank comes from the predicted landings (the battery):
+        the first in line is also the one that throws away the least battery.
+
+        Args:
+            arrival_time (float): when the drone would land if it went to the base now.
+            natural_landing (float): when it lands if it keeps mapping, at the unshifted base margin.
+            on_base_at_arrival (int): others expected on the base at arrival_time, guesses included.
+            ahead_at_natural_landing (int): others expected on the base at natural_landing that landed before it.
+        """
+        if not (arrival_time < natural_landing <= arrival_time + self.SWARM_WINDOW):
+            return 0
+        if ahead_at_natural_landing != self.Nc_CHARGING_BASE:
+            return 0
+        excess_at_natural_landing = ahead_at_natural_landing + 1 - self.Nc_CHARGING_BASE
+        excess_at_arrival = max(0, on_base_at_arrival + 1 - self.Nc_CHARGING_BASE)
+        return max(0, excess_at_natural_landing - excess_at_arrival)
 
     def estimate_drone_battery(self, battery: float, observation_time: float, status: float, current_time: float) -> tuple[float, bool]:
-        """
-        Estimates the battery of another drone at current_time, and whether it is on the base (charging, or
-        waiting for a pad), from the last observation of it.
+        """Battery of another drone at current_time and whether it is on the base then, see predict_drone."""
+        battery, on_base, _ = self.predict_drone(battery, observation_time, status, current_time)
+        return battery, on_base
 
-        The drone is assumed to fly discharging at DISCHARGE_RATE, to charge at the base for TIME_TO_RECHARGE and
+    def predict_drone(self, battery: float, observation_time: float, status: float, current_time: float) -> tuple[float, bool, float]:
+        """
+        Estimates the battery of another drone at current_time, whether it is on the base (charging, or
+        waiting for a pad), and when it lands next, from the last observation of it.
+
+        The drone is assumed to fly discharging at DISCHARGE_RATE, to charge at the base for charge_duration of its battery and
         to leave it with a full battery. When the charge starts depends on the status of the observation:
         - CHARGING: the row holds the time its charge started and its battery then (BaseHeartbeatMessage)
         - WAITING: the row holds the time its charge will start, worked out from the waiting room the base
           announced (see handle_base_heartbeat), and its battery at landing. Until then it is on the ground,
           its battery does not change
         - GOING_TO_BASE: it reaches the base EXPECTED_TIME_TO_BASE after the observation
-        - MAPPING: it reaches the base when its battery reaches MIN_CHARGE_MARGIN
+        - MAPPING: it reaches the base when its battery reaches BASE_CHARGE_MARGIN, the tuned base margin
+          before the swarm and congestion shifts (MIN_CHARGE_MARGIN, the floor, before 2026-11-27: the
+          drones really return well above the floor, so the recharges were predicted several hundred s late).
+          Seen already below BASE_CHARGE_MARGIN, it is being kept out by its shifts: it reaches the base at
+          MIN_CHARGE_MARGIN
+        A drone in the air starts charging the moment it lands, the model has no waiting room for it.
         After the charge the drone is MAPPING again with a full battery, and the same cycle repeats.
         DEAD drones go through the MAPPING case, the caller leaves them out.
 
@@ -455,6 +555,7 @@ class Drone(IProtocol):
         Returns:
             float: estimated battery of the drone at current_time
             bool: True if the drone is estimated to be on the base at current_time, charging or waiting
+            float: when a drone in the air at current_time is estimated to land. NaN when it is on the base
         """
         while True:
             if status == DroneStatus.CHARGING.value or status == DroneStatus.WAITING.value:
@@ -464,24 +565,29 @@ class Drone(IProtocol):
                 charging_start_time = observation_time + self.EXPECTED_TIME_TO_BASE
                 battery_at_charging_start = max(0.0, battery - self.DISCHARGE_RATE * self.EXPECTED_TIME_TO_BASE)
             else:
-                time_to_min_charge = max(0.0, (battery - self.MIN_CHARGE_MARGIN) / self.DISCHARGE_RATE)
-                charging_start_time = observation_time + time_to_min_charge
-                battery_at_charging_start = min(battery, self.MIN_CHARGE_MARGIN)
+                ##### Above the base margin it goes home there. Already below it, its swarm or congestion terms #####
+                ##### are keeping it out, and those stop at the floor (since 2026-11-27, it was counted on the   #####
+                ##### base at once: the held drones saw each other on the base and held each other to the floor) #####
+                landing_margin = self.BASE_CHARGE_MARGIN if battery > self.BASE_CHARGE_MARGIN else self.MIN_CHARGE_MARGIN
+                time_to_margin = max(0.0, (battery - landing_margin) / self.DISCHARGE_RATE)
+                charging_start_time = observation_time + time_to_margin
+                battery_at_charging_start = min(battery, landing_margin)
 
             if current_time < charging_start_time:
                 # In the waiting room, on the ground: the battery is the one it landed with
                 if status == DroneStatus.WAITING.value:
-                    return battery, True
-                # Still flying, discharging since the observation
-                return max(0.0, battery - self.DISCHARGE_RATE * (current_time - observation_time)), False
+                    return battery, True, float("nan")
+                # Still flying, discharging since the observation, it lands when its charge starts
+                return (max(0.0, battery - self.DISCHARGE_RATE * (current_time - observation_time)), False,
+                        charging_start_time)
 
             # At the base, the battery stays the one it arrived with until the charge ends
-            if current_time < charging_start_time + self.TIME_TO_RECHARGE:
-                return battery_at_charging_start, True
+            if current_time < charging_start_time + self.charge_duration(battery_at_charging_start):
+                return battery_at_charging_start, True, float("nan")
 
             # The charge already ended: from then on it is MAPPING with a full battery
             battery = 1.0
-            observation_time = charging_start_time + self.TIME_TO_RECHARGE
+            observation_time = charging_start_time + self.charge_duration(battery_at_charging_start)
             status = DroneStatus.MAPPING.value
 
     ##### Map updating  
@@ -502,10 +608,28 @@ class Drone(IProtocol):
         return [float(self.drone_velocity[0]), float(self.drone_velocity[1])]
 
     ##### Self mobility command. When the drone reaches the destination, it calculates the next one #####
+    def pull_still_holds(self, known_on_base_at_arrival: int = None) -> bool:
+        """
+        Whether a drone committed by its early pull keeps going to the base: while a pad is still expected free
+        when it lands, from the drones known to be on the base or on their way (the count of the c term). When
+        the base turns out full then, the reason of the pull is gone: the commitment ends and the drone decides
+        again, and with c it goes back to mapping if its battery allows it.
+        """
+        if known_on_base_at_arrival is None:
+            _, known_on_base_at_arrival, _ = self.aproximate_battery_consumption_model(self.swarm_battery_status,
+                                                                                      self.provider.current_time())
+        return known_on_base_at_arrival < self.Nc_CHARGING_BASE
+
     def internal_mobility_command(self):
         map_center_offset = (self.MAP_WIDTH * self.DISTANCE_BETWEEN_CELLS) / 2
 
-        mean_battery, N_charging = self.aproximate_battery_consumption_model(self.swarm_battery_status, self.provider.current_time())
+        mean_battery, N_charging, early_pull = self.aproximate_battery_consumption_model(self.swarm_battery_status, self.provider.current_time())
+
+        ##### Committed by an early pull: the destination stays the base while the pull holds #####
+        if self.status == DroneStatus.GOING_TO_BASE and self.committed_to_base:
+            if self.pull_still_holds(N_charging):
+                return
+            self.committed_to_base = False
 
         target_coords, value, command = self.fitness.choose_one_cell(
             self.map[:, :, 0],
@@ -516,13 +640,15 @@ class Drone(IProtocol):
             map_center_offset=map_center_offset,
             mean_battery_value = mean_battery,
             drones_charging = N_charging,
-            drone_velocity=self.horizontal_velocity()
+            drone_velocity=self.horizontal_velocity(),
+            early_pull = early_pull
         )
 
         if command == "going_to_base":
             self.status = DroneStatus.GOING_TO_BASE
         else:
             self.status = DroneStatus.MAPPING
+        self.committed_to_base = command == "going_to_base" and early_pull == 1
 
         
         target_row, target_col = target_coords
@@ -548,7 +674,19 @@ class Drone(IProtocol):
         # transform list to tuple
         another_drone_position = tuple(another_drone_position)
 
-        mean_battery, N_charging = self.aproximate_battery_consumption_model(self.swarm_battery_status, self.provider.current_time())
+        now = self.provider.current_time()
+        mean_battery, N_charging, early_pull = self.aproximate_battery_consumption_model(self.swarm_battery_status, now)
+
+        ##### The other drone decides with its own swarm terms (since 2026-11-27): its own window, where this #####
+        ##### drone counts with its current state, and the base when it would land, from its own position.   #####
+        rows_for_other = np.copy(self.swarm_battery_status)
+        rows_for_other[self.provider.get_id()] = (self.battery.battery_status, now, self.status.value)
+        another_drone_battery = self.swarm_battery_status[another_drone_id, 0]
+        another_mean_battery, another_N_charging, another_early_pull = self.aproximate_battery_consumption_model(
+            rows_for_other, now,
+            drone_id=another_drone_id,
+            own_battery=another_drone_battery,
+            arrival_time=now + self.time_to_base(another_drone_position))
 
         destinations, best_fitness, commands = self.fitness.choose_two_cells(
             self.map[:, :, 0],
@@ -556,22 +694,34 @@ class Drone(IProtocol):
             another_drone_position,
             self.CHARGING_BASE_POSITION,
             self.battery.battery_status,
-            self.swarm_battery_status[another_drone_id, 0],
+            another_drone_battery,
             self.speed_command,
             map_center_offset=map_center_offset,
             mean_battery_value = mean_battery,
             drones_charging = N_charging,
+            second_mean_battery_value = another_mean_battery,
+            second_drones_charging = another_N_charging,
             first_drone_velocity=self.horizontal_velocity(),
-            second_drone_velocity=another_drone_velocity
+            second_drone_velocity=another_drone_velocity,
+            early_pull = early_pull,
+            second_early_pull = another_early_pull
         )
+
+        ##### Committed by an early pull, this drone keeps the base while the pull holds. It still chooses for the other one #####
+        if self.status == DroneStatus.GOING_TO_BASE and self.committed_to_base and self.pull_still_holds(N_charging):
+            commands[0] = "going_to_base"
+            destinations[0] = self.fitness.position_to_cell(self.CHARGING_BASE_POSITION, map_center_offset)
+        else:
+            self.committed_to_base = commands[0] == "going_to_base" and early_pull == 1
 
         if commands[0] == "going_to_base":
             self.status = DroneStatus.GOING_TO_BASE
         else:
             self.status = DroneStatus.MAPPING
 
-        ### Status of the second drone, sent to it together with its destination
+        ### Status of the second drone, sent to it together with its destination, and whether its early pull sent it
         another_drone_status = DroneStatus.GOING_TO_BASE if commands[1] == "going_to_base" else DroneStatus.MAPPING
+        another_drone_pulled = int(commands[1] == "going_to_base" and another_early_pull == 1)
 
         target_row_1, target_col_1 = destinations[0]
         target_row_2, target_col_2 = destinations[1]
@@ -595,7 +745,7 @@ class Drone(IProtocol):
         y_send_command = target_col_2 * self.DISTANCE_BETWEEN_CELLS - map_center_offset
         send_command = np.array([x_send_command, y_send_command, self.DRONE_ALTITUDE])
         
-        return send_command, another_drone_status  # Return also the status for the second drone
+        return send_command, another_drone_status, another_drone_pulled  # Also the status of the second drone and its pull
 
     def send_heartbeat(self):
         #self._log.info(f"Sending heartbeat ...")
@@ -607,12 +757,13 @@ class Drone(IProtocol):
         command = BroadcastMessageCommand(json.dumps(message))
         self.provider.send_communication_command(command)
 
-    def send_goto_command(self, send_command: np.array, destination_id: int, status: DroneStatus):
+    def send_goto_command(self, send_command: np.array, destination_id: int, status: DroneStatus, early_pull: int = 0):
         message: SendGoToMessage = {
             'message_type': MessageType.SHARE_GOTO_POSITION_MESSAGE.value,
             'goto': send_command.tolist(),
             'sender': self.provider.get_id(),
-            'status': status.value
+            'status': status.value,
+            'early_pull': int(early_pull)
         }
         command = SendMessageCommand(json.dumps(message), destination_id)
         self.provider.send_communication_command(command)
@@ -704,20 +855,26 @@ class Drone(IProtocol):
         updated_battery_status = self.compare_battery_status(np.array(gossiping_msg['sender_battery_swarm_status']))
         return updated_battery_status
         
+    def charge_duration(self, battery: float) -> float:
+        """How long a charge started with this battery lasts, see recharge_base.charge_duration."""
+        return charge_duration(battery, self.RECHARGE_FIXED_TIME, self.RECHARGE_TIME_PER_BATTERY)
+
     def start_charging(self) -> None:
         """
-        The drone is on a pad: it charges for TIME_TO_RECHARGE, then "recharge_done" takes it
+        The drone is on a pad: it charges for charge_duration of its battery, then "recharge_done" takes it
         off. Called when the base gives it a pad (PAD_MESSAGE): at once on a free pad, or when
         its turn in the waiting room comes.
         """
+        ##### The battery does not change on the ground, it is the one the drone landed with #####
+        duration = self.charge_duration(self.battery.battery_status)
         self.status = DroneStatus.CHARGING
         self.charging_start_time = self.provider.current_time()
         self.battery_at_charging_start = self.battery.battery_status
 
         if self.VERBOSE:
-            self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} is on a pad and is recharging for {self.TIME_TO_RECHARGE}")
+            self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} is on a pad and is recharging for {duration:.0f} s")
 
-        self.provider.schedule_timer("recharge_done", self.provider.current_time() + self.TIME_TO_RECHARGE)
+        self.provider.schedule_timer("recharge_done", self.provider.current_time() + duration)
 
     def handle_timer(self, timer: str) -> None:
         
@@ -807,6 +964,7 @@ class Drone(IProtocol):
                             ##### It waits for a pad until the base gives it one (PAD_MESSAGE): at the  #####
                             ##### same instant when one is free, otherwise when its turn comes. 
                             self.status = DroneStatus.WAITING
+                            self.committed_to_base = False
                             if self.VERBOSE:
                                 self._log.info(f"At time: {self.provider.current_time()}, node {self.provider.get_id()} reached the base and asks for a pad")
                             send_landed(self.provider, self.BASE_NODE_ID, self.battery.battery_status)
@@ -926,9 +1084,9 @@ class Drone(IProtocol):
                         #self._log.info(f"Received map from drone {data['sender']}. My position: {self.drone_position}, other drone position: {another_drone_position}")
 
                         #self._log.info(f"Node {self.provider.get_id()} is calculating the new destinations")
-                        send_command, another_drone_status = self.external_mobility_command(data['drone_position'], data['sender'], data.get('drone_velocity'))
+                        send_command, another_drone_status, another_drone_pulled = self.external_mobility_command(data['drone_position'], data['sender'], data.get('drone_velocity'))
 
-                        self.send_goto_command(send_command, data['sender'], another_drone_status)
+                        self.send_goto_command(send_command, data['sender'], another_drone_status, another_drone_pulled)
                         self.last_drone_interaction_time[data['sender']] = self.provider.current_time() # the drone id starts at 0
 
 
@@ -945,6 +1103,11 @@ class Drone(IProtocol):
                 # Destination and status chosen for this drone by the one with the highest ID in the encounter.
                 # Taken while MAPPING or GOING_TO_BASE, so a drone going to the base can be sent back to mapping
                 goto_msg: SendGoToMessage = data
+                ##### Committed by an early pull: the destination stays the base while the pull holds #####
+                if self.status == DroneStatus.GOING_TO_BASE and self.committed_to_base and self.pull_still_holds():
+                    return
+                self.committed_to_base = (goto_msg['status'] == DroneStatus.GOING_TO_BASE.value
+                                          and goto_msg.get('early_pull', 0) == 1)
                 #self._log.info(f"Received goto command from {goto_msg['sender']}. Going to {goto_msg['goto']}")
 
                 self.status = DroneStatus(goto_msg['status'])
@@ -995,7 +1158,8 @@ def drone_protocol_factory(
     map_height: int,
     drone_speed: float,                  # fixed, m/s
     drone_max_acceleration: float,       # fixed, m/s^2
-    time_to_recharge: float,             # fixed, s
+    recharge_fixed_time: float,          # fixed, s every charge lasts at least
+    recharge_time_per_battery: float,    # fixed, s more for a whole battery missing
     base_variance: float,                # tunable, in cells^2
     alpha_variance_modifier: float,      # tunable
     energy_gamma: float,                 # tunable
@@ -1010,15 +1174,16 @@ def drone_protocol_factory(
     a_base_modifier: float,              # tunable
     b_base_modifier: float,              # tunable
     c_base_modifier: float,              # tunable    
-    min_charge_margin: float,            # fixed 
+    min_charge_margin: float,            # fixed
     Nc_charging_base: int,               # fixed
     discharge_rate: float,               # fixed
-    charging_base_position: tuple,       # fixed    
+    charging_base_position: tuple,       # fixed
     results_aggregator: dict,
     mode: str = "train",
     enable_map_plot: bool = False,
     initial_uncertainty: float = 0.5,
-    seed: int = None
+    seed: int = None,
+    swarm_window_recharges: float = 2.0  # fixed, look-ahead of the swarm term in charges, see Drone.SWARM_WINDOW
 ) -> Type[Drone]:
     """
     Creates a new Drone protocol class with the specified configuration.
@@ -1039,7 +1204,8 @@ def drone_protocol_factory(
         "map_height": map_height,
         "drone_speed": drone_speed,
         "drone_max_acceleration": drone_max_acceleration,
-        "time_to_recharge": time_to_recharge,
+        "recharge_fixed_time": recharge_fixed_time,
+        "recharge_time_per_battery": recharge_time_per_battery,
         "base_variance": base_variance,
         "alpha_variance_modifier": alpha_variance_modifier,
         "energy_gamma": energy_gamma,
@@ -1063,6 +1229,7 @@ def drone_protocol_factory(
         "enable_map_plot": enable_map_plot,
         "initial_uncertainty": initial_uncertainty,
         "seed": seed,
+        "swarm_window_recharges": swarm_window_recharges,
     }
 
     # Define a new class that inherits from Drone

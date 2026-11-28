@@ -20,7 +20,7 @@ The drones talk to their base with messages:
 
     drone lands      ── LANDED (its battery) ──▶  base: a pad free and nobody waiting?
                      ◀── PAD ─────────────────    yes: at once. No: when its turn comes
-    drone charges TIME_TO_RECHARGE on the pad
+    drone charges charge_duration(battery) on the pad
     drone takes off  ── TAKE_OFF ─────────────▶  base: the pad goes to the first drone of
                                                   the waiting room, with a PAD, same instant
 
@@ -86,6 +86,17 @@ class TakeOffMessage(TypedDict):
 def base_node_id(number_of_drones: int, base_index: int = 0) -> int:
     """Node id of a base: the bases are added after the drones, see main.py."""
     return number_of_drones + base_index
+
+
+def charge_duration(battery: float, fixed_time: float, time_per_battery: float) -> float:
+    """
+    How long a charge lasts on a pad: fixed_time, plus time_per_battery in proportion to the
+    battery missing when it starts, fixed_time + (1 - battery) * time_per_battery (main.py:
+    100 + (1 - battery) * 300 s). The battery does not change on the ground, so the battery at
+    landing gives the same duration.
+    """
+    missing = 1.0 - min(1.0, max(0.0, float(battery)))
+    return float(fixed_time) + missing * float(time_per_battery)
 
 
 def send_landed(provider, base_id: int, battery: float) -> None:

@@ -83,9 +83,12 @@ class SimulationRecorder:
         ##### The constants of the battery model the drones decide with #####
         "discharge_rate": lambda p: p.DISCHARGE_RATE,
         "drone_speed": lambda p: p.speed_command,
-        "time_to_recharge": lambda p: p.TIME_TO_RECHARGE,
+        "recharge_fixed_time": lambda p: p.RECHARGE_FIXED_TIME,
+        "recharge_time_per_battery": lambda p: p.RECHARGE_TIME_PER_BATTERY,
         "expected_time_to_base": lambda p: p.EXPECTED_TIME_TO_BASE,
         "dead_battery_threshold": lambda p: p.DEAD_BATTERY_THRESHOLD,
+        ##### Look-ahead of the swarm term, s (since 2026-11-27) #####
+        "swarm_window": lambda p: p.SWARM_WINDOW,
     }
 
     ##### What drone i believes about every drone j: its swarm_battery_status row for j, #####
@@ -100,15 +103,23 @@ class SimulationRecorder:
     #####   belief_status    status of j in the row (DroneStatus value), DEAD included      #####
     BELIEFS = ("belief_battery", "belief_charging", "belief_age", "belief_status")
 
-    ##### Inputs of the swarm and congestion terms of the margins, (T,) per drone: the  #####
-    ##### mean battery of the other drones alive and how many of them are on the base   #####
-    ##### (charging or waiting, since 2026-11-24), as                                    #####
-    ##### the drone estimates them (what it decides with) and as they really are, and   #####
-    ##### the margins each pair gives: charge_margin_* is the base margin (old name),   #####
-    ##### cell_charge_margin_* the cells margin. The true values are computed like      #####
-    ##### aproximate_battery_consumption_model does, from the real state of the drones. #####
+    ##### Inputs of the swarm and congestion terms of the margins, (T,) per drone, as  #####
+    ##### the drone estimates them (what it decides with) and as they really are, and  #####
+    ##### the margins each pair gives: charge_margin_* is the base margin (old name),  #####
+    ##### cell_charge_margin_* the cells margin.                                        #####
+    ##### Since 2026-11-27 (see aproximate_battery_consumption_model) the inputs are    #####
+    ##### forecasts: the mean battery of the others expected to land within the swarm  #####
+    ##### window, and how many others are expected on the base when the drone would    #####
+    ##### land. The future is not known at the snapshot, so the true values are the    #####
+    ##### same forecast made from the real current state of every drone (_true_rows):  #####
+    ##### the error left is the one of the stale rows, not of the forecast itself.     #####
+    ##### Before: the mean battery of every other drone alive and how many were on the #####
+    ##### base at that moment, computed directly from the real state.                  #####
+    ##### early_pull_* is the third input, 1 when the drone is pulled to the base early #####
+    ##### (see the protocol's early_pull), it raises the base margin by c.              #####
     SWARM_TERMS = ("mean_battery_estimate", "mean_battery_true",
                    "drones_charging_estimate", "drones_charging_true",
+                   "early_pull_estimate", "early_pull_true",
                    "charge_margin_estimate", "charge_margin_true",
                    "cell_charge_margin_estimate", "cell_charge_margin_true")
 
@@ -133,7 +144,9 @@ class SimulationRecorder:
         status_values = {name: value for value, name in self.status_labels.items()}
         self._dead = status_values.get("DEAD", np.nan)
         ##### On the base: charging, or in the waiting room (since 2026-11-24) #####
-        self._on_base = [status_values.get("CHARGING", np.nan), status_values.get("WAITING", np.nan)]
+        self._charging = status_values.get("CHARGING", np.nan)
+        self._waiting = status_values.get("WAITING", np.nan)
+        self._on_base = [self._charging, self._waiting]
         ##### Swarm level, one entry per snapshot, aligned with self.times #####
         self.global_maps = []                                 # min over the drones, per cell
         self.global_uncertainty = []
@@ -172,37 +185,62 @@ class SimulationRecorder:
             beliefs["belief_status"][j] = status
         return beliefs
 
-    def _swarm_terms(self, drone_id, protocols, battery, status):
+    def _base_waiting_rows(self, now):
+        """[drone id, time its charge will start, battery at landing] of the waiting room, from the base node."""
+        try:
+            base = self.sim.get_node(self.N).protocol_encapsulator.protocol  # the base comes after the drones
+            return base.waiting_rows(now)
+        except (AttributeError, TypeError, ValueError, IndexError, KeyError):
+            return []
+
+    def _true_rows(self, protocols, battery, status, now):
+        """
+        The swarm_battery_status rows every drone would hold if it knew the real state of all the others
+        now: (battery, now, status) for a drone in the air, (battery then, time the charge started,
+        CHARGING) on a pad and (battery at landing, time its charge will start, WAITING) in the waiting
+        room, as the base announces it. A waiting drone the base does not list starts now.
+        """
+        rows = np.column_stack([battery, np.full(self.N, float(now)), status])
+        for i, p in enumerate(protocols):
+            if status[i] == self._charging:
+                rows[i, 0] = _read(lambda q: q.battery_at_charging_start, p)
+                rows[i, 1] = _read(lambda q: q.charging_start_time, p)
+        for drone_id, start, landing_battery in self._base_waiting_rows(now):
+            if 0 <= int(drone_id) < self.N and status[int(drone_id)] == self._waiting:
+                rows[int(drone_id)] = (landing_battery, start, self._waiting)
+        return rows
+
+    def _swarm_terms(self, drone_id, protocols, battery, status, true_rows):
         """
         The SWARM_TERMS of drone_id. The estimate comes from its own
-        aproximate_battery_consumption_model. The truth is computed the same way
-        from the real state: the other drones that are not DEAD, the drone's own
-        battery and nobody charging when there is none.
+        aproximate_battery_consumption_model on its own rows, the truth from the
+        same model on true_rows (see _true_rows and SWARM_TERMS).
         """
         protocol = protocols[drone_id]
+        now = protocol.provider.current_time()
         try:
-            mean_estimate, charging_estimate = protocol.aproximate_battery_consumption_model(
-                protocol.swarm_battery_status, protocol.provider.current_time())
+            mean_estimate, charging_estimate, pull_estimate = protocol.aproximate_battery_consumption_model(
+                protocol.swarm_battery_status, now)
         except (AttributeError, TypeError, ValueError):
-            mean_estimate, charging_estimate = np.nan, np.nan
-
-        alive_others = (np.arange(self.N) != drone_id) & (status != self._dead)
-        if alive_others.any():
-            mean_true = float(np.mean(battery[alive_others]))
-            charging_true = int(np.sum(np.isin(status[alive_others], self._on_base)))
-        else:
-            mean_true, charging_true = float(battery[drone_id]), 0
+            mean_estimate, charging_estimate, pull_estimate = np.nan, np.nan, 0
+        try:
+            mean_true, charging_true, pull_true = protocol.aproximate_battery_consumption_model(true_rows, now)
+        except (AttributeError, TypeError, ValueError):
+            mean_true, charging_true, pull_true = np.nan, np.nan, 0
 
         own_battery = battery[drone_id]
         return {
             "mean_battery_estimate": float(mean_estimate),
-            "mean_battery_true": mean_true,
+            "mean_battery_true": float(mean_true),
             "drones_charging_estimate": float(charging_estimate),
             "drones_charging_true": float(charging_true),
+            "early_pull_estimate": float(pull_estimate),
+            "early_pull_true": float(pull_true),
             "charge_margin_estimate": _read(
-                lambda p: p.fitness.base_charge_margin(own_battery, mean_estimate, charging_estimate), protocol),
+                lambda p: p.fitness.base_charge_margin(own_battery, mean_estimate, charging_estimate, pull_estimate),
+                protocol),
             "charge_margin_true": _read(
-                lambda p: p.fitness.base_charge_margin(own_battery, mean_true, charging_true), protocol),
+                lambda p: p.fitness.base_charge_margin(own_battery, mean_true, charging_true, pull_true), protocol),
             "cell_charge_margin_estimate": _read(
                 lambda p: p.fitness.cell_charge_margin(own_battery, mean_estimate, charging_estimate), protocol),
             "cell_charge_margin_true": _read(
@@ -217,10 +255,11 @@ class SimulationRecorder:
         unc_maps, visited = [], []
         protocols = self._protocols()
         battery, status = self._true_state(protocols)
+        true_rows = self._true_rows(protocols, battery, status, protocols[0].provider.current_time())
         for i, p in enumerate(protocols):
             for name, values in self._beliefs(i, p).items():
                 self.beliefs[i][name].append(values)
-            for name, value in self._swarm_terms(i, protocols, battery, status).items():
+            for name, value in self._swarm_terms(i, protocols, battery, status, true_rows).items():
                 self.swarm_terms[i][name].append(value)
 
             umap = p.map[:, :, 0].astype(np.float32)
@@ -291,7 +330,8 @@ class SimulationRecorder:
             "battery": float(battery[drone_id]),
             "distance_to_base": distance,
             "energy_to_base": _read(lambda p: distance / p.speed_command * p.DISCHARGE_RATE, protocol),
-            **self._swarm_terms(drone_id, protocols, battery, status),
+            **self._swarm_terms(drone_id, protocols, battery, status,
+                                self._true_rows(protocols, battery, status, protocol.provider.current_time())),
         })
 
     def drone_arrays(self):

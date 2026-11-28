@@ -12,7 +12,7 @@ by the simplest rule there is:
 
 Everything else is egocentric's: the maps merged in encounters, the heartbeat and
 gossip, the pair decisions (only between two MAPPING drones), the camera, the
-mobility and braking approach, the battery, wind and seeds, the 300 s recharge, death
+mobility and braking approach, the battery, wind and seeds, the recharge (`100 + (1 − battery) · 300` s since 2026-11-27), death
 at 10%, the cost, the GA, the monitors, the recorder and the plots.
 
 The code as of 2026-11-15 is the source of truth. Where this file and the code disagree,

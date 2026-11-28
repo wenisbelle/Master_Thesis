@@ -37,7 +37,10 @@ DRONE_MAX_ACCELERATION = 10.0  # horizontal acceleration limit of the mobility h
 ##### Fixed protocol parameters, not tuned 
 DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 battery_capacity is doubled to 10000 mAh (protocol.py) with the mass unchanged, so it is half of the 0.00067 measured cruising at 15 m/s with the random air speed (battery plugin body-frame fix, 2026-11-23)
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning and other tests draws one per run, see sample_base_position
-TIME_TO_RECHARGE = 300  # s a drone charges on a pad. Given to the drones and to the base, so both use the same
+##### A charge lasts RECHARGE_FIXED_TIME + (1 - battery) * RECHARGE_TIME_PER_BATTERY s, with the battery #####
+##### the drone lands with (a flat 300 s before 2026-11-27). Given to the drones, and to the base       #####
+RECHARGE_FIXED_TIME = 100
+RECHARGE_TIME_PER_BATTERY = 300
 CHARGING_BASE_CAPACITY = 2  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
@@ -392,7 +395,8 @@ def create_and_run_simulation(individual, mode: str = "train",
         map_height=MAP_HEIGHT,
         drone_speed=DRONE_SPEED,
         drone_max_acceleration=DRONE_MAX_ACCELERATION,
-        time_to_recharge=TIME_TO_RECHARGE,
+        recharge_fixed_time=RECHARGE_FIXED_TIME,
+        recharge_time_per_battery=RECHARGE_TIME_PER_BATTERY,
         **unpack_individual(individual),
         discharge_rate=DISCHARGE_RATE,
         charging_base_position=charging_base_position,
@@ -412,7 +416,7 @@ def create_and_run_simulation(individual, mode: str = "train",
 
     ##### The base is also a node, added after the drones so they keep the ids     
     ##### 0..number_of_drones-1. It owns the pads and the waiting room.
-    builder.add_node(recharge_base_factory(charging_base_capacity(number_of_drones), TIME_TO_RECHARGE, broadcast=BROADCAST_BASE, mode=mode),
+    builder.add_node(recharge_base_factory(charging_base_capacity(number_of_drones), RECHARGE_FIXED_TIME, RECHARGE_TIME_PER_BATTERY, broadcast=BROADCAST_BASE, mode=mode),
                      (charging_base_position[0], charging_base_position[1], BASE_ANTENNA_ALTITUDE))
 
     # Building & starting

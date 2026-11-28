@@ -54,7 +54,7 @@ HAND_TUNED_INDIVIDUAL = [
     0.25,  # base_margin
     0.20,  # a_base_modifier, between 0 and 10. Applies ABOVE the swarm mean: above it by 0.2 -> margin -0.04 (return later)
     0.30,  # b_base_modifier, between 0 and 10. Applies BELOW the swarm mean: below it by 0.2 -> margin +0.06 (return earlier)
-    0.05,  # c_base_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.05 (~75 s later)
+    0.05,  # c_base_modifier, between 0 and 10. Each drone over Nc at the base -> margin -0.05
 ]
 
 ##### How often the drone state is sampled.

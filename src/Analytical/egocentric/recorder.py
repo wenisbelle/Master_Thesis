@@ -67,7 +67,8 @@ class SimulationRecorder:
         ##### The constants of the battery model the drones decide with #####
         "discharge_rate": lambda p: p.DISCHARGE_RATE,
         "drone_speed": lambda p: p.speed_command,
-        "time_to_recharge": lambda p: p.TIME_TO_RECHARGE,
+        "recharge_fixed_time": lambda p: p.RECHARGE_FIXED_TIME,
+        "recharge_time_per_battery": lambda p: p.RECHARGE_TIME_PER_BATTERY,
         "expected_time_to_base": lambda p: p.EXPECTED_TIME_TO_BASE,
         "dead_battery_threshold": lambda p: p.DEAD_BATTERY_THRESHOLD,
     }

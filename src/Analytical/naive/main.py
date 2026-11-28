@@ -49,7 +49,10 @@ DISCHARGE_RATE = 0.000335  # battery fraction per second. Since 2026-11-26 batte
 
 ##### Fixed protocol parameters, not tuned
 CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning draws one per run, see sample_base_position
-TIME_TO_RECHARGE = 300  # s a drone charges on a pad, given to the drones
+##### A charge lasts RECHARGE_FIXED_TIME + (1 - battery) * RECHARGE_TIME_PER_BATTERY s, with the battery #####
+##### the drone lands with (a flat 300 s before 2026-11-27). Given to the drones, and to the base       #####
+RECHARGE_FIXED_TIME = 100
+RECHARGE_TIME_PER_BATTERY = 300
 CHARGING_BASE_CAPACITY = 2  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
@@ -418,7 +421,8 @@ def create_and_run_simulation(individual, mode: str = "train",
         map_height=MAP_HEIGHT,
         drone_speed=DRONE_SPEED,
         drone_max_acceleration=DRONE_MAX_ACCELERATION,
-        time_to_recharge=TIME_TO_RECHARGE,
+        recharge_fixed_time=RECHARGE_FIXED_TIME,
+        recharge_time_per_battery=RECHARGE_TIME_PER_BATTERY,
         **unpack_individual(individual),
         charging_base_position=charging_base_position,
         return_battery_threshold=RETURN_BATTERY_THRESHOLD,

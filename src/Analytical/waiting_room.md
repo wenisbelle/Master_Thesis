@@ -1,5 +1,8 @@
 # Hard base capacity and waiting room (2026-11-24)
 
+> Since 2026-11-27 a charge lasts `100 + (1 − battery) · 300` s (`charge_duration` in each
+> `recharge_base.py`), not a flat `TIME_TO_RECHARGE`. The rest of this note is as written then.
+
 Since 2026-11-24 the recharge base has **`Nc` charging pads**, and at most `Nc` drones
 charge at once. A drone that lands while every pad is taken waits on the ground next
 to the base, in a **waiting room** (new status `WAITING`), until a pad frees. On the

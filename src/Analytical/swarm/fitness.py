@@ -594,9 +594,15 @@ class FitnessEvaluator:
                             map_center_offset: float,
                             mean_battery_value: float, drones_charging: int,
                             first_drone_velocity: Optional[Tuple[float, ...]] = None,
-                            second_drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[float, Tuple[int, int], Tuple[int, int], float, float]]:
+                            second_drone_velocity: Optional[Tuple[float, ...]] = None,
+                            second_mean_battery_value: Optional[float] = None,
+                            second_drones_charging: Optional[int] = None) -> Optional[Tuple[float, Tuple[int, int], Tuple[int, int], float, float]]:
         """
         Fully vectorized fuzzy inference for two drones.
+
+        mean_battery_value and drones_charging are the swarm terms of the first drone. The second drone
+        uses second_mean_battery_value and second_drones_charging, its own since 2026-11-27, or the first
+        drone's when they are None.
 
         Returns the best pair only:
             (best_fitness, first_drone_cell, second_drone_cell, first_cell_fitness, second_cell_fitness)
@@ -604,7 +610,11 @@ class FitnessEvaluator:
         """
         # Get individual priorities (using the fast method above)
         list1 = self.cells_priority(map_data, first_drone_pos, recharge_base_position, first_drone_current_charge, drone_speed, map_center_offset, mean_battery_value, drones_charging, drone_velocity=first_drone_velocity)
-        list2 = self.cells_priority(map_data, second_drone_pos, recharge_base_position, second_drone_current_charge, drone_speed, map_center_offset, mean_battery_value, drones_charging, drone_velocity=second_drone_velocity)
+        if second_mean_battery_value is None:
+            second_mean_battery_value = mean_battery_value
+        if second_drones_charging is None:
+            second_drones_charging = drones_charging
+        list2 = self.cells_priority(map_data, second_drone_pos, recharge_base_position, second_drone_current_charge, drone_speed, map_center_offset, second_mean_battery_value, second_drones_charging, drone_velocity=second_drone_velocity)
 
         if not list1 or not list2:
             return None
@@ -649,35 +659,45 @@ class FitnessEvaluator:
                 float(p2_vals[j]))
 
     def base_charge_margin(self, current_drone_charge: float, mean_battery_value: float,
-                      drones_charging: int) -> float:
+                      drones_charging: int, early_pull: int = 0) -> float:
         """
         Returns the battery fraction the drone keeps in reserve on top of the energy to reach the base:
         the tuned CHARGE_MARGIN shifted by the swarm and congestion terms, never below MIN_CHARGE_MARGIN.
         Kept apart from recharge_base_fitness so the recorder can sample it.
+
+        Since 2026-11-27 (see the protocol's aproximate_battery_consumption_model) mean_battery_value is the
+        mean of the others expected to land within the swarm window, and drones_charging counts the others
+        expected on the base when this drone would land, not now. early_pull (0 or 1, the protocol's
+        early_pull) raises the margin by c: the drone goes now, while a pad is free, rather than be the first
+        to wait in line at its natural landing.
         """
-        # Swarm term: > 0 when this drone is below the swarm mean -> return earlier
+        # Swarm term: > 0 when this drone is below the drones landing soon -> return earlier, < 0 -> later
         delta = mean_battery_value - current_drone_charge
         swarm_shift = (self.b_base_modifier if delta > 0 else self.a_base_modifier) * delta
 
-        # Term for number of drones already charging
+        # Congestion term: the drones on the base when this one would land
         excess = max(0, drones_charging + 1 - self.Nc_CHARGING_BASE)
         congestion_shift = -self.c_base_modifier * excess
 
+        # Early pull: the place in line it saves, worth c
+        early_shift = self.c_base_modifier * early_pull
+
         return max(self.MIN_CHARGE_MARGIN,
-                   self.BASE_CHARGE_MARGIN + swarm_shift + congestion_shift)
+                   self.BASE_CHARGE_MARGIN + swarm_shift + congestion_shift + early_shift)
 
     def cell_charge_margin(self, current_drone_charge: float, mean_battery_value: float,
-                          drones_charging: int) -> float:
+                          drones_charging: int, early_pull: int = 0) -> float:
             """
             Returns the battery fraction the drone keeps in reserve on top of the energy to reach the cells:
             the tuned CHARGE_MARGIN shifted by the swarm and congestion terms, never below MIN_CHARGE_MARGIN.
             Kept apart from recharge_base_fitness so the recorder can sample it.
+            Same inputs as base_charge_margin. early_pull is accepted but not used: the pull only acts on the base.
             """
-            # Swarm term: > 0 when this drone is below the swarm mean -> return earlier
+            # Swarm term: > 0 when this drone is below the drones landing soon -> return earlier, < 0 -> later
             delta = mean_battery_value - current_drone_charge
             swarm_shift = (self.b_cell_modifier if delta > 0 else self.a_cell_modifier) * delta
     
-            # Term for number of drones already charging
+            # Congestion term: the drones on the base when this one would land (going home now)
             excess = max(0, drones_charging + 1 - self.Nc_CHARGING_BASE)
             congestion_shift = -self.c_cell_modifier * excess
     
@@ -703,7 +723,7 @@ class FitnessEvaluator:
     def recharge_base_fitness(self, drone_location: Tuple[float, float], recharge_base_position: Tuple[float, float],
                               current_drone_charge: float, drone_speed: float,
                               mean_battery_value: float, drones_charging: int,
-                              mean_efficiency: float) -> float:
+                              mean_efficiency: float, early_pull: int = 0) -> float:
         """
         Utility of the recharge base, Eq. (15): kappa * exp(-gamma * R_safe), with kappa = K * mean_efficiency.
         Scaling by the mean I/tau of the map puts the base in the same units as the cells, so the moment
@@ -717,7 +737,7 @@ class FitnessEvaluator:
         dist_to_base = np.hypot(drone_x - base_x, drone_y - base_y)
         energy_to_base = (dist_to_base / drone_speed) * self.DISCHARGE_RATE
 
-        margin = self.base_charge_margin(current_drone_charge, mean_battery_value, drones_charging)
+        margin = self.base_charge_margin(current_drone_charge, mean_battery_value, drones_charging, early_pull)
 
         R_safe = current_drone_charge - energy_to_base - margin
         kappa = self.K * mean_efficiency
@@ -729,7 +749,8 @@ class FitnessEvaluator:
                         recharge_base_position: Tuple[float, float], current_drone_charge: float,
                         drone_speed: float, map_center_offset: float,
                         mean_battery_value: float, drones_charging: int,
-                        drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[Tuple[float, float], float, str]]:
+                        drone_velocity: Optional[Tuple[float, ...]] = None,
+                        early_pull: int = 0) -> Optional[Tuple[Tuple[float, float], float, str]]:
 
         fitness_scores = self.cells_priority(map_data, drone_location,
                                              recharge_base_position, current_drone_charge,
@@ -746,7 +767,7 @@ class FitnessEvaluator:
         recharge_base_fitness = self.recharge_base_fitness(drone_location, recharge_base_position,
                                                           current_drone_charge, drone_speed,
                                                           mean_battery_value, drones_charging,
-                                                          mean_efficiency)
+                                                          mean_efficiency, early_pull)
 
         if best_cell[0] < recharge_base_fitness:
             ##### The base arrives here in metres, but the caller turns whatever is #####
@@ -763,7 +784,19 @@ class FitnessEvaluator:
                          drone_speed: float, map_center_offset: float, 
                          mean_battery_value: float, drones_charging: int,
                          first_drone_velocity: Optional[Tuple[float, ...]] = None,
-                         second_drone_velocity: Optional[Tuple[float, ...]] = None) -> Optional[Tuple[Tuple[float, float], float, Tuple[str, str]]]:
+                         second_drone_velocity: Optional[Tuple[float, ...]] = None,
+                         second_mean_battery_value: Optional[float] = None,
+                         second_drones_charging: Optional[int] = None,
+                         early_pull: int = 0,
+                         second_early_pull: Optional[int] = None) -> Optional[Tuple[Tuple[float, float], float, Tuple[str, str]]]:
+        ##### The second drone decides with its own swarm terms when they are given (since 2026-11-27), #####
+        ##### with the first drone's otherwise, see both_cells_priority                                    #####
+        if second_mean_battery_value is None:
+            second_mean_battery_value = mean_battery_value
+        if second_drones_charging is None:
+            second_drones_charging = drones_charging
+        if second_early_pull is None:
+            second_early_pull = early_pull
 
         best_pair = self.both_cells_priority(
             map_data=map_data,
@@ -777,7 +810,9 @@ class FitnessEvaluator:
             mean_battery_value = mean_battery_value,
             drones_charging = drones_charging,
             first_drone_velocity=first_drone_velocity,
-            second_drone_velocity=second_drone_velocity
+            second_drone_velocity=second_drone_velocity,
+            second_mean_battery_value = second_mean_battery_value,
+            second_drones_charging = second_drones_charging
         )
 
         if not best_pair:
@@ -794,11 +829,11 @@ class FitnessEvaluator:
         first_recharge_base_fitness = self.recharge_base_fitness(first_drone_location, recharge_base_position,
                                                                  first_current_drone_charge, drone_speed,
                                                                  mean_battery_value, drones_charging,
-                                                                 first_mean_efficiency)
+                                                                 first_mean_efficiency, early_pull)
         second_recharge_base_fitness = self.recharge_base_fitness(second_drone_location, recharge_base_position,
                                                                   second_current_drone_charge, drone_speed,
-                                                                  mean_battery_value, drones_charging,
-                                                                  second_mean_efficiency)
+                                                                  second_mean_battery_value, second_drones_charging,
+                                                                  second_mean_efficiency, second_early_pull)
 
         ##### Same as in choose_one_cell: the base leaves as a cell index #####
         base_cell = self.position_to_cell(recharge_base_position, map_center_offset)

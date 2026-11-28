@@ -45,7 +45,7 @@ from .recharge_base import BaseMessageType, base_node_id
 ##### Integer cases of the scheduler check #####
 SCHEDULER_CASES = 150
 SCHEDULER_SEED = 0
-SLOT_LENGTH = 115  # TIME_TO_RECHARGE + SLOT_GUARD
+SLOT_LENGTH = 115  # length of the integer test cases, place_slots takes any (the runs book PLANNED_CHARGE_TIME + SLOT_GUARD = 365 s)
 
 ##### An arrival may be below the reserve by the wind of the flight home, but not by much #####
 ARRIVAL_TOLERANCE = 0.03
