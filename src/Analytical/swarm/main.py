@@ -40,7 +40,7 @@ CHARGING_BASE_POSITION = (0.0, 0.0)  # base of the test runs, the GA tuning and 
 ##### A charge lasts RECHARGE_FIXED_TIME + (1 - battery) * RECHARGE_TIME_PER_BATTERY s, with the battery #####
 ##### the drone lands with (a flat 300 s before 2026-11-27). Given to the drones, and to the base       #####
 RECHARGE_FIXED_TIME = 100
-RECHARGE_TIME_PER_BATTERY = 300
+RECHARGE_TIME_PER_BATTERY = 500
 CHARGING_BASE_CAPACITY = 2  # Nc, the pads of the base. None: int(number_of_drones / 3), see charging_base_capacity. main_test.py sets a fixed value
 DISTANCE_BETWEEN_CELLS = 20  # cell spacing, m. Same as the protocol's, needed to put the base on a cell
 KERNEL_N_SIGMA = 3  # kernel truncation radius, in sigmas. Above ~3 the cut-off weight is negligible
